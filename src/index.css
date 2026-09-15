@@ -1,0 +1,190 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-white text-slate-900 font-sans;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Custom Clean Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #f8fafc;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+}
+
+/* Highlighter Styles */
+.highlight-yellow {
+  background-color: #fef08a;
+  border-radius: 2px;
+  padding: 1px 2px;
+}
+.highlight-green {
+  background-color: #bbf7d0;
+  border-radius: 2px;
+  padding: 1px 2px;
+}
+.highlight-pink {
+  background-color: #fbcfe8;
+  border-radius: 2px;
+  padding: 1px 2px;
+}
+
+/* Glassmorphism card */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.glass-panel-orange {
+  background: linear-gradient(135deg, rgba(255, 247, 237, 0.9) 0%, rgba(255, 237, 213, 0.8) 100%);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(253, 186, 116, 0.5);
+}
+
+/* ========================================================================= */
+/* Authentic Cambridge IELTS Booklet Exact Layout Styles                     */
+/* ========================================================================= */
+
+.pdf-exact-box {
+  border: 2px solid #0f172a;
+  background-color: #ffffff;
+  padding: 1.25rem 1.5rem;
+  margin: 1.25rem 0;
+  border-radius: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  position: relative;
+}
+
+.pdf-exact-box-header {
+  font-weight: 800;
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.75rem;
+  border-bottom: 2px solid #0f172a;
+  padding-bottom: 0.35rem;
+  color: #0f172a;
+}
+
+.pdf-exact-shaded-box {
+  background-color: #f8fafc;
+  border: 1.5px solid #cbd5e1;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0;
+  border-radius: 4px;
+}
+
+.ielts-instruction-banner {
+  background-color: #f1f5f9;
+  border-left: 4px solid #0284c7;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  border-radius: 0 6px 6px 0;
+}
+
+.answer-slot {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 3px;
+}
+
+.ielts-input-slot {
+  display: inline-block;
+  min-width: 85px;
+  max-width: 220px;
+  height: 30px;
+  padding: 2px 8px;
+  margin: 2px 4px;
+  border: 1.5px solid #0284c7;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  font-size: 13px;
+  background-color: #f0f9ff;
+  color: #0369a1;
+  outline: none;
+  transition: all 0.15s ease-in-out;
+}
+
+.ielts-input-slot:focus {
+  border-color: #0284c7;
+  background-color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.25);
+}
+
+.ielts-input-slot.has-value {
+  background-color: #e0f2fe;
+  border-color: #0284c7;
+}
+
+.ielts-mcq-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin: 4px;
+  border-radius: 6px;
+  border: 1.5px solid #cbd5e1;
+  background-color: #ffffff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1e293b;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.ielts-mcq-option:hover {
+  background-color: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.ielts-mcq-option.selected {
+  background-color: #0284c7;
+  border-color: #0284c7;
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 2px 4px rgba(2, 132, 199, 0.25);
+}
+
+.ielts-exact-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 13px;
+}
+
+.ielts-exact-table th,
+.ielts-exact-table td {
+  border: 1px solid #475569;
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ielts-exact-table th {
+  background-color: #f1f5f9;
+  font-weight: 700;
+  color: #0f172a;
+}
+

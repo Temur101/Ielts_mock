@@ -1,0 +1,206 @@
+import React, { useEffect, useState } from 'react';
+import { 
+  ShieldAlert, 
+  AlertTriangle, 
+  XCircle, 
+  Maximize2, 
+  Minimize2, 
+  Radio 
+} from 'lucide-react';
+import { Button } from '../common/Button';
+
+export function AntiCheatOverlay({
+  exam,
+  student,
+  isExamActive,
+  onDisqualify,
+  onWarn,
+}) {
+  const [warningModalOpen, setWarningModalOpen] = useState(false);
+  const [warningTimer, setWarningTimer] = useState(10);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Fullscreen state listener
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(err => {
+        console.warn("Fullscreen request failed:", err);
+      });
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+  };
+
+  // Anti-Cheat Blur & Tab-switch Event Listeners
+  useEffect(() => {
+    if (!isExamActive || student?.status !== 'in_progress') return;
+
+    const handleViolation = (reason) => {
+      const strictness = exam.anti_cheat_strictness || 'strict';
+
+      if (strictness === 'strict') {
+        onDisqualify(`Defocus detected: ${reason}`);
+      } else if (strictness === 'warning') {
+        if ((student.warning_count || 0) >= 1) {
+          onDisqualify(`Exceeded 1 warning limit: ${reason}`);
+        } else {
+          onWarn(reason);
+          setWarningModalOpen(true);
+          setWarningTimer(10);
+        }
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        handleViolation("Switched browser tab / window minimized");
+      }
+    };
+
+    const handleWindowBlur = () => {
+      handleViolation("Clicked outside exam window or lost focus");
+    };
+
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [isExamActive, student?.status, student?.warning_count, exam.anti_cheat_strictness]);
+
+  // Warning modal countdown
+  useEffect(() => {
+    if (!warningModalOpen) return;
+    const interval = setInterval(() => {
+      setWarningTimer(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setWarningModalOpen(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [warningModalOpen]);
+
+  // If Student is Disqualified
+  if (student?.status === 'disqualified' || student?.status === 'kicked') {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-3xl p-8 text-center space-y-5 border border-rose-200 shadow-2xl animate-in fade-in zoom-in duration-200">
+          <div className="w-16 h-16 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto shadow-inner">
+            <XCircle className="w-10 h-10" />
+          </div>
+
+          <div className="space-y-1.5">
+            <h2 className="text-2xl font-extrabold text-slate-900">
+              Exam Disqualified
+            </h2>
+            <p className="text-xs text-rose-600 font-semibold">
+              {student.disqualification_reason || 'Anti-cheat integrity violation triggered.'}
+            </p>
+          </div>
+
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Your exam session has been terminated by the classroom proctoring system. Your score is recorded as 0 and your instructor has been notified in real time.
+          </p>
+
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs font-mono text-slate-700">
+            Candidate: <strong>{student.name}</strong> ({student.candidate_no})
+          </div>
+
+          {/* Quick Recovery & Testing Controls */}
+          <div className="pt-2 border-t border-slate-100 space-y-2">
+            <Button
+              variant="primary"
+              size="md"
+              className="w-full font-bold shadow-glow"
+              onClick={() => {
+                if (typeof window !== 'undefined') {
+                  localStorage.removeItem('ielts_current_student');
+                  window.location.reload();
+                }
+              }}
+            >
+              🔄 Войти заново / Сбросить кандидата
+            </Button>
+
+            <Button
+              variant="secondary"
+              size="md"
+              className="w-full font-bold"
+              onClick={() => {
+                if (typeof window !== 'undefined') {
+                  localStorage.setItem('ielts_active_role', 'admin');
+                  window.location.reload();
+                }
+              }}
+            >
+              👨‍🏫 Перейти в панель Учителя (Teacher View)
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Warning Modal Overlay (in Warning strictness mode)
+  if (warningModalOpen) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-3xl p-6 text-center space-y-4 border border-amber-300 shadow-2xl animate-bounce-short">
+          <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center mx-auto">
+            <AlertTriangle className="w-7 h-7" />
+          </div>
+
+          <h3 className="text-lg font-bold text-slate-900">
+            Anti-Cheat Warning (1 of 1)
+          </h3>
+
+          <p className="text-xs text-slate-600">
+            You left the exam window or switched tabs. Another violation will result in immediate disqualification.
+          </p>
+
+          <div className="text-xs font-bold text-amber-600">
+            Auto-closing warning in {warningTimer}s...
+          </div>
+
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => setWarningModalOpen(false)}
+            className="w-full"
+          >
+            I Understand — Return to Exam
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed bottom-4 right-4 z-30 flex items-center gap-2">
+      <button
+        onClick={toggleFullscreen}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/80 hover:bg-slate-900 text-white text-xs font-semibold backdrop-blur-md shadow-lg transition"
+        title="Toggle Fullscreen mode"
+      >
+        {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+        <span>{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
+      </button>
+    </div>
+  );
+}

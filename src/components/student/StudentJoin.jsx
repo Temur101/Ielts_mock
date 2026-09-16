@@ -13,12 +13,17 @@ import {
 import { Button } from '../common/Button';
 import { fetchExamByPin } from '../../lib/supabase';
 
-export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, examStatus = 'lobby' }) {
+export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, examStatus = 'lobby', shortCircuitPin = '' }) {
+  // Check URL query parameter ?pin=...
+  const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const initialPin = (shortCircuitPin || urlParams?.get('pin') || defaultPin || '').trim().toUpperCase();
+
   const [name, setName] = useState('');
   const [candidateNo, setCandidateNo] = useState('');
-  const [pinCode, setPinCode] = useState('');
+  const [pinCode, setPinCode] = useState(initialPin);
   const [error, setError] = useState('');
   const [isValidating, setIsValidating] = useState(false);
+  const isPinPrefilled = Boolean(shortCircuitPin || urlParams?.get('pin'));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -135,6 +140,7 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
                 type="text"
                 placeholder="e.g. Anvar Saidov"
                 value={name}
+                autoFocus={isPinPrefilled}
                 onChange={(e) => { setName(e.target.value); setError(''); }}
                 className="w-full pl-10 pr-4 py-2.5 text-sm rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 focus:border-brand-500 font-medium"
               />
@@ -158,17 +164,29 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-              Session PIN (Orange Badge)
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                Session PIN
+              </label>
+              {isPinPrefilled && (
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md flex items-center gap-1">
+                  ✓ Pre-filled & Verified
+                </span>
+              )}
+            </div>
             <div className="relative">
               <KeyRound className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 placeholder="Enter Session PIN (e.g. IELTS-07)"
                 value={pinCode}
+                readOnly={isPinPrefilled}
                 onChange={(e) => { setPinCode(e.target.value.toUpperCase()); setError(''); }}
-                className="w-full pl-10 pr-4 py-2.5 text-sm rounded-xl border-2 border-brand-500 focus:ring-2 focus:ring-brand-500 focus:border-brand-500 font-mono font-extrabold uppercase tracking-wider text-brand-600 bg-orange-50/30"
+                className={`w-full pl-10 pr-4 py-2.5 text-sm rounded-xl border-2 font-mono font-extrabold uppercase tracking-wider transition ${
+                  isPinPrefilled 
+                    ? 'bg-orange-100/50 border-orange-400 text-orange-700 cursor-not-allowed shadow-inner' 
+                    : 'border-brand-500 focus:ring-2 focus:ring-brand-500 focus:border-brand-500 text-brand-600 bg-orange-50/30'
+                }`}
               />
             </div>
           </div>

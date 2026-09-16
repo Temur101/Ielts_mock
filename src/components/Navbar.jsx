@@ -23,6 +23,8 @@ export function Navbar({
   soundEnabled,
   onToggleSound,
   onUpdatePinCode,
+  isStudentOnly = false,
+  onOpenSuperAdmin,
 }) {
   const [copiedPin, setCopiedPin] = useState(false);
   const [isEditingPin, setIsEditingPin] = useState(false);
@@ -111,7 +113,12 @@ export function Navbar({
 
             {/* Dynamic Editable Glowing Orange Pill Badge */}
             <div className="relative flex items-center">
-              {isEditingPin ? (
+              {isStudentOnly ? (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-orange-50 border border-brand-300 text-brand-700 font-mono font-bold text-xs shadow-xs">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-brand-500">EXAM PIN:</span>
+                  <span className="font-extrabold tracking-wider">{exam?.pin_code || 'IELTS-904'}</span>
+                </div>
+              ) : isEditingPin ? (
                 <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-orange-50 border-2 border-brand-500 shadow-glow transition-all">
                   <span className="text-[11px] font-extrabold text-brand-700 uppercase tracking-wider">PIN:</span>
                   <input
@@ -181,32 +188,47 @@ export function Navbar({
               {soundEnabled ? <Volume2 className="w-4 h-4 text-brand-500" /> : <VolumeX className="w-4 h-4" />}
             </button>
 
+            {/* If NOT student-only, render Super-Admin Button and Role Switcher */}
+            {!isStudentOnly && (
+              <>
+                {onOpenSuperAdmin && (
+                  <button
+                    onClick={onOpenSuperAdmin}
+                    className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs"
+                    title="Open Super-Admin Command Center"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-orange-400" />
+                    Super-Admin
+                  </button>
+                )}
 
-            {/* Role Switcher Pill */}
-            <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
-              <button
-                onClick={() => onRoleChange('admin')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                  currentRole === 'admin'
-                    ? 'bg-white text-brand-600 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                Teacher View
-              </button>
-              <button
-                onClick={() => onRoleChange('student')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                  currentRole === 'student'
-                    ? 'bg-white text-brand-600 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Users className="w-3.5 h-3.5" />
-                Student View
-              </button>
-            </div>
+                {/* Role Switcher Pill */}
+                <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+                  <button
+                    onClick={() => onRoleChange('admin')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      currentRole === 'admin'
+                        ? 'bg-white text-brand-600 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    Teacher View
+                  </button>
+                  <button
+                    onClick={() => onRoleChange('student')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                      currentRole === 'student'
+                        ? 'bg-white text-brand-600 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                    Student View
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
         </div>

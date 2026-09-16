@@ -21,6 +21,9 @@ import {
 import { archiveCurrentSession } from './lib/sessionHistory';
 import { loadPersistentExam, savePersistentExam, isCorruptedExam } from './lib/persistentStorage';
 import { apiGradeWritingSubmission } from './lib/ai/gemini-client';
+import { SuperAdminHub } from './components/superadmin/SuperAdminHub';
+import { SuperAdminLogin } from './components/superadmin/SuperAdminLogin';
+import { getSuperAdminSession, signOutSuperAdmin } from './lib/superAdminService';
 
 // Web Audio tone generator
 function playExamTone(type = 'start') {
@@ -58,8 +61,67 @@ function playExamTone(type = 'start') {
   }
 }
 
+// Route helper to support /super-admin, /super-admin/login, and /join?pin=...
+function parseCurrentRoute() {
+  if (typeof window === 'undefined') return { path: '/', pin: null };
+  const pathname = window.location.pathname.toLowerCase();
+  const searchParams = new URLSearchParams(window.location.search);
+  const pin = searchParams.get('pin')?.trim().toUpperCase() || null;
+  const hostname = window.location.hostname.toLowerCase();
+
+  if (hostname.startsWith('admin.') || pathname === '/super-admin') {
+    return { path: '/super-admin', pin };
+  }
+  if (pathname === '/super-admin/login') {
+    return { path: '/super-admin/login', pin };
+  }
+  if (pathname === '/join' || pin) {
+    return { path: '/join', pin };
+  }
+  return { path: '/', pin: null };
+}
+
 export default function App() {
+  const [route, setRoute] = useState(parseCurrentRoute);
+  const [superAdminUser, setSuperAdminUser] = useState(null);
+  const [checkingSuperAdminAuth, setCheckingSuperAdminAuth] = useState(true);
+
+  const navigateTo = (newPath, params = {}) => {
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.origin + newPath);
+      Object.entries(params).forEach(([k, v]) => {
+        if (v) url.searchParams.set(k, v);
+      });
+      window.history.pushState({}, '', url.toString());
+    }
+    setRoute({ path: newPath, pin: params.pin || null });
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setRoute(parseCurrentRoute());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    async function initSuperAdmin() {
+      try {
+        const user = await getSuperAdminSession();
+        setSuperAdminUser(user);
+      } catch (e) {
+        setSuperAdminUser(null);
+      } finally {
+        setCheckingSuperAdminAuth(false);
+      }
+    }
+    initSuperAdmin();
+  }, []);
+
   const [currentRole, setCurrentRole] = useState(() => {
+    const initialRoute = parseCurrentRoute();
+    if (initialRoute.path === '/join') return 'student';
     return localStorage.getItem('ielts_active_role') || 'admin';
   });
 
@@ -1029,24 +1091,101 @@ export default function App() {
     if (soundEnabled) playExamTone('warning');
   };
 
+  // 1. ROUTE: /super-admin (Protected by Supabase Auth)
+  if (route.path === '/super-admin') {
+    if (checkingSuperAdminAuth) {
+      return (
+        <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">
+          <div className="text-center space-y-3">
+            <div className="w-10 h-10 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto" />
+            <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">
+              Verifying Super-Admin Privileges...
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    if (!superAdminUser) {
+      return (
+        <SuperAdminLogin
+          onLoginSuccess={(user) => {
+            setSuperAdminUser(user);
+          }}
+          onNavigateHome={() => navigateTo('/')}
+        />
+      );
+    }
+
+    return (
+      <SuperAdminHub
+        user={superAdminUser}
+        onLogout={async () => {
+          await signOutSuperAdmin();
+          setSuperAdminUser(null);
+          navigateTo('/super-admin/login');
+        }}
+        onLaunchTeacherConsole={(session) => {
+          if (session.raw) {
+            setExam(session.raw);
+          } else {
+            setExam(prev => ({
+              ...prev,
+              id: session.id,
+              pin_code: session.pin_code,
+              title: session.title,
+              status: session.status,
+              current_stage: session.current_stage,
+            }));
+          }
+          setCurrentRole('admin');
+          setActiveAdminTab('live');
+          navigateTo('/');
+        }}
+        onNavigateStudentView={() => {
+          setCurrentRole('student');
+          navigateTo('/');
+        }}
+      />
+    );
+  }
+
+  // 2. ROUTE: /super-admin/login
+  if (route.path === '/super-admin/login') {
+    return (
+      <SuperAdminLogin
+        onLoginSuccess={(user) => {
+          setSuperAdminUser(user);
+          navigateTo('/super-admin');
+        }}
+        onNavigateHome={() => navigateTo('/')}
+      />
+    );
+  }
+
+  // 3. STUDENT SHORT-CIRCUIT ROUTE (/join or ?pin=...)
+  const isStudentOnlyRoute = route.path === '/join' || Boolean(route.pin);
+  const activeRoleToRender = isStudentOnlyRoute ? 'student' : currentRole;
 
   return (
     <div className="min-h-screen bg-[#fafbfc] flex flex-col font-sans selection:bg-brand-500 selection:text-white">
       
       {/* Top Navigation */}
       <Navbar
-        currentRole={currentRole}
+        currentRole={activeRoleToRender}
         onRoleChange={setCurrentRole}
         exam={exam}
         student={currentStudent}
         soundEnabled={soundEnabled}
         onToggleSound={() => setSoundEnabled(prev => !prev)}
         onUpdatePinCode={handleUpdatePinCode}
+        isStudentOnly={isStudentOnlyRoute}
+        onOpenSuperAdmin={() => navigateTo('/super-admin')}
       />
 
-      {/* Main Role Container */}
+      {/* Main Container */}
       <main className="flex-1">
-        {currentRole === 'admin' ? (
+        {activeRoleToRender === 'admin' ? (
           <AdminDashboard
             exam={exam}
             students={students}
@@ -1069,7 +1208,8 @@ export default function App() {
             {!currentStudent ? (
               <StudentJoin
                 onJoin={handleStudentJoin}
-                defaultPin={exam.pin_code}
+                defaultPin={route.pin || exam.pin_code}
+                shortCircuitPin={route.pin}
                 isLobbyOpen={exam.is_lobby_open}
                 examStatus={exam.status}
               />

@@ -71,33 +71,93 @@ export async function getIndexedDBItem(key) {
 }
 
 /**
- * Saves full exam configuration to IndexedDB and safe localStorage backup
+ * Deletes a specific key from IndexedDB
+ */
+export async function deleteIndexedDBItem(key) {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.delete(key);
+
+      request.onsuccess = () => resolve(true);
+      request.onerror = (e) => reject(e.target.error);
+    });
+  } catch (err) {
+    console.warn(`IndexedDB deleteItem error for key "${key}":`, err);
+    return false;
+  }
+}
+
+export const deleteFromIndexedDB = deleteIndexedDBItem;
+
+/**
+ * Clears the entire IndexedDB object store
+ */
+export async function clearIndexedDB() {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.clear();
+
+      request.onsuccess = () => resolve(true);
+      request.onerror = (e) => reject(e.target.error);
+    });
+  } catch (err) {
+    console.warn("IndexedDB clear error:", err);
+    return false;
+  }
+}
+
+export const clearIndexedDBStore = clearIndexedDB;
+
+/**
+ * Completely purges all exam data across IndexedDB and LocalStorage
+ */
+export async function purgeAllExamData() {
+  await clearIndexedDB();
+  try {
+    localStorage.removeItem('ielts_current_exam');
+    localStorage.removeItem('ielts_exam_meta');
+    localStorage.removeItem('ielts_current_answers');
+    localStorage.removeItem('ielts_candidate_answers');
+    localStorage.removeItem('ielts_listening_pdf');
+    localStorage.removeItem('ielts_reading_pdf');
+    localStorage.removeItem('ielts_writing_pdf');
+  } catch (e) {
+    console.warn("LocalStorage purge error:", e);
+  }
+}
+
+/**
+ * Saves full exam configuration to IndexedDB (preventing LocalStorage QuotaExceededError)
+ * and saves only lightweight primitives to localStorage.
  */
 export async function savePersistentExam(exam) {
   if (!exam) return;
   
-  // 1. Save full object to IndexedDB (handles huge audio/pdf base64 data effortlessly)
+  // 1. Heavy JSON storage (passages, questions, audio metadata) strictly in IndexedDB
   await setIndexedDBItem('master_exam_data', exam);
 
-  // 2. Safe localStorage save (strip heavy base64 audio if over quota)
+  // 2. Clean up legacy heavy exam object from localStorage to free storage quota
   try {
-    localStorage.setItem('ielts_current_exam', JSON.stringify(exam));
+    localStorage.removeItem('ielts_current_exam');
+    
+    // Store ONLY lightweight primitives in localStorage
+    const meta = {
+      id: exam.id,
+      title: exam.title,
+      pin_code: exam.pin_code,
+      duration_mins: exam.duration_mins,
+      current_stage: exam.current_stage,
+      status: exam.status,
+    };
+    localStorage.setItem('ielts_exam_meta', JSON.stringify(meta));
   } catch (err) {
-    console.warn("localStorage quota exceeded, saving lightweight version to localStorage:", err);
-    try {
-      const lightweightExam = {
-        ...exam,
-        listening_audio_parts: {
-          part1: exam.listening_audio_parts?.part1?.startsWith('data:') ? 'PERSISTED_IN_INDEXEDDB' : exam.listening_audio_parts?.part1,
-          part2: exam.listening_audio_parts?.part2?.startsWith('data:') ? 'PERSISTED_IN_INDEXEDDB' : exam.listening_audio_parts?.part2,
-          part3: exam.listening_audio_parts?.part3?.startsWith('data:') ? 'PERSISTED_IN_INDEXEDDB' : exam.listening_audio_parts?.part3,
-          part4: exam.listening_audio_parts?.part4?.startsWith('data:') ? 'PERSISTED_IN_INDEXEDDB' : exam.listening_audio_parts?.part4,
-        }
-      };
-      localStorage.setItem('ielts_current_exam', JSON.stringify(lightweightExam));
-    } catch (e) {
-      console.warn("Could not save to localStorage, relied entirely on IndexedDB:", e);
-    }
+    console.warn("Error updating localStorage exam metadata:", err);
   }
 }
 
@@ -132,34 +192,23 @@ export function isCorruptedExam(exam) {
  * Loads full exam from IndexedDB on startup
  */
 export async function loadPersistentExam() {
+  // Purge any old heavy legacy localStorage entry
+  try {
+    localStorage.removeItem('ielts_current_exam');
+  } catch (e) {}
+
   try {
     const dbData = await getIndexedDBItem('master_exam_data');
     if (dbData) {
       if (isCorruptedExam(dbData)) {
         console.warn("Detected corrupted raw binary PDF data in persistent storage. Purging to prevent corrupt display.");
         await setIndexedDBItem('master_exam_data', null);
-        try { localStorage.removeItem('ielts_current_exam'); } catch (e) {}
         return null;
       }
       return dbData;
     }
   } catch (err) {
     console.warn("Error loading from IndexedDB:", err);
-  }
-
-  // Fallback to localStorage
-  try {
-    const localData = localStorage.getItem('ielts_current_exam');
-    if (localData) {
-      const parsed = JSON.parse(localData);
-      if (isCorruptedExam(parsed)) {
-        try { localStorage.removeItem('ielts_current_exam'); } catch (e) {}
-        return null;
-      }
-      return parsed;
-    }
-  } catch (err) {
-    console.warn("Failed to load from localStorage fallback:", err);
   }
 
   return null;

@@ -559,7 +559,7 @@ export function TeacherGradingWorkspace({
                     <div className="flex items-center gap-2">
                       <h4 className="font-bold text-sm text-slate-900">Gemini AI Writing Examiner</h4>
                       <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-orange-50 text-brand-700 border border-brand-200">
-                        gemini-2.5-flash
+                        gemini-3.6-flash
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5">

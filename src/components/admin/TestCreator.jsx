@@ -22,14 +22,26 @@ import {
   Bot,
   Zap,
   Loader2,
-  CheckCircle
+  CheckCircle,
+  XCircle
 } from 'lucide-react';
 import { Button } from '../common/Button';
-import { Badge } from '../common/Badge';
-import { getSupabaseClient, updateExamAssets, persistExamAndSections } from '../../lib/supabase';
-import { savePersistentExam, setIndexedDBItem } from '../../lib/persistentStorage';
+import { getSupabaseClient, updateExamAssets, persistExamAndSections, isValidUUID, generateUUID } from '../../lib/supabase';
+import { 
+  savePersistentExam, 
+  setIndexedDBItem, 
+  deleteFromIndexedDB, 
+  purgeAllExamData 
+} from '../../lib/persistentStorage';
 import { DEFAULT_IELTS_EXAM } from '../../lib/mockData';
-import { apiParseExamPdf } from '../../lib/ai/gemini-client';
+import { apiParseExamPdf, apiParseExamSection } from '../../lib/ai/gemini-client';
+
+const isRateLimitError = (err) => {
+  if (!err) return false;
+  const status = err.status || err.statusCode || err.response?.status;
+  const msg = String(err.message || err.error || '').toLowerCase();
+  return status === 429 || msg.includes('429') || msg.includes('quota') || msg.includes('resource_exhausted');
+};
 
 export function TestCreator({ exam, onUpdateExam }) {
   // Global Exam Settings
@@ -46,11 +58,17 @@ export function TestCreator({ exam, onUpdateExam }) {
   // =========================================================================
   const [aiParsingState, setAiParsingState] = useState({
     isOpen: false,
-    step: '', // 'listening' | 'reading' | 'writing' | 'syncing' | 'completed'
+    step: '', // 'reading' | 'reading_delay' | 'listening' | 'listening_delay' | 'writing' | 'syncing' | 'completed'
     readingDone: false,
+    readingFailed: false,
     listeningDone: false,
+    listeningFailed: false,
     writingDone: false,
+    writingFailed: false,
     syncDone: false,
+    syncFailed: false,
+    cooldownNotice: null,
+    delaySecondsRemaining: 0,
     error: null,
   });
 
@@ -61,35 +79,36 @@ export function TestCreator({ exam, onUpdateExam }) {
     part1: {
       partId: 1,
       title: 'Part 1: Social Dialogue',
-      name: exam.listening_audio_names?.part1 || exam.listening?.parts?.[0]?.audio_name || 'IELTS_Listening_Part1.mp3',
+      name: (exam.listening_audio_parts?.part1 || exam.listening?.parts?.[0]?.audio_url) ? (exam.listening_audio_names?.part1 || exam.listening?.parts?.[0]?.audio_name || 'IELTS_Listening_Part1.mp3') : '',
       url: exam.listening_audio_parts?.part1 || exam.listening?.parts?.[0]?.audio_url || '',
       duration: exam.listening_audio_durations?.part1 || exam.listening?.parts?.[0]?.duration || '06:45',
     },
     part2: {
       partId: 2,
       title: 'Part 2: Community Recreation Guide',
-      name: exam.listening_audio_names?.part2 || exam.listening?.parts?.[1]?.audio_name || 'IELTS_Listening_Part2.mp3',
+      name: (exam.listening_audio_parts?.part2 || exam.listening?.parts?.[1]?.audio_url) ? (exam.listening_audio_names?.part2 || exam.listening?.parts?.[1]?.audio_name || 'IELTS_Listening_Part2.mp3') : '',
       url: exam.listening_audio_parts?.part2 || exam.listening?.parts?.[1]?.audio_url || '',
       duration: exam.listening_audio_durations?.part2 || exam.listening?.parts?.[1]?.duration || '07:15',
     },
     part3: {
       partId: 3,
       title: 'Part 3: Academic Tutorial',
-      name: exam.listening_audio_names?.part3 || exam.listening?.parts?.[2]?.audio_name || 'IELTS_Listening_Part3.mp3',
+      name: (exam.listening_audio_parts?.part3 || exam.listening?.parts?.[2]?.audio_url) ? (exam.listening_audio_names?.part3 || exam.listening?.parts?.[2]?.audio_name || 'IELTS_Listening_Part3.mp3') : '',
       url: exam.listening_audio_parts?.part3 || exam.listening?.parts?.[2]?.audio_url || '',
       duration: exam.listening_audio_durations?.part3 || exam.listening?.parts?.[2]?.duration || '07:50',
     },
     part4: {
       partId: 4,
       title: 'Part 4: University Lecture',
-      name: exam.listening_audio_names?.part4 || exam.listening?.parts?.[3]?.audio_name || 'IELTS_Listening_Part4.mp3',
+      name: (exam.listening_audio_parts?.part4 || exam.listening?.parts?.[3]?.audio_url) ? (exam.listening_audio_names?.part4 || exam.listening?.parts?.[3]?.audio_name || 'IELTS_Listening_Part4.mp3') : '',
       url: exam.listening_audio_parts?.part4 || exam.listening?.parts?.[3]?.audio_url || '',
       duration: exam.listening_audio_durations?.part4 || exam.listening?.parts?.[3]?.duration || '08:30',
     },
   });
 
+  const hasListeningPdf = Boolean(exam.listening_pdf_url || exam.listening?.pdf_url);
   const [listeningPdf, setListeningPdf] = useState({
-    name: exam.listening_pdf_name || exam.listening?.pdf_name || 'IELTS_Listening_Booklet.pdf',
+    name: hasListeningPdf ? (exam.listening_pdf_name || exam.listening?.pdf_name || 'IELTS_Listening_Booklet.pdf') : '',
     url: exam.listening_pdf_url || exam.listening?.pdf_url || '',
     file: null,
   });
@@ -105,8 +124,9 @@ export function TestCreator({ exam, onUpdateExam }) {
   // =========================================================================
   // 2. READING SECTION (1 CONSOLIDATED PDF DROPZONE)
   // =========================================================================
+  const hasReadingPdf = Boolean(exam.reading_pdf_url || exam.reading?.pdf_url || exam.reading_parts?.part1?.passage_pdf_url);
   const [readingPdf, setReadingPdf] = useState({
-    name: exam.reading_pdf_name || exam.reading?.pdf_name || exam.reading_parts?.part1?.passage_pdf_name || 'IELTS_Academic_Reading_Full_Booklet.pdf',
+    name: hasReadingPdf ? (exam.reading_pdf_name || exam.reading?.pdf_name || exam.reading_parts?.part1?.passage_pdf_name || 'IELTS_Academic_Reading_Full_Booklet.pdf') : '',
     url: exam.reading_pdf_url || exam.reading?.pdf_url || exam.reading_parts?.part1?.passage_pdf_url || '',
     file: null,
   });
@@ -115,8 +135,9 @@ export function TestCreator({ exam, onUpdateExam }) {
   // =========================================================================
   // 3. WRITING SECTION (1 CONSOLIDATED PDF DROPZONE)
   // =========================================================================
+  const hasWritingPdf = Boolean(exam.writing_pdf_url || exam.writing?.pdf_url || exam.writing_tasks?.task1?.pdf_url);
   const [writingPdf, setWritingPdf] = useState({
-    name: exam.writing_pdf_name || exam.writing?.pdf_name || exam.writing_tasks?.task1?.pdf_name || 'IELTS_Academic_Writing_Tasks_Booklet.pdf',
+    name: hasWritingPdf ? (exam.writing_pdf_name || exam.writing?.pdf_name || exam.writing_tasks?.task1?.pdf_name || 'IELTS_Academic_Writing_Tasks_Booklet.pdf') : '',
     url: exam.writing_pdf_url || exam.writing?.pdf_url || exam.writing_tasks?.task1?.pdf_url || '',
     file: null,
   });
@@ -160,19 +181,27 @@ export function TestCreator({ exam, onUpdateExam }) {
     if (typeof file === 'string') return file;
 
     const supabase = getSupabaseClient();
-    if (supabase) {
+    // Only attempt Supabase storage upload if bucket hasn't previously been detected as missing
+    if (supabase && (typeof window === 'undefined' || window.__supabase_bucket_available !== false)) {
       try {
-        const fileExt = file.name.split('.').pop();
+        const fileExt = file.name ? file.name.split('.').pop() : 'bin';
         const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${fileExt}`;
         const { data, error } = await supabase.storage.from(bucketName).upload(fileName, file);
 
-        if (!error && data?.path) {
+        if (error) {
+          const errMsg = error.message || '';
+          if (errMsg.includes('Bucket not found') || error.statusCode === '404' || error.status === 400 || error.error === 'Bucket not found') {
+            if (typeof window !== 'undefined') window.__supabase_bucket_available = false;
+            console.info(`[Storage] Supabase bucket '${bucketName}' not found. Falling back gracefully to persistent DataURL.`);
+          }
+        } else if (data?.path) {
           const { data: publicUrlData } = supabase.storage.from(bucketName).getPublicUrl(data.path);
           if (publicUrlData?.publicUrl) {
             return publicUrlData.publicUrl;
           }
         }
       } catch (err) {
+        if (typeof window !== 'undefined') window.__supabase_bucket_available = false;
         console.warn("Supabase storage upload fallback to persistent DataURL:", err);
       }
     }
@@ -212,7 +241,7 @@ export function TestCreator({ exam, onUpdateExam }) {
     }
   };
 
-  const handleRemoveListeningAudio = (partKey) => {
+  const handleRemoveListeningAudio = async (partKey) => {
     setListeningAudios(prev => ({
       ...prev,
       [partKey]: {
@@ -224,6 +253,40 @@ export function TestCreator({ exam, onUpdateExam }) {
     }));
     if (listeningAudioFileRefs[partKey]?.current) {
       listeningAudioFileRefs[partKey].current.value = '';
+    }
+
+    try {
+      await deleteFromIndexedDB(`listening_audio_${partKey}`);
+      try { localStorage.removeItem(`ielts_listening_audio_${partKey}`); } catch (e) {}
+
+      const updatedListeningParts = exam.listening?.parts?.map(p => {
+        const pKey = `part${p.partId}`;
+        if (pKey === partKey) {
+          return { ...p, audio_url: '', audio_name: '' };
+        }
+        return p;
+      }) || [];
+
+      const updatedExam = {
+        ...exam,
+        listening_audio_parts: {
+          ...(exam.listening_audio_parts || {}),
+          [partKey]: '',
+        },
+        listening_audio_names: {
+          ...(exam.listening_audio_names || {}),
+          [partKey]: '',
+        },
+        listening: {
+          ...(exam.listening || {}),
+          parts: updatedListeningParts,
+        },
+      };
+
+      await savePersistentExam(updatedExam);
+      if (onUpdateExam) onUpdateExam(updatedExam);
+    } catch (err) {
+      console.warn("Failed to update persistent storage on audio remove:", err);
     }
   };
 
@@ -249,7 +312,7 @@ export function TestCreator({ exam, onUpdateExam }) {
     }
   };
 
-  const handleRemoveListeningPdf = () => {
+  const handleRemoveListeningPdf = async () => {
     setListeningPdf({
       name: '',
       url: '',
@@ -257,6 +320,27 @@ export function TestCreator({ exam, onUpdateExam }) {
     });
     if (listeningPdfRef.current) {
       listeningPdfRef.current.value = '';
+    }
+
+    try {
+      await deleteFromIndexedDB('listening_pdf');
+      try { localStorage.removeItem('ielts_listening_pdf'); } catch (e) {}
+
+      const updatedExam = {
+        ...exam,
+        listening_pdf_url: '',
+        listening_pdf_name: '',
+        listening: {
+          ...(exam.listening || {}),
+          pdf_url: '',
+          pdf_name: '',
+        },
+      };
+
+      await savePersistentExam(updatedExam);
+      if (onUpdateExam) onUpdateExam(updatedExam);
+    } catch (err) {
+      console.warn("Failed to update persistent storage on listening PDF remove:", err);
     }
   };
 
@@ -282,7 +366,7 @@ export function TestCreator({ exam, onUpdateExam }) {
     }
   };
 
-  const handleRemoveReadingPdf = () => {
+  const handleRemoveReadingPdf = async () => {
     setReadingPdf({
       name: '',
       url: '',
@@ -290,6 +374,33 @@ export function TestCreator({ exam, onUpdateExam }) {
     });
     if (readingPdfRef.current) {
       readingPdfRef.current.value = '';
+    }
+
+    try {
+      await deleteFromIndexedDB('reading_pdf');
+      try { localStorage.removeItem('ielts_reading_pdf'); } catch (e) {}
+
+      const updatedExam = {
+        ...exam,
+        reading_pdf_url: '',
+        reading_pdf_name: '',
+        reading: {
+          ...(exam.reading || {}),
+          pdf_url: '',
+          pdf_name: '',
+        },
+        reading_parts: {
+          ...(exam.reading_parts || {}),
+          part1: { ...(exam.reading_parts?.part1 || {}), passage_pdf_url: '', passage_pdf_name: '', pdf_url: '', pdf_name: '' },
+          part2: { ...(exam.reading_parts?.part2 || {}), passage_pdf_url: '', passage_pdf_name: '', pdf_url: '', pdf_name: '' },
+          part3: { ...(exam.reading_parts?.part3 || {}), passage_pdf_url: '', passage_pdf_name: '', pdf_url: '', pdf_name: '' },
+        },
+      };
+
+      await savePersistentExam(updatedExam);
+      if (onUpdateExam) onUpdateExam(updatedExam);
+    } catch (err) {
+      console.warn("Failed to update persistent storage on reading PDF remove:", err);
     }
   };
 
@@ -315,7 +426,7 @@ export function TestCreator({ exam, onUpdateExam }) {
     }
   };
 
-  const handleRemoveWritingPdf = () => {
+  const handleRemoveWritingPdf = async () => {
     setWritingPdf({
       name: '',
       url: '',
@@ -323,6 +434,32 @@ export function TestCreator({ exam, onUpdateExam }) {
     });
     if (writingPdfRef.current) {
       writingPdfRef.current.value = '';
+    }
+
+    try {
+      await deleteFromIndexedDB('writing_pdf');
+      try { localStorage.removeItem('ielts_writing_pdf'); } catch (e) {}
+
+      const updatedExam = {
+        ...exam,
+        writing_pdf_url: '',
+        writing_pdf_name: '',
+        writing: {
+          ...(exam.writing || {}),
+          pdf_url: '',
+          pdf_name: '',
+        },
+        writing_tasks: {
+          ...(exam.writing_tasks || {}),
+          task1: { ...(exam.writing_tasks?.task1 || {}), pdf_url: '', pdf_name: '' },
+          task2: { ...(exam.writing_tasks?.task2 || {}), pdf_url: '', pdf_name: '' },
+        },
+      };
+
+      await savePersistentExam(updatedExam);
+      if (onUpdateExam) onUpdateExam(updatedExam);
+    } catch (err) {
+      console.warn("Failed to update persistent storage on writing PDF remove:", err);
     }
   };
 
@@ -339,13 +476,50 @@ export function TestCreator({ exam, onUpdateExam }) {
     setIsSaving(true);
     setAiParsingState({
       isOpen: true,
-      step: 'reading',
+      step: '',
       readingDone: false,
+      readingFailed: false,
       listeningDone: false,
+      listeningFailed: false,
       writingDone: false,
+      writingFailed: false,
       syncDone: false,
+      syncFailed: false,
+      cooldownNotice: null,
+      delaySecondsRemaining: 0,
       error: null,
     });
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const executeSectionWithRetry = async (sectionType, fileObj) => {
+      let attempt = 0;
+      while (true) {
+        try {
+          return await apiParseExamSection({
+            sectionType,
+            file: fileObj.file,
+            fileName: fileObj.name,
+          });
+        } catch (err) {
+          const isRateLimit = isRateLimitError(err);
+
+          if (isRateLimit && attempt < 3) {
+            attempt++;
+            for (let s = 60; s > 0; s--) {
+              setAiParsingState((prev) => ({
+                ...prev,
+                cooldownNotice: `Gemini free-tier quota reached. Cooldown active: waiting ${s}s (attempt ${attempt}/3)...`,
+              }));
+              await sleep(1000);
+            }
+            setAiParsingState((prev) => ({ ...prev, cooldownNotice: null }));
+            continue;
+          }
+          throw err;
+        }
+      }
+    };
 
     try {
       let readingParsed = null;
@@ -354,54 +528,77 @@ export function TestCreator({ exam, onUpdateExam }) {
       let extractedTask1Prompt = exam.task_1_prompt || exam.writing_tasks?.task1?.prompt || '';
       let extractedTask2Prompt = exam.task_2_prompt || exam.writing_tasks?.task2?.prompt || '';
 
-      const hasPdfToParse = Boolean(readingPdf.file || listeningPdf.file || writingPdf.file);
-
-      if (hasPdfToParse) {
-        setAiParsingState(prev => ({ ...prev, step: 'reading' }));
-
-        const parsedBundle = await apiParseExamPdf({
-          readingPdf: readingPdf.file ? { file: readingPdf.file, name: readingPdf.name } : null,
-          listeningPdf: listeningPdf.file ? { file: listeningPdf.file, name: listeningPdf.name } : null,
-          writingPdf: writingPdf.file ? { file: writingPdf.file, name: writingPdf.name } : null,
-          audioTracks: {
-            part1: listeningAudios.part1.url,
-            part2: listeningAudios.part2.url,
-            part3: listeningAudios.part3.url,
-            part4: listeningAudios.part4.url,
-          },
-          examId: exam.id,
-          pinCode,
-          title,
-          durationMins: Number(duration),
-        });
-
-        if (parsedBundle?.reading) {
-          readingParsed = parsedBundle.reading;
-          setAiParsingState(prev => ({ ...prev, readingDone: true }));
-        }
-        if (parsedBundle?.listening) {
-          listeningParsed = parsedBundle.listening;
-          setAiParsingState(prev => ({ ...prev, listeningDone: true }));
-        }
-        if (parsedBundle?.writing) {
-          writingParsed = parsedBundle.writing;
-          setAiParsingState(prev => ({ ...prev, writingDone: true }));
+      // 1. Sequential Step: Reading PDF
+      if (readingPdf.file) {
+        setAiParsingState((prev) => ({ ...prev, step: 'reading', readingFailed: false }));
+        try {
+          readingParsed = await executeSectionWithRetry('reading', readingPdf);
+          setAiParsingState((prev) => ({ ...prev, readingDone: true }));
+        } catch (err) {
+          setAiParsingState((prev) => ({ ...prev, readingFailed: true }));
+          throw new Error(`Reading parsing failed: ${err.message}`);
         }
 
-        if (parsedBundle?.task_1_prompt || writingParsed?.task_1_prompt) {
-          extractedTask1Prompt = parsedBundle?.task_1_prompt || writingParsed?.task_1_prompt;
+        // 4-second delay if other sections follow
+        if (listeningPdf.file || writingPdf.file) {
+          setAiParsingState((prev) => ({ ...prev, step: 'reading_delay' }));
+          for (let d = 4; d > 0; d--) {
+            setAiParsingState((prev) => ({ ...prev, delaySecondsRemaining: d }));
+            await sleep(1000);
+          }
+          setAiParsingState((prev) => ({ ...prev, delaySecondsRemaining: 0 }));
         }
-        if (parsedBundle?.task_2_prompt || writingParsed?.task_2_prompt) {
-          extractedTask2Prompt = parsedBundle?.task_2_prompt || writingParsed?.task_2_prompt;
-        }
+      } else {
+        setAiParsingState((prev) => ({ ...prev, readingDone: true }));
       }
 
-      setAiParsingState(prev => ({ 
-        ...prev, 
-        readingDone: true, 
-        listeningDone: true, 
-        writingDone: true, 
-        step: 'syncing' 
+      // 2. Sequential Step: Listening PDF
+      if (listeningPdf.file) {
+        setAiParsingState((prev) => ({ ...prev, step: 'listening', listeningFailed: false }));
+        try {
+          listeningParsed = await executeSectionWithRetry('listening', listeningPdf);
+          setAiParsingState((prev) => ({ ...prev, listeningDone: true }));
+        } catch (err) {
+          setAiParsingState((prev) => ({ ...prev, listeningFailed: true }));
+          throw new Error(`Listening parsing failed: ${err.message}`);
+        }
+
+        // 4-second delay if Writing follows
+        if (writingPdf.file) {
+          setAiParsingState((prev) => ({ ...prev, step: 'listening_delay' }));
+          for (let d = 4; d > 0; d--) {
+            setAiParsingState((prev) => ({ ...prev, delaySecondsRemaining: d }));
+            await sleep(1000);
+          }
+          setAiParsingState((prev) => ({ ...prev, delaySecondsRemaining: 0 }));
+        }
+      } else {
+        setAiParsingState((prev) => ({ ...prev, listeningDone: true }));
+      }
+
+      // 3. Sequential Step: Writing PDF
+      if (writingPdf.file) {
+        setAiParsingState((prev) => ({ ...prev, step: 'writing', writingFailed: false }));
+        try {
+          writingParsed = await executeSectionWithRetry('writing', writingPdf);
+          setAiParsingState((prev) => ({ ...prev, writingDone: true }));
+        } catch (err) {
+          setAiParsingState((prev) => ({ ...prev, writingFailed: true }));
+          throw new Error(`Writing parsing failed: ${err.message}`);
+        }
+      } else {
+        setAiParsingState((prev) => ({ ...prev, writingDone: true }));
+      }
+
+      if (writingParsed?.task_1_prompt) extractedTask1Prompt = writingParsed.task_1_prompt;
+      if (writingParsed?.task_2_prompt) extractedTask2Prompt = writingParsed.task_2_prompt;
+
+      setAiParsingState((prev) => ({
+        ...prev,
+        readingDone: true,
+        listeningDone: true,
+        writingDone: true,
+        step: 'syncing',
       }));
 
       // Build structured Reading parts and passages (preserve existing if no new reading file parsed)
@@ -482,6 +679,9 @@ export function TestCreator({ exam, onUpdateExam }) {
           prompt: extractedTask1Prompt || writingParsed.tasks?.task1?.prompt || 'Please refer to the attached Task 1 PDF booklet for the prompt instructions and data visualization.',
           page_content_html: writingParsed.sections?.[0]?.page_content_html || writingParsed.tasks?.task1?.page_content_html || '',
           visual_description: writingParsed.tasks?.task1?.visual_description || '',
+          page_index: typeof writingParsed.tasks?.task1?.page_index === 'number' 
+            ? writingParsed.tasks.task1.page_index 
+            : (typeof writingParsed.sections?.[0]?.page_index === 'number' ? writingParsed.sections[0].page_index : 0),
           pdf_name: writingPdf.name,
           pdf_url: writingPdf.url,
         },
@@ -491,6 +691,9 @@ export function TestCreator({ exam, onUpdateExam }) {
           min_words: writingParsed.tasks?.task2?.min_words || 250,
           prompt: extractedTask2Prompt || writingParsed.tasks?.task2?.prompt || 'Please refer to the attached Task 2 PDF booklet for the prompt instructions and essay topic.',
           page_content_html: writingParsed.sections?.[1]?.page_content_html || writingParsed.tasks?.task2?.page_content_html || '',
+          page_index: typeof writingParsed.tasks?.task2?.page_index === 'number' 
+            ? writingParsed.tasks.task2.page_index 
+            : (typeof writingParsed.sections?.[1]?.page_index === 'number' ? writingParsed.sections[1].page_index : 1),
           pdf_name: writingPdf.name,
           pdf_url: writingPdf.url,
         },
@@ -555,9 +758,14 @@ export function TestCreator({ exam, onUpdateExam }) {
 
       const listeningQuestions = listeningParsed?.questions || exam.listening_questions || exam.listening?.questions || [];
 
+      const targetExamId = isValidUUID(exam?.id) 
+        ? exam.id 
+        : (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : generateUUID());
+
       // Consolidated Exam object with dynamic task prompts and visual sections
       const updatedExam = {
         ...exam,
+        id: targetExamId,
         title,
         pin_code: pinCode,
         duration_mins: Number(duration),
@@ -612,7 +820,7 @@ export function TestCreator({ exam, onUpdateExam }) {
 
       // 3. Persist to Supabase exams and exam_sections tables
       try {
-        await persistExamAndSections(exam.id, {
+        await persistExamAndSections(targetExamId, {
           title,
           pin_code: pinCode,
           duration_mins: Number(duration),
@@ -646,7 +854,7 @@ export function TestCreator({ exam, onUpdateExam }) {
           },
         });
 
-        await updateExamAssets(exam.id, {
+        await updateExamAssets(targetExamId, {
           title,
           pin_code: pinCode,
           duration_mins: Number(duration),
@@ -692,8 +900,16 @@ export function TestCreator({ exam, onUpdateExam }) {
     if (!window.confirm("Вы уверены, что хотите сбросить тест к стандартному исходному тесту? Все загруженные файлы будут сброшены.")) {
       return;
     }
-    await setIndexedDBItem('master_exam_data', null);
-    try { localStorage.removeItem('ielts_current_exam'); } catch (e) {}
+    await purgeAllExamData();
+    setListeningPdf({ name: '', url: '', file: null });
+    setReadingPdf({ name: '', url: '', file: null });
+    setWritingPdf({ name: '', url: '', file: null });
+    setListeningAudios({
+      part1: { partId: 1, title: 'Part 1: Social Dialogue', name: '', url: '', duration: '06:45' },
+      part2: { partId: 2, title: 'Part 2: Community Recreation Guide', name: '', url: '', duration: '07:15' },
+      part3: { partId: 3, title: 'Part 3: Academic Tutorial', name: '', url: '', duration: '07:50' },
+      part4: { partId: 4, title: 'Part 4: University Lecture', name: '', url: '', duration: '08:30' },
+    });
     onUpdateExam(DEFAULT_IELTS_EXAM);
     window.location.reload();
   };
@@ -1296,18 +1512,28 @@ export function TestCreator({ exam, onUpdateExam }) {
               {/* Step 1: Reading */}
               <div className="flex items-center justify-between text-xs font-semibold">
                 <div className="flex items-center gap-2.5">
-                  <span className="w-6 h-6 rounded-lg bg-orange-100 text-brand-600 flex items-center justify-center">
+                  <span className={`w-6 h-6 rounded-lg flex items-center justify-center ${
+                    aiParsingState.readingFailed ? 'bg-rose-100 text-rose-600' : 'bg-orange-100 text-brand-600'
+                  }`}>
                     <BookOpen className="w-3.5 h-3.5" />
                   </span>
                   <span>Reading Section (3 Passages + 40 Qs)</span>
                 </div>
-                {aiParsingState.readingDone ? (
+                {aiParsingState.readingFailed ? (
+                  <span className="text-rose-600 font-bold flex items-center gap-1 text-[11px]">
+                    <XCircle className="w-3.5 h-3.5" /> Failed
+                  </span>
+                ) : aiParsingState.readingDone ? (
                   <span className="text-emerald-600 font-bold flex items-center gap-1 text-[11px]">
                     <CheckCircle className="w-3.5 h-3.5" /> Done
                   </span>
                 ) : aiParsingState.step === 'reading' ? (
                   <span className="text-brand-600 font-bold flex items-center gap-1 text-[11px]">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" /> Extracting...
+                  </span>
+                ) : aiParsingState.step === 'reading_delay' ? (
+                  <span className="text-amber-600 font-bold flex items-center gap-1 text-[11px]">
+                    <Clock className="w-3.5 h-3.5 animate-pulse" /> Pause {aiParsingState.delaySecondsRemaining}s
                   </span>
                 ) : (
                   <span className="text-slate-400 text-[11px]">Waiting</span>
@@ -1317,18 +1543,28 @@ export function TestCreator({ exam, onUpdateExam }) {
               {/* Step 2: Listening */}
               <div className="flex items-center justify-between text-xs font-semibold">
                 <div className="flex items-center gap-2.5">
-                  <span className="w-6 h-6 rounded-lg bg-sky-100 text-sky-600 flex items-center justify-center">
+                  <span className={`w-6 h-6 rounded-lg flex items-center justify-center ${
+                    aiParsingState.listeningFailed ? 'bg-rose-100 text-rose-600' : 'bg-sky-100 text-sky-600'
+                  }`}>
                     <Headphones className="w-3.5 h-3.5" />
                   </span>
                   <span>Listening Section (Booklet & 4 Audios)</span>
                 </div>
-                {aiParsingState.listeningDone ? (
+                {aiParsingState.listeningFailed ? (
+                  <span className="text-rose-600 font-bold flex items-center gap-1 text-[11px]">
+                    <XCircle className="w-3.5 h-3.5" /> Failed
+                  </span>
+                ) : aiParsingState.listeningDone ? (
                   <span className="text-emerald-600 font-bold flex items-center gap-1 text-[11px]">
                     <CheckCircle className="w-3.5 h-3.5" /> Done
                   </span>
                 ) : aiParsingState.step === 'listening' ? (
                   <span className="text-brand-600 font-bold flex items-center gap-1 text-[11px]">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" /> Extracting...
+                  </span>
+                ) : aiParsingState.step === 'listening_delay' ? (
+                  <span className="text-amber-600 font-bold flex items-center gap-1 text-[11px]">
+                    <Clock className="w-3.5 h-3.5 animate-pulse" /> Pause {aiParsingState.delaySecondsRemaining}s
                   </span>
                 ) : (
                   <span className="text-slate-400 text-[11px]">Waiting</span>
@@ -1338,12 +1574,18 @@ export function TestCreator({ exam, onUpdateExam }) {
               {/* Step 3: Writing */}
               <div className="flex items-center justify-between text-xs font-semibold">
                 <div className="flex items-center gap-2.5">
-                  <span className="w-6 h-6 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center">
+                  <span className={`w-6 h-6 rounded-lg flex items-center justify-center ${
+                    aiParsingState.writingFailed ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'
+                  }`}>
                     <PenTool className="w-3.5 h-3.5" />
                   </span>
                   <span>Writing Section (Task 1 & Task 2)</span>
                 </div>
-                {aiParsingState.writingDone ? (
+                {aiParsingState.writingFailed ? (
+                  <span className="text-rose-600 font-bold flex items-center gap-1 text-[11px]">
+                    <XCircle className="w-3.5 h-3.5" /> Failed
+                  </span>
+                ) : aiParsingState.writingDone ? (
                   <span className="text-emerald-600 font-bold flex items-center gap-1 text-[11px]">
                     <CheckCircle className="w-3.5 h-3.5" /> Done
                   </span>
@@ -1379,15 +1621,23 @@ export function TestCreator({ exam, onUpdateExam }) {
 
             </div>
 
+            {/* Quota Cooldown Notice */}
+            {aiParsingState.cooldownNotice && (
+              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-center gap-2.5 animate-pulse">
+                <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                <span className="flex-1 font-semibold">{aiParsingState.cooldownNotice}</span>
+              </div>
+            )}
+
             {/* Error Notice if any */}
             {aiParsingState.error && (
               <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
-                <span className="flex-1">{aiParsingState.error}</span>
+                <span className="flex-1 font-medium">{aiParsingState.error}</span>
                 <button
                   type="button"
-                  onClick={() => setAiParsingState(prev => ({ ...prev, isOpen: false }))}
-                  className="font-bold underline text-[11px]"
+                  onClick={() => setAiParsingState(prev => ({ ...prev, isOpen: false, error: null }))}
+                  className="font-bold underline text-[11px] hover:text-rose-900"
                 >
                   Dismiss
                 </button>

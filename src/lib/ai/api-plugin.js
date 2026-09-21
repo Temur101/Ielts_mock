@@ -6,12 +6,18 @@
 
 import fs from 'fs';
 import path from 'path';
-import { parseExamPdf, parseThreePartExamPdf, gradeWritingSubmission } from './gemini-service.js';
+import { 
+  parseExamPdf, 
+  parseThreePartExamPdf, 
+  gradeWritingSubmission,
+  parseReadingPdf,
+  parseListeningPdf,
+  parseWritingPdf,
+} from './gemini-service.js';
 import { persistExamAndSections } from '../supabase.js';
 
 // Auto-load .env into process.env if not already present
 function ensureEnvLoaded() {
-  if (process.env.GEMINI_API_KEY && process.env.NEXT_PUBLIC_SUPABASE_URL) return;
   try {
     const envPaths = [
       path.resolve(process.cwd(), '.env'),
@@ -27,9 +33,7 @@ function ensureEnvLoaded() {
           if (eqIdx !== -1) {
             const key = trimmed.slice(0, eqIdx).trim();
             const val = trimmed.slice(eqIdx + 1).trim();
-            if (!process.env[key]) {
-              process.env[key] = val;
-            }
+            process.env[key] = val;
           }
         }
       }
@@ -264,8 +268,82 @@ export function ieltsGeminiApiPlugin() {
             return;
           } catch (err) {
             console.error('[API /api/exams/parse-pdf error]:', err);
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message || 'Failed to parse PDF' }));
+            const bothFailed = (err.message || '').includes('[Gemini Resiliency]') || (err.message || '').includes('Both primary');
+            const isRateLimit = !bothFailed && ((err.message || '').includes('429') || (err.message || '').includes('quota') || (err.message || '').includes('RESOURCE_EXHAUSTED'));
+            res.writeHead(isRateLimit ? 429 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message || 'Failed to parse PDF', isRateLimit }));
+            return;
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // 1.5. POST /api/exams/parse-section (Single Section Sequential Pipeline)
+        // -------------------------------------------------------------------
+        if (req.method === 'POST' && url === '/api/exams/parse-section') {
+          try {
+            ensureEnvLoaded();
+            const chunks = [];
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+            const buffer = Buffer.concat(chunks);
+            const contentType = req.headers['content-type'] || '';
+
+            let sectionType = 'reading';
+            let fileBuffer = null;
+            let fileName = 'section.pdf';
+
+            if (contentType.includes('multipart/form-data')) {
+              const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+              const boundary = boundaryMatch ? (boundaryMatch[1] || boundaryMatch[2]) : null;
+              if (boundary) {
+                const parts = parseMultipartFormData(buffer, boundary);
+                for (const p of parts) {
+                  if (p.name === 'sectionType' || p.name === 'section_type') {
+                    sectionType = p.data.toString('utf-8').trim().toLowerCase();
+                  } else if (p.name === 'file' || p.name === 'pdf' || p.filename) {
+                    fileBuffer = p.data;
+                    if (p.filename) fileName = p.filename;
+                  }
+                }
+              }
+            } else if (contentType.includes('application/json')) {
+              const jsonBody = JSON.parse(buffer.toString('utf-8') || '{}');
+              sectionType = (jsonBody.sectionType || jsonBody.section_type || 'reading').toLowerCase();
+              if (jsonBody.fileBase64) {
+                fileBuffer = Buffer.from(jsonBody.fileBase64, 'base64');
+              }
+              if (jsonBody.fileName) fileName = jsonBody.fileName;
+            }
+
+            if (!fileBuffer) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Missing PDF file buffer in request' }));
+              return;
+            }
+
+            console.log(`[API /api/exams/parse-section] Parsing section '${sectionType}' for file '${fileName}'...`);
+            let sectionResult = null;
+            if (sectionType === 'listening') {
+              sectionResult = await parseListeningPdf({ fileBuffer, fileName });
+            } else if (sectionType === 'writing') {
+              sectionResult = await parseWritingPdf({ fileBuffer, fileName });
+            } else {
+              sectionResult = await parseReadingPdf({ fileBuffer, fileName });
+            }
+
+            res.writeHead(200, {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*',
+            });
+            res.end(JSON.stringify({ sectionType, data: sectionResult }));
+            return;
+          } catch (err) {
+            console.error('[API /api/exams/parse-section error]:', err);
+            const bothFailed = (err.message || '').includes('[Gemini Resiliency]') || (err.message || '').includes('Both primary');
+            const isRateLimit = !bothFailed && ((err.message || '').includes('429') || (err.message || '').includes('quota') || (err.message || '').includes('RESOURCE_EXHAUSTED'));
+            res.writeHead(isRateLimit ? 429 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message || 'Failed to parse section', isRateLimit }));
             return;
           }
         }

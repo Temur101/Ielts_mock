@@ -84,6 +84,39 @@ CREATE TABLE IF NOT EXISTS public.exam_sections (
 );
 
 -- =========================================================================
+-- 2C. IDEMPOTENT COLUMN MIGRATIONS (UPGRADE EXISTING EXAMS TABLE)
+-- =========================================================================
+-- Ensures existing Supabase instances gain all modern columns without data loss
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS duration_mins INTEGER DEFAULT 60;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS reading_duration_mins INTEGER DEFAULT 60;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_duration_mins INTEGER DEFAULT 60;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_duration_mins INTEGER DEFAULT 35;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS stage_started_at TIMESTAMPTZ NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS current_stage VARCHAR(64) DEFAULT 'listening_lobby';
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS parsed_questions JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS answer_keys JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS total_questions INTEGER DEFAULT 40;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS reading_pdf_name VARCHAR(255) NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS reading_parts JSONB DEFAULT '{"part1": {}, "part2": {}, "part3": {}}'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS reading_passages JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS reading_questions JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_pdf_url TEXT NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_pdf_name VARCHAR(255) NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_audio_settings JSONB DEFAULT '{"lock_scrubbing": true, "lock_rewind": true, "single_play_enforcement": true}'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_parts JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_parts_data JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_questions JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_pdf_name VARCHAR(255) NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_tasks JSONB DEFAULT '{"task1": {}, "task2": {}}'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_task1 JSONB DEFAULT '{"min_words": 150, "recommended_mins": 20, "prompt": ""}'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_task2 JSONB DEFAULT '{"min_words": 250, "recommended_mins": 40, "prompt": ""}'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS task_1_prompt TEXT NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS task_2_prompt TEXT NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS anti_cheat_strictness VARCHAR(32) DEFAULT 'strict';
+
+-- =========================================================================
 -- 3. STUDENTS TABLE
 -- =========================================================================
 CREATE TABLE IF NOT EXISTS public.students (
@@ -137,6 +170,34 @@ CREATE TABLE IF NOT EXISTS public.students (
 
     CONSTRAINT uq_students_exam_candidate UNIQUE (exam_id, candidate_no)
 );
+
+-- =========================================================================
+-- 3B. IDEMPOTENT COLUMN MIGRATIONS (UPGRADE EXISTING STUDENTS TABLE)
+-- =========================================================================
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS student_name TEXT NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS name VARCHAR(255) NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS candidate_no VARCHAR(64) DEFAULT 'CAND-001';
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS is_disqualified BOOLEAN DEFAULT FALSE;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS disqualification_reason TEXT NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS warning_count INTEGER DEFAULT 0;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS current_stage VARCHAR(64) DEFAULT 'listening_lobby';
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS reading_status VARCHAR(32) DEFAULT 'waiting';
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS writing_status VARCHAR(32) DEFAULT 'waiting';
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS listening_status VARCHAR(32) DEFAULT 'waiting';
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS answers JSONB DEFAULT '{"reading": {}, "listening": {}, "writing": {}}'::jsonb;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS answered_count INTEGER DEFAULT 0;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS scores JSONB DEFAULT '{"reading_score": 0, "listening_score": 0, "writing_score": 0, "overall_band": null}'::jsonb;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS reading_band NUMERIC(3,1) NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS listening_band NUMERIC(3,1) NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS writing_task1_essay TEXT NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS writing_task2_essay TEXT NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS writing_task1_band NUMERIC(3,1) NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS writing_task2_band NUMERIC(3,1) NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS writing_band NUMERIC(3,1) NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS overall_band NUMERIC(3,1) NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS writing_ai_evaluation JSONB NULL;
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 
 -- =========================================================================
 -- 4. REALTIME PROCTORING & AUDIT EVENTS TABLE
@@ -335,3 +396,18 @@ BEGIN
         ALTER PUBLICATION supabase_realtime ADD TABLE public.exam_sections;
     END IF;
 END $$;
+
+-- =========================================================================
+-- 10. SUPABASE STORAGE SETUP (BUCKET & RLS POLICIES)
+-- =========================================================================
+-- Create public storage bucket for exam assets (PDFs, audio files, images)
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('exam-assets', 'exam-assets', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- Ensure public access to objects in exam-assets
+DROP POLICY IF EXISTS "Public Access to exam-assets" ON storage.objects;
+CREATE POLICY "Public Access to exam-assets" ON storage.objects
+    FOR ALL USING (bucket_id = 'exam-assets')
+    WITH CHECK (bucket_id = 'exam-assets');
+

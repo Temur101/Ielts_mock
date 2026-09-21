@@ -2,7 +2,7 @@
 // All questions are dynamically extracted from uploaded PDFs via pdfParser.js
 
 export const DEFAULT_IELTS_EXAM = {
-  id: "ielts-mock-01",
+  id: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
   pin_code: "IELTS-904",
   title: "IELTS Academic Master Assessment 2026",
   duration_mins: 60,

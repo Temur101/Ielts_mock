@@ -23,10 +23,14 @@ export function IeltsBookletRenderer({
     if (!container) return;
 
     // 1. If HTML content is not yet injected or changed, set it
-    // Only set if different to preserve user selection/focus if possible
-    if (container.dataset.renderedHtml !== htmlContent) {
-      container.innerHTML = htmlContent || '';
-      container.dataset.renderedHtml = htmlContent || '';
+    // Strip any duplicate static underline lines immediately preceding or succeeding answer slots
+    const cleanedHtml = (htmlContent || '')
+      .replace(/(?:_{2,}|\.{3,}|\[\s*(?:blank|_{1,}|\.{2,})\s*\])\s*(<span[^>]*class=["'][^"']*answer-slot[^"']*["'])/gi, '$1')
+      .replace(/(<span[^>]*class=["'][^"']*answer-slot[^"']*["'][^>]*>.*?<\/span>)\s*(?:_{2,}|\.{3,}|\[\s*(?:blank|_{1,}|\.{2,})\s*\])/gi, '$1');
+
+    if (container.dataset.renderedHtml !== cleanedHtml) {
+      container.innerHTML = cleanedHtml;
+      container.dataset.renderedHtml = cleanedHtml;
     }
 
     // 2. Locate all answer slots: .answer-slot or [data-question-num] or [data-q]

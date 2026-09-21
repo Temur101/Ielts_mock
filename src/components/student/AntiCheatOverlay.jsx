@@ -191,16 +191,5 @@ export function AntiCheatOverlay({
     );
   }
 
-  return (
-    <div className="fixed bottom-4 right-4 z-30 flex items-center gap-2">
-      <button
-        onClick={toggleFullscreen}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/80 hover:bg-slate-900 text-white text-xs font-semibold backdrop-blur-md shadow-lg transition"
-        title="Toggle Fullscreen mode"
-      >
-        {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-        <span>{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
-      </button>
-    </div>
-  );
+  return null;
 }

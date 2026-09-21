@@ -127,13 +127,19 @@ export default function App() {
 
   const [exam, setExam] = useState(() => {
     try {
-      const saved = localStorage.getItem('ielts_current_exam');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (!isCorruptedExam(parsed)) {
-          return parsed;
-        }
-        localStorage.removeItem('ielts_current_exam');
+      localStorage.removeItem('ielts_current_exam'); // Purge legacy heavy object
+      const meta = localStorage.getItem('ielts_exam_meta');
+      if (meta) {
+        const parsedMeta = JSON.parse(meta);
+        return {
+          ...DEFAULT_IELTS_EXAM,
+          id: parsedMeta.id || DEFAULT_IELTS_EXAM.id,
+          title: parsedMeta.title || DEFAULT_IELTS_EXAM.title,
+          pin_code: parsedMeta.pin_code || DEFAULT_IELTS_EXAM.pin_code,
+          duration_mins: parsedMeta.duration_mins || DEFAULT_IELTS_EXAM.duration_mins,
+          current_stage: parsedMeta.current_stage || DEFAULT_IELTS_EXAM.current_stage,
+          status: parsedMeta.status || DEFAULT_IELTS_EXAM.status,
+        };
       }
     } catch (e) {}
     return DEFAULT_IELTS_EXAM;
@@ -1167,8 +1173,10 @@ export default function App() {
   const isStudentOnlyRoute = route.path === '/join' || Boolean(route.pin);
   const activeRoleToRender = isStudentOnlyRoute ? 'student' : currentRole;
 
+  const isStudentInExam = activeRoleToRender === 'student' && Boolean(currentStudent) && exam.status === 'active';
+
   return (
-    <div className="min-h-screen bg-[#fafbfc] flex flex-col font-sans selection:bg-brand-500 selection:text-white">
+    <div className={`${isStudentInExam ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-[#fafbfc] flex flex-col font-sans selection:bg-brand-500 selection:text-white`}>
       
       {/* Top Navigation */}
       <Navbar
@@ -1184,7 +1192,7 @@ export default function App() {
       />
 
       {/* Main Container */}
-      <main className="flex-1">
+      <main className={`flex-1 ${isStudentInExam ? 'overflow-hidden flex flex-col' : ''}`}>
         {activeRoleToRender === 'admin' ? (
           <AdminDashboard
             exam={exam}
@@ -1204,7 +1212,7 @@ export default function App() {
             onSaveGrades={handleSaveGrades}
           />
         ) : (
-          <div>
+          <div className={isStudentInExam ? 'flex-1 overflow-hidden' : ''}>
             {!currentStudent ? (
               <StudentJoin
                 onJoin={handleStudentJoin}

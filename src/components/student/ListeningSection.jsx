@@ -15,10 +15,300 @@ import {
   FileText,
   BookOpen,
   Type,
-  ListChecks
+  ListChecks,
+  Layers
 } from 'lucide-react';
 import { Badge } from '../common/Badge';
 import { IeltsBookletRenderer } from './IeltsBookletRenderer';
+import { 
+  groupQuestionsIntoSets, 
+  normalizeTemplateGaps,
+  cleanGapArtifacts,
+  splitSentenceAtGap,
+} from '../../lib/questionUtils';
+
+/**
+ * Deduplicates options in a reference box so each letter key appears strictly once.
+ */
+function deduplicateRefBox(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  return list.filter(item => {
+    if (!item) return false;
+    const key = String(item.key || '').trim().toUpperCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Finds description hint for a chosen option in reference box.
+ */
+function getRefHint(val, refBox) {
+  if (!val || !Array.isArray(refBox)) return null;
+  const match = refBox.find(r => String(r.key).toUpperCase() === String(val).trim().toUpperCase());
+  return match?.label || null;
+}
+
+/**
+ * Renders a cohesive notes/summary template with inline {{N}} question input slots.
+ */
+function renderNotesTemplate(template, { answers, flagged, onAnswerChange, onToggleFlag, questionRefs, questions = [] }) {
+  if (!template || typeof template !== 'string') return null;
+
+  const cleanTemplate = normalizeTemplateGaps(template, questions);
+
+  const lines = cleanTemplate.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  return (
+    <div className="space-y-3 font-sans">
+      {lines.map((line, lIdx) => {
+        const isHeading = /^(?:#{1,4}\s+|\*\*(?:[^*]+)\*\*|[A-Z\s]{4,}:?$)/.test(line) && !line.includes('{{');
+        if (isHeading) {
+          const cleanHeading = line.replace(/^[#*\s]+|[#*\s]+$/g, '').replace(/:$/, '');
+          return (
+            <div key={lIdx} className="text-[13.5px] font-bold text-slate-900 border-b border-slate-300/70 pb-1 mt-4 mb-2">
+              {cleanHeading}
+            </div>
+          );
+        }
+
+        const isBullet = /^[-*•]\s+/.test(line) || /^\d+\.\s+/.test(line);
+        const textContent = line.replace(/^[-*•]\s+/, '');
+        const tokens = textContent.split(/(\{\{\d+\}\})/g);
+
+        const content = tokens.map((token, tIdx) => {
+          const m = token.match(/^\{\{(\d+)\}\}$/);
+          if (m) {
+            const qNum = Number(m[1]);
+            const val = answers[qNum] || '';
+            const isFlagged = flagged[qNum] || false;
+            return (
+              <span key={tIdx} className="inline-flex items-baseline mx-1">
+                <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono">
+                  {qNum}
+                </span>
+                <input
+                  type="text"
+                  ref={el => { if (el) questionRefs.current[qNum] = el; }}
+                  value={val}
+                  onChange={e => onAnswerChange(qNum, e.target.value)}
+                  placeholder="..."
+                  className="w-36 h-7 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-amber-500 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => onToggleFlag(qNum)}
+                  className={`p-1 rounded cursor-pointer transition ml-0.5 ${
+                    isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                  }`}
+                  title={isFlagged ? 'Remove flag' : 'Flag'}
+                >
+                  <Flag className="w-3 h-3" />
+                </button>
+              </span>
+            );
+          }
+          return <span key={tIdx}>{cleanGapArtifacts(token)}</span>;
+        });
+
+        if (isBullet) {
+          return (
+            <li key={lIdx} className="text-[13.5px] text-slate-800 list-disc ml-4 leading-loose">
+              {content}
+            </li>
+          );
+        }
+
+        return (
+          <p key={lIdx} className="text-[13.5px] text-slate-800 leading-loose mb-2">
+            {content}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Universally renders structured notes completion items (Part 1 and Part 4)
+ * with complete support for context lines, subheadings, intermediate bullets, and gap questions.
+ */
+function renderStructuredNotes({
+  items = [],
+  answers,
+  flagged,
+  onAnswerChange,
+  onToggleFlag,
+  questionRefs,
+}) {
+  if (!items || items.length === 0) {
+    return (
+      <div className="p-4 text-center text-slate-400 text-sm italic">
+        Notes for this section will appear here once loaded.
+      </div>
+    );
+  }
+
+  const hasSubheadings = items.some(it => Boolean(it.subheading && String(it.subheading).trim()));
+  const secMap = [];
+
+  if (hasSubheadings) {
+    items.forEach(it => {
+      const sub = (it.subheading && String(it.subheading).trim()) || 'Notes';
+      let s = secMap.find(sec => sec.subheading.toLowerCase() === sub.toLowerCase());
+      if (!s) {
+        s = { subheading: sub, items: [] };
+        secMap.push(s);
+      }
+      s.items.push(it);
+    });
+  } else {
+    secMap.push({ subheading: '', items: items });
+  }
+
+  return (
+    <div className="space-y-5">
+      {secMap.map((sec, sIdx) => (
+        <div key={sIdx} className="space-y-2">
+          {sec.subheading && (
+            <div className="text-[13px] font-bold text-slate-900 border-b border-slate-300/70 pb-1">
+              {sec.subheading}
+            </div>
+          )}
+          <ul className="space-y-2 pl-2">
+            {sec.items.map((q, qIdx) => {
+              const qNum = q.questionNumber || q.q_num;
+              const isQuestion = Boolean(
+                qNum &&
+                (typeof qNum === 'number' || !isNaN(Number(qNum))) &&
+                String(q.type || '').toLowerCase() !== 'context'
+              );
+              const val = isQuestion ? (answers[qNum] || '') : '';
+              const isFlagged = isQuestion ? (flagged[qNum] || false) : false;
+              const cBullets = q.context_bullets || q.bullets || [];
+
+              return (
+                <React.Fragment key={q.id || qNum || qIdx}>
+                  {Array.isArray(cBullets) && cBullets.map((cb, cbIdx) => {
+                    const bulletText = typeof cb === 'object' ? (cb.text || cb.prompt || '') : cb;
+                    return (
+                      <li key={cbIdx} className="text-[13px] text-slate-600 list-disc ml-4 leading-relaxed">
+                        {cleanGapArtifacts(bulletText)}
+                      </li>
+                    );
+                  })}
+
+                  {!isQuestion ? (
+                    <li className="text-[13px] text-slate-700 list-disc ml-4 leading-relaxed">
+                      {cleanGapArtifacts(q.text || q.prompt || '')}
+                    </li>
+                  ) : (
+                    <li
+                      ref={el => (questionRefs.current[qNum] = el)}
+                      className="text-[13.5px] text-slate-800 list-disc ml-4 leading-loose"
+                    >
+                      {(() => {
+                        const rawItemText = q.text || q.prompt || '';
+                        if (rawItemText.includes('{{') || (/\[(?:\#|\@)?(?:q_num|blank|\d+)\]|\@\[q_num\]|\[\s*\]/i.test(rawItemText))) {
+                          const normLine = normalizeTemplateGaps(rawItemText, [q]);
+                          const tokens = normLine.split(/(\{\{\d+\}\})/g);
+                          return (
+                            <span className="inline-flex items-baseline gap-1.5 flex-wrap leading-relaxed">
+                              {tokens.map((tok, tIdx) => {
+                                const m = tok.match(/^\{\{(\d+)\}\}$/);
+                                if (m) {
+                                  const targetQNum = Number(m[1]) || qNum;
+                                  const slotVal = answers[targetQNum] || '';
+                                  return (
+                                    <span key={tIdx} className="inline-flex items-baseline mx-1">
+                                      <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono">
+                                        {targetQNum}
+                                      </span>
+                                      <input
+                                        type="text"
+                                        ref={el => { if (el) questionRefs.current[targetQNum] = el; }}
+                                        value={slotVal}
+                                        onChange={e => onAnswerChange(targetQNum, e.target.value)}
+                                        placeholder="..."
+                                        className="w-36 h-7 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-amber-500 transition-colors"
+                                      />
+                                    </span>
+                                  );
+                                }
+                                return <span key={tIdx}>{cleanGapArtifacts(tok)}</span>;
+                              })}
+                              <button
+                                type="button"
+                                onClick={() => onToggleFlag(qNum)}
+                                className={`p-1 rounded cursor-pointer transition ml-1 ${
+                                  isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                }`}
+                                title={isFlagged ? 'Remove flag' : 'Flag'}
+                              >
+                                <Flag className="w-3 h-3" />
+                              </button>
+                            </span>
+                          );
+                        }
+
+                        const { before, after } = splitSentenceAtGap(rawItemText);
+                        return (
+                          <span className="inline-flex items-baseline gap-1.5 flex-wrap leading-relaxed">
+                            {before && <span>{before}</span>}
+                            <span className="inline-flex items-baseline mx-1">
+                              <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono">
+                                {qNum}
+                              </span>
+                              <input
+                                type="text"
+                                ref={el => { if (el) questionRefs.current[qNum] = el; }}
+                                value={val}
+                                onChange={e => onAnswerChange(qNum, e.target.value)}
+                                placeholder="..."
+                                className="w-36 h-7 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-amber-500 transition-colors"
+                              />
+                            </span>
+                            {after && <span>{after}</span>}
+                            <button
+                              type="button"
+                              onClick={() => onToggleFlag(qNum)}
+                              className={`p-1 rounded cursor-pointer transition ml-1 ${
+                                isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                              }`}
+                              title={isFlagged ? 'Remove flag' : 'Flag'}
+                            >
+                              <Flag className="w-3 h-3" />
+                            </button>
+                          </span>
+                        );
+                      })()}
+                    </li>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Official Cambridge IELTS Listening Numbering Partition Logic (40 Qs across 4 Parts)
+ */
+export const resolveListeningPart = (q) => {
+  if (q.partId) return Number(q.partId);
+  if (q.part) return Number(q.part);
+  const qNum = Number(q.questionNumber || q.q_num || 0);
+  if (qNum >= 1 && qNum <= 10) return 1;
+  if (qNum >= 11 && qNum <= 20) return 2;
+  if (qNum >= 21 && qNum <= 30) return 3;
+  if (qNum >= 31 && qNum <= 40) return 4;
+  return 1;
+};
 
 export function ListeningSection({
   exam,
@@ -31,7 +321,7 @@ export function ListeningSection({
 }) {
   const currentExam = exam || {};
   const currentListening = exam?.listening || listeningData || {};
-  const [viewMode, setViewMode] = useState('booklet'); // 'booklet' | 'cards'
+  const [viewMode, setViewMode] = useState('cards'); // 'cards' (native CD IELTS interactive view)
   
   const rawParts = currentListening.parts || [
     { partId: 1, title: 'Part 1: Social Dialogue', duration: '06:45' },
@@ -69,7 +359,6 @@ export function ListeningSection({
     lock_rewind: true,
     single_play_enforcement: true,
   };
-
   const [activePartId, setActivePartId] = useState(1);
   const [playingPartId, setPlayingPartId] = useState(null);
   const [playedParts, setPlayedParts] = useState({});
@@ -80,27 +369,25 @@ export function ListeningSection({
 
   const currentPart = parts.find(p => p.partId === activePartId) || parts[0];
 
-  let partQuestions = questions.filter(q => {
-    if (q.partId) return q.partId === activePartId;
-    if (q.passageId) return q.passageId === activePartId;
-    if (activePartId === 1) return q.questionNumber <= 10;
-    if (activePartId === 2) return q.questionNumber >= 11 && q.questionNumber <= 20;
-    if (activePartId === 3) return q.questionNumber >= 21 && q.questionNumber <= 30;
-    if (activePartId === 4) return q.questionNumber >= 31 && q.questionNumber <= 40;
-    return false;
+  let partQuestions = questions.filter(q => resolveListeningPart(q) === Number(activePartId));
+
+  // Deduplicate questions by questionNumber so each question number appears at most once
+  const seenPartQNums = new Set();
+  partQuestions = partQuestions.filter(q => {
+    const num = Number(q.questionNumber || q.q_num);
+    if (!num) return true;
+    if (seenPartQNums.has(num)) return false;
+    seenPartQNums.add(num);
+    return true;
   });
 
-  if (partQuestions.length === 0 && activePartId === 1 && questions.length > 0) {
-    partQuestions = questions;
-  }
-
   // Fallback questions so student never sees an empty screen
-  if (partQuestions.length === 0 && questions.length === 0) {
-    const startQ = (activePartId - 1) * 10 + 1;
+  if (partQuestions.length === 0) {
+    const startQ = (Number(activePartId) - 1) * 10 + 1;
     partQuestions = Array.from({ length: 10 }, (_, i) => ({
       id: `q-${startQ + i}`,
       questionNumber: startQ + i,
-      partId: activePartId,
+      partId: Number(activePartId),
       type: 'FILL_BLANK',
       instruction: 'Listen to the audio recording and write your answer into the box below.',
       text: `Question ${startQ + i}: Complete the answer from the audio`,
@@ -203,133 +490,88 @@ export function ListeningSection({
         })}
       </div>
 
-      {/* Top Audio Player Controller Bar */}
-      <div className="p-3.5 sm:p-4 bg-white text-slate-900 border-b border-slate-200 shadow-sm">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          
-          {/* Active Part Selector & Audio Status */}
-          <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border ${
-              playingPartId 
-                ? 'bg-orange-100 text-brand-600 border-brand-300 animate-pulse' 
-                : 'bg-orange-50 text-brand-600 border-brand-200'
-            }`}>
-              <Headphones className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-brand-600">
-                  IELTS Listening Audio + Booklet
-                </span>
-                {playingPartId && (
-                  <span className="px-2 py-0.5 rounded-full bg-orange-100 text-brand-700 border border-brand-300 text-[10px] font-bold flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-ping" />
-                    Audio Playing (Part {playingPartId})
-                  </span>
-                )}
-              </div>
-              <h3 className="text-sm font-bold text-slate-900 mt-0.5 truncate max-w-xs sm:max-w-sm">
-                {currentPart?.title || `Part ${activePartId}`}
-              </h3>
-            </div>
-          </div>
+      {/* Top Single Sleek Audio Controller Bar (Height: 48px max) */}
+      <div className="h-12 px-3 sm:px-4 bg-white text-slate-900 border-b border-slate-200 flex items-center justify-between gap-2 shrink-0 z-10 shadow-xs">
+        
+        {/* Left: Part Tabs 1–4 */}
+        <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+          {[1, 2, 3, 4].map(partNum => {
+            const isSelected = partNum === activePartId;
+            const isDone = playedParts[partNum];
+            const isPlaying = playingPartId === partNum;
+            const qRange = partNum === 1 ? '1–10' : partNum === 2 ? '11–20' : partNum === 3 ? '21–30' : '31–40';
 
-          {/* 4 Discrete Part Sub-Tabs */}
-          <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-200">
-            {[1, 2, 3, 4].map(partNum => {
-              const part = parts.find(p => p.partId === partNum) || { partId: partNum };
-              const isSelected = partNum === activePartId;
-              const isDone = playedParts[partNum];
-              const isPlaying = playingPartId === partNum;
-              const qRange = partNum === 1 ? '1–10' : partNum === 2 ? '11–20' : partNum === 3 ? '21–30' : '31–40';
-
-              return (
-                <button
-                  key={partNum}
-                  type="button"
-                  onClick={() => setActivePartId(partNum)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                    isSelected
-                      ? 'bg-brand-500 text-white shadow-sm'
-                      : isPlaying
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                  }`}
-                >
-                  <span>Part {partNum}</span>
-                  <span className="text-[10px] opacity-75 font-normal">({qRange})</span>
-                  {isPlaying && (
-                    <span className="flex items-center gap-1 text-[10px] text-emerald-600 font-extrabold">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                    </span>
-                  )}
-                  {isDone && !isPlaying && <Check className="w-3 h-3 text-emerald-600" />}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Active Player Action Controls */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-3">
+            return (
               <button
+                key={partNum}
                 type="button"
-                onClick={() => togglePlayAudio(playingPartId ? playingPartId : activePartId)}
-                className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition cursor-pointer ${
-                  playingPartId
-                    ? 'bg-amber-500 text-white shadow-glow hover:bg-amber-600'
-                    : playedParts[activePartId] && audioSettings.single_play_enforcement
-                      ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
-                      : 'bg-brand-500 hover:bg-brand-600 text-white shadow-glow'
+                onClick={() => setActivePartId(partNum)}
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                  isSelected
+                    ? 'bg-brand-500 text-white shadow-xs'
+                    : isPlaying
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white'
                 }`}
               >
-                {playingPartId ? (
-                  <>
-                    <Pause className="w-4 h-4" />
-                    <span>Pause Audio (Part {playingPartId})</span>
-                  </>
-                ) : playedParts[activePartId] && audioSettings.single_play_enforcement ? (
-                  <>
-                    <Lock className="w-4 h-4" />
-                    <span>Part {activePartId} Played (Locked)</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4" />
-                    <span>Play Part {activePartId}</span>
-                  </>
+                <span>Part {partNum}</span>
+                <span className="text-[10px] opacity-75 font-normal">({qRange})</span>
+                {isPlaying && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
                 )}
+                {isDone && !isPlaying && <Check className="w-3 h-3 text-emerald-600" />}
               </button>
-
-              {/* Progress Time */}
-              <div className="text-xs font-mono font-bold text-slate-600 min-w-[85px] text-right">
-                {formatAudioTime(audioProgress[targetAudioPartId]?.current || 0)} / {audioProgress[targetAudioPartId]?.duration ? formatAudioTime(audioProgress[targetAudioPartId]?.duration) : (targetPart.duration || "07:00")}
-              </div>
-            </div>
-          </div>
-
+            );
+          })}
         </div>
 
-        {/* Audio status indicator */}
-        <div className="max-w-7xl mx-auto mt-3 flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-100">
-          <div className="flex items-center gap-2">
-            <Lock className="w-3.5 h-3.5 text-brand-400" />
-            <span>
-              {audioSettings.lock_scrubbing ? "Scrubbing & rewinding locked." : "Standard audio player."}
-              {audioSettings.single_play_enforcement ? " Single-play rule strictly enforced." : ""}
-            </span>
+        {/* Center/Right: Audio Play Action & Duration Tracker */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            type="button"
+            onClick={() => togglePlayAudio(playingPartId ? playingPartId : activePartId)}
+            className={`h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+              playingPartId
+                ? 'bg-amber-500 text-white shadow-xs hover:bg-amber-600'
+                : playedParts[activePartId] && audioSettings.single_play_enforcement
+                  ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                  : 'bg-brand-500 hover:bg-brand-600 text-white shadow-xs'
+            }`}
+          >
+            {playingPartId ? (
+              <>
+                <Pause className="w-3.5 h-3.5" />
+                <span>Pause (Part {playingPartId})</span>
+              </>
+            ) : playedParts[activePartId] && audioSettings.single_play_enforcement ? (
+              <>
+                <Lock className="w-3.5 h-3.5" />
+                <span>Part {activePartId} Locked</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3.5 h-3.5" />
+                <span>Play Part {activePartId}</span>
+              </>
+            )}
+          </button>
+
+          {/* Time tracker */}
+          <div className="text-[11px] font-mono font-bold text-slate-600 min-w-[75px] text-right">
+            {formatAudioTime(audioProgress[targetAudioPartId]?.current || 0)} / {audioProgress[targetAudioPartId]?.duration ? formatAudioTime(audioProgress[targetAudioPartId]?.duration) : (targetPart.duration || "07:00")}
           </div>
 
-          <div className="text-brand-300 font-mono">
-            Part {activePartId}: {answeredInPart} of {partQuestions.length} answered ({totalAnsweredAll}/{questions.length} Total)
+          {/* Answered badge */}
+          <div className="text-[11px] font-mono font-bold text-brand-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-md hidden sm:block">
+            {answeredInPart}/{partQuestions.length}
           </div>
         </div>
+
       </div>
 
-      {/* Main Multi-Part Workspace: Full-Width Questions Only (No Text / Audio Script) */}
-      {/* Main Questions / Booklet Body */}
-      <div className="flex-1 overflow-y-auto bg-slate-50/60 p-4 sm:p-6 lg:p-8">
-        <div className="max-w-4xl mx-auto space-y-6">
+      {/* Main Single Centered Exam Sheet (Independent Vertical Scroll) */}
+      <div className="flex-1 overflow-y-auto bg-slate-100/70 p-4 sm:p-6">
+        <div className="max-w-4xl mx-auto bg-white p-8 sm:p-10 border border-slate-300 shadow-sm min-h-screen text-slate-900 my-4 space-y-8">
           
           {(() => {
             const partSec = Array.isArray(currentListening.sections)
@@ -337,65 +579,92 @@ export function ListeningSection({
               : null;
             const currentPartHtml = partSec?.page_content_html || currentPart?.page_content_html || '';
 
+            // Extract reference box from part, section, or questions
+            const rawRefBox = currentPart?.reference_box || 
+                              currentPart?.referenceBox || 
+                              partSec?.reference_box || 
+                              partSec?.referenceBox ||
+                              partQuestions.find(q => q.reference_box || q.referenceBox)?.reference_box ||
+                              partQuestions.find(q => q.reference_box || q.referenceBox)?.referenceBox ||
+                              null;
+
+            const normalizedRefBox = (() => {
+              if (!rawRefBox || !Array.isArray(rawRefBox)) return [];
+              const rawList = rawRefBox.map((item, idx) => {
+                if (typeof item === 'object' && item !== null) {
+                  return {
+                    key: String(item.key || String.fromCharCode(65 + idx)).trim().toUpperCase(),
+                    label: String(item.label || item.text || item.value || '').trim(),
+                  };
+                }
+                if (typeof item === 'string') {
+                  const m = item.match(/^\[?([A-Z0-9ivxlcdm]+)\]?[\.\:\s\-]\s*(.*)$/i);
+                  if (m) {
+                    return { key: m[1].trim().toUpperCase(), label: m[2].trim() };
+                  }
+                  return { key: String.fromCharCode(65 + idx), label: item.trim() };
+                }
+                return { key: String.fromCharCode(65 + idx), label: String(item) };
+              });
+              return deduplicateRefBox(rawList);
+            })();
+
+            // Helper to get hint for a typed letter
+            const getRefHint = (val, refBoxList) => {
+              if (!val) return '';
+              const rList = refBoxList && refBoxList.length > 0 ? refBoxList : normalizedRefBox;
+              const found = rList.find(r => r.key.toUpperCase() === val.toUpperCase());
+              return found ? found.label : '';
+            };
+
             return (
               <>
-                {/* Header Bar */}
-                <div className="flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5 bg-white rounded-2xl border border-slate-200 shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-orange-100 text-brand-600 flex items-center justify-center shrink-0">
-                      <ListChecks className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm sm:text-base font-extrabold uppercase tracking-wider text-slate-900">
-                        {currentPart?.title || `Listening Part ${activePartId}`}
-                      </h3>
-                      <p className="text-xs text-slate-500 font-medium">
-                        {currentPart?.instructions || "Listen to the recording and write your answers in the fields below."}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {currentPartHtml && (
-                      <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-bold">
-                        <button
-                          type="button"
-                          onClick={() => setViewMode('booklet')}
-                          className={`px-3 py-1.5 rounded-lg transition-all ${
-                            viewMode === 'booklet'
-                              ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/20'
-                              : 'text-slate-600 hover:text-brand-600'
-                          }`}
-                        >
-                          Exact Booklet
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setViewMode('cards')}
-                          className={`px-3 py-1.5 rounded-lg transition-all ${
-                            viewMode === 'cards'
-                              ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/20'
-                              : 'text-slate-600 hover:text-brand-600'
-                          }`}
-                        >
-                          Cards
-                        </button>
-                      </div>
-                    )}
-                    <span className="text-xs font-mono font-bold text-brand-600 bg-orange-50 border border-orange-200 px-3 py-1.5 rounded-xl whitespace-nowrap">
-                      {answeredInPart} / {partQuestions.length} Answered
+                {/* Exam Sheet Header */}
+                <div className="border-b-2 border-slate-300 pb-4">
+                  <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                    <span className="font-extrabold uppercase tracking-widest text-amber-700 font-mono">
+                      IELTS Listening Examination
                     </span>
+                    <div className="flex items-center gap-2 font-mono">
+                      {currentPartHtml && (
+                        <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-bold mr-2">
+                          <button
+                            type="button"
+                            onClick={() => setViewMode('cards')}
+                            className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                              viewMode === 'cards' ? 'bg-brand-500 text-white shadow-xs' : 'text-slate-600 hover:text-brand-600'
+                            }`}
+                          >
+                            Standard Sheet
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setViewMode('booklet')}
+                            className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                              viewMode === 'booklet' ? 'bg-brand-500 text-white shadow-xs' : 'text-slate-600 hover:text-brand-600'
+                            }`}
+                          >
+                            Exact Booklet
+                          </button>
+                        </div>
+                      )}
+                      <span className="bg-slate-100 px-2.5 py-1 rounded text-slate-700 font-bold">
+                        Part {activePartId} of 4 ({answeredInPart}/{partQuestions.length} Answered)
+                      </span>
+                    </div>
                   </div>
+                  <h2 className="text-xl font-black text-slate-900 tracking-tight">
+                    {currentPart?.title || `Listening Part ${activePartId}`}
+                  </h2>
                 </div>
 
-                {/* Exact Cambridge Booklet View */}
+                {/* Exact Cambridge Booklet View if requested */}
                 {currentPartHtml && viewMode === 'booklet' ? (
-                  <div className="bg-white rounded-2xl border-2 border-slate-300 p-6 sm:p-8 shadow-sm space-y-4">
-                    <div className="flex items-center justify-between border-b pb-3 border-slate-200 text-xs text-slate-500 font-bold uppercase tracking-wider">
-                      <span>Cambridge Assessment English • Listening Part {activePartId}</span>
+                  <div className="border border-slate-200 rounded-lg p-5 bg-white space-y-3">
+                    <div className="flex items-center justify-between border-b pb-2 border-slate-200 text-[11px] text-slate-500 font-bold uppercase tracking-wider">
+                      <span>Cambridge English • Listening Part {activePartId}</span>
                       <span className="font-mono text-brand-600">Questions {partQuestions[0]?.questionNumber || ((activePartId - 1) * 10 + 1)}–{partQuestions[partQuestions.length - 1]?.questionNumber || (activePartId * 10)}</span>
                     </div>
-
                     <IeltsBookletRenderer
                       htmlContent={currentPartHtml}
                       answers={answers}
@@ -404,150 +673,627 @@ export function ListeningSection({
                     />
                   </div>
                 ) : (
-                  /* Questions Cards List */
-                  <div className="space-y-4">
-            {partQuestions.map((q) => {
-              const qNum = q.questionNumber;
-              const currentVal = answers[qNum] || '';
-              const isFlagged = flagged[qNum] || false;
-              const isAnswered = Boolean(currentVal && currentVal.trim());
+                  /* =========================================================================
+                     DYNAMIC CAMBRIDGE EXAMINATION BOOKLET RENDERER
+                     ========================================================================= */
+                  <div className="space-y-8 font-sans">
+                    {(() => {
+                      if (partQuestions.length === 0) {
+                        return (
+                          <div className="p-8 text-center text-slate-400 text-sm italic">
+                            Questions for Part {activePartId} will appear here once the exam is loaded.
+                          </div>
+                        );
+                      }
 
-              return (
-                <div
-                  key={q.id}
-                  ref={el => questionRefs.current[qNum] = el}
-                  className={`p-5 sm:p-6 rounded-2xl bg-white border transition-all duration-200 ${
-                    isFlagged 
-                      ? 'border-amber-400 ring-2 ring-amber-100 shadow-sm' 
-                      : isAnswered 
-                        ? 'border-brand-300 shadow-sm' 
-                        : 'border-slate-200 shadow-card'
-                  }`}
-                >
-                  {/* Question Instruction */}
-                  {q.instruction && (
-                    <div className="text-xs font-semibold text-brand-800 bg-brand-50/80 p-3 rounded-xl mb-3 border border-brand-100 whitespace-pre-line">
-                      {q.instruction}
-                    </div>
-                  )}
+                      const questionGroups = groupQuestionsIntoSets(partQuestions, currentPart?.reference_box);
 
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3 flex-1">
-                      <span className={`w-8 h-8 rounded-xl font-mono text-xs font-bold flex items-center justify-center shrink-0 ${
-                        isAnswered 
-                          ? 'bg-brand-500 text-white shadow-sm' 
-                          : 'bg-slate-100 text-slate-700'
-                      }`}>
-                        {qNum}
-                      </span>
-                      <div className="text-sm font-semibold text-slate-900 leading-snug pt-1 flex-1">
-                        {q.text}
-                      </div>
-                    </div>
+                      return questionGroups.map((group, gIdx) => {
+                        const category = group.category;
+                        const gqs = group.questions;
+                        const firstQ = gqs[0];
+                        const lastQ = gqs[gqs.length - 1];
+                        const rangeStr = group.qRange || (firstQ?.questionNumber ? `Questions ${firstQ.questionNumber}–${lastQ?.questionNumber || firstQ.questionNumber}` : '');
+                        const instructionStr = group.instruction || currentPart?.instruction || 'Answer the questions below.';
+                        const groupTitle = group.title || (gIdx === 0 ? currentPart?.title : '') || '';
 
-                    <button
-                      type="button"
-                      onClick={() => onToggleFlag(qNum)}
-                      className={`p-2 rounded-xl text-xs transition cursor-pointer ${
-                        isFlagged 
-                          ? 'bg-amber-100 text-amber-700 ring-1 ring-amber-300' 
-                          : 'text-slate-400 hover:text-amber-500 hover:bg-slate-100'
-                      }`}
-                      title={isFlagged ? 'Remove flag' : 'Flag for review'}
-                    >
-                      <Flag className="w-4 h-4" />
-                    </button>
+                        return (
+                          <div key={group.id || gIdx} className="space-y-4">
+                            {/* Task Range & Instruction Header */}
+                            <div className="border-b border-slate-200 pb-2">
+                              {rangeStr && (
+                                <span className="text-[11px] font-black uppercase tracking-widest text-slate-500 font-mono">
+                                  {rangeStr}
+                                </span>
+                              )}
+                              <p className="text-[13px] font-semibold text-slate-800 leading-snug mt-1 whitespace-pre-line">
+                                {instructionStr}
+                              </p>
+                            </div>
+
+                            {/* 1. NOTES / SUMMARY / FILL_BLANK */}
+                            {(category === 'NOTES' || category === 'FILL_BLANK') && (() => {
+                              const notesTemplate = group.summaryTemplate || 
+                                gqs.find(q => q.notes_template || q.summary_template)?.notes_template ||
+                                gqs.find(q => q.summary_template)?.summary_template ||
+                                (gqs.length === partQuestions.length ? currentPart?.notes_template : null);
+
+                              return (
+                                <div className="bg-slate-50/70 border border-slate-200 p-6 sm:p-8">
+                                  {groupTitle && (
+                                    <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-5">
+                                      {groupTitle}
+                                    </div>
+                                  )}
+                                  {notesTemplate ? (
+                                    renderNotesTemplate(notesTemplate, {
+                                      answers,
+                                      flagged,
+                                      onAnswerChange,
+                                      onToggleFlag,
+                                      questionRefs,
+                                      questions: gqs,
+                                    })
+                                  ) : (
+                                    renderStructuredNotes({
+                                      items: gqs,
+                                      answers,
+                                      flagged,
+                                      onAnswerChange,
+                                      onToggleFlag,
+                                      questionRefs,
+                                    })
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {/* 2. MULTIPLE CHOICE */}
+                            {category === 'MULTIPLE_CHOICE' && (() => {
+                              // Generic dual-select detection:
+                              const isDualQuestion = (q, idx, arr) => {
+                                const text = `${instructionStr} ${q.cleanPrompt || ''} ${q.prompt || ''} ${q.text || ''} ${q.instruction || ''}`.toLowerCase();
+                                if (/choose.*(?:two|2)|which.*(?:two|2)|select.*(?:two|2)|two\s+(?:options|letters|reasons|statements|answers)/i.test(text)) {
+                                  return true;
+                                }
+                                const prev = arr[idx - 1];
+                                const next = arr[idx + 1];
+                                const sameAsPrev = prev && (prev.prompt === q.prompt || prev.text === q.text) && (Array.isArray(q.options) && q.options.length === 5);
+                                const sameAsNext = next && (next.prompt === q.prompt || next.text === q.text) && (Array.isArray(q.options) && q.options.length === 5);
+                                return Boolean(sameAsPrev || sameAsNext);
+                              };
+
+                              // Deduplicate by questionNumber to ensure each question appears strictly once
+                              const seenInGroup = new Set();
+                              const uniqueGqs = gqs.filter(q => {
+                                const num = Number(q.questionNumber);
+                                if (!num || seenInGroup.has(num)) return false;
+                                seenInGroup.add(num);
+                                return true;
+                              });
+
+                              const dualQuestions = [];
+                              const singleQuestions = [];
+
+                              uniqueGqs.forEach((q, idx) => {
+                                if (isDualQuestion(q, idx, uniqueGqs)) {
+                                  dualQuestions.push(q);
+                                } else {
+                                  singleQuestions.push(q);
+                                }
+                              });
+
+                              // Group dual-select questions into pairs of 2 dynamically without hardcoded indices
+                              const dualPairs = [];
+                              const sortedDual = [...dualQuestions].sort(
+                                (a, b) => Number(a.questionNumber || a.q_num || 0) - Number(b.questionNumber || b.q_num || 0)
+                              );
+                              for (let i = 0; i < sortedDual.length; i += 2) {
+                                dualPairs.push([sortedDual[i], sortedDual[i + 1] || null]);
+                              }
+
+                              // Strictly eliminate any duplicate single-choice MCQ renderings beneath them
+                              const dualNumSet = new Set();
+                              dualPairs.forEach(([qA, qB]) => {
+                                if (qA?.questionNumber) dualNumSet.add(Number(qA.questionNumber));
+                                if (qB?.questionNumber) dualNumSet.add(Number(qB.questionNumber));
+                              });
+                              const filteredSingleQuestions = singleQuestions.filter(
+                                q => !dualNumSet.has(Number(q.questionNumber || q.q_num))
+                              );
+
+                              return (
+                                <div className="space-y-6">
+                                  {/* Render Dual-Select Pairs (e.g. Questions 11-12 and 13-14) */}
+                                  {dualPairs.map(([qA, qB], pIdx) => {
+                                    if (!qA) return null;
+                                    const qNumA = qA.questionNumber;
+                                    const qNumB = qB ? qB.questionNumber : qNumA + 1;
+                                    const pairRange = qB ? `Questions ${qNumA} and ${qNumB}` : `Question ${qNumA}`;
+                                    const rawPrompt = qA.cleanPrompt || qA.prompt || qA.text || qB?.cleanPrompt || '';
+                                    const cleanPrompt = rawPrompt.replace(/^(?:Questions?\s*)?(?:\d+\s*[-–&and\s]*\d+|\d+)[\.\:\s\-]+/i, '').trim();
+                                    const rawOptions = (qA.options && qA.options.length >= 2) 
+                                      ? qA.options 
+                                      : (qB?.options && qB.options.length >= 2) 
+                                        ? qB.options 
+                                        : ['A', 'B', 'C', 'D', 'E'];
+                                    
+                                    const handleDualSelect = (letter) => {
+                                      const valA = (answers[qNumA] || '').toUpperCase();
+                                      const valB = (answers[qNumB] || '').toUpperCase();
+                                      const L = letter.toUpperCase();
+
+                                      if (valA === L) {
+                                        onAnswerChange(qNumA, '');
+                                      } else if (valB === L) {
+                                        onAnswerChange(qNumB, '');
+                                      } else if (!valA) {
+                                        onAnswerChange(qNumA, L);
+                                      } else if (!valB) {
+                                        onAnswerChange(qNumB, L);
+                                      } else {
+                                        onAnswerChange(qNumB, L);
+                                      }
+                                    };
+
+                                    const valA = (answers[qNumA] || '').toUpperCase();
+                                    const valB = (answers[qNumB] || '').toUpperCase();
+
+                                    return (
+                                      <div key={`dual-${pIdx}-${qNumA}`} className="bg-white border border-slate-200 rounded-lg p-5 sm:p-6 space-y-4 shadow-2xs">
+                                        <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+                                          <span className="text-xs font-black uppercase tracking-wider text-amber-700 font-mono">
+                                            {pairRange}
+                                          </span>
+                                          <span className="text-[11px] font-semibold text-slate-500">
+                                            Select TWO options
+                                          </span>
+                                        </div>
+                                        <p className="text-sm font-bold text-slate-800 leading-snug">
+                                          {cleanPrompt}
+                                        </p>
+                                        <div className="grid grid-cols-1 gap-2 pt-1">
+                                          {rawOptions.map((opt, oIdx) => {
+                                            const letterMatch = String(opt).match(/^\[?([A-Z])\]?[\.\:\s\-]*(.*)$/i);
+                                            const letter = (letterMatch ? letterMatch[1] : String.fromCharCode(65 + oIdx)).toUpperCase();
+                                            const optText = letterMatch ? letterMatch[2] : opt;
+                                            const isSelected = valA === letter || valB === letter;
+
+                                            return (
+                                              <button
+                                                key={letter}
+                                                type="button"
+                                                onClick={() => handleDualSelect(letter)}
+                                                className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
+                                                  isSelected
+                                                    ? 'border-amber-500 bg-amber-50/70 text-slate-900 font-semibold shadow-xs'
+                                                    : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                                                }`}
+                                              >
+                                                <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
+                                                  isSelected
+                                                    ? 'bg-amber-500 text-white shadow-xs'
+                                                    : 'bg-slate-100 text-slate-600 border border-slate-300'
+                                                }`}>
+                                                  {letter}
+                                                </span>
+                                                <span className="flex-1 leading-snug">{optText}</span>
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+
+                                        {/* Dual Answer Slots */}
+                                        <div className="flex items-center gap-4 pt-3 border-t border-slate-200 text-xs">
+                                          <span className="font-bold text-slate-600 uppercase tracking-wider font-mono">
+                                            Your Answers:
+                                          </span>
+                                          <div ref={el => (questionRefs.current[qNumA] = el)} className="flex items-center gap-2">
+                                            <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center font-mono select-none">
+                                              {qNumA}
+                                            </span>
+                                            <input
+                                              type="text"
+                                              maxLength={1}
+                                              value={valA}
+                                              onChange={e => onAnswerChange(qNumA, e.target.value.toUpperCase())}
+                                              placeholder="Letter"
+                                              className={`w-11 h-9 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
+                                                valA ? 'border-amber-500 bg-amber-50/50 text-slate-900' : flagged[qNumA] ? 'border-amber-400 bg-amber-50' : 'border-slate-300 focus:border-amber-500'
+                                              }`}
+                                            />
+                                            <button
+                                              type="button"
+                                              onClick={() => onToggleFlag(qNumA)}
+                                              className={`p-1 rounded cursor-pointer transition ${flagged[qNumA] ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'}`}
+                                              title={flagged[qNumA] ? `Remove flag ${qNumA}` : `Flag ${qNumA}`}
+                                            >
+                                              <Flag className="w-3.5 h-3.5" />
+                                            </button>
+                                          </div>
+                                          {qB && (
+                                            <div ref={el => (questionRefs.current[qNumB] = el)} className="flex items-center gap-2">
+                                              <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center font-mono select-none">
+                                                {qNumB}
+                                              </span>
+                                              <input
+                                                type="text"
+                                                maxLength={1}
+                                                value={valB}
+                                                onChange={e => onAnswerChange(qNumB, e.target.value.toUpperCase())}
+                                                placeholder="Letter"
+                                                className={`w-11 h-9 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
+                                                  valB ? 'border-amber-500 bg-amber-50/50 text-slate-900' : flagged[qNumB] ? 'border-amber-400 bg-amber-50' : 'border-slate-300 focus:border-amber-500'
+                                                }`}
+                                              />
+                                              <button
+                                                type="button"
+                                                onClick={() => onToggleFlag(qNumB)}
+                                                className={`p-1 rounded cursor-pointer transition ${flagged[qNumB] ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'}`}
+                                                title={flagged[qNumB] ? `Remove flag ${qNumB}` : `Flag ${qNumB}`}
+                                              >
+                                                <Flag className="w-3.5 h-3.5" />
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+
+                                  {/* Render Standard Single-Choice MC */}
+                                  {filteredSingleQuestions.map(q => {
+                                    const qNum = q.questionNumber;
+                                    const val = (answers[qNum] || '').toUpperCase();
+                                    const isFlagged = flagged[qNum] || false;
+                                    const promptText = q.cleanPrompt || q.prompt || q.text || `Question ${qNum}`;
+                                    const rawOptions = q.options || [];
+
+                                    return (
+                                      <div
+                                        key={qNum}
+                                        ref={el => (questionRefs.current[qNum] = el)}
+                                        className={`bg-white border rounded-lg p-5 space-y-3 shadow-2xs transition-colors ${
+                                          isFlagged ? 'border-amber-400 bg-amber-50/20' : 'border-slate-200'
+                                        }`}
+                                      >
+                                        <div className="flex items-start justify-between gap-3">
+                                          <div className="flex items-start gap-2.5 flex-1">
+                                            <span className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-bold flex items-center justify-center font-mono shrink-0 mt-0.5 select-none">
+                                              {qNum}
+                                            </span>
+                                            <span className="text-sm font-bold text-slate-800 leading-snug">
+                                              {promptText}
+                                            </span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => onToggleFlag(qNum)}
+                                            className={`p-1 rounded cursor-pointer transition shrink-0 ${
+                                              isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                            }`}
+                                            title={isFlagged ? 'Remove flag' : 'Flag'}
+                                          >
+                                            <Flag className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 gap-2 pt-1 pl-8">
+                                          {rawOptions.map((opt, oIdx) => {
+                                            const letterMatch = String(opt).match(/^\[?([A-Z])\]?[\.\:\s\-]*(.*)$/i);
+                                            const letter = (letterMatch ? letterMatch[1] : String.fromCharCode(65 + oIdx)).toUpperCase();
+                                            const optText = letterMatch ? letterMatch[2] : opt;
+                                            const isSelected = val === letter;
+
+                                            return (
+                                              <button
+                                                key={letter}
+                                                type="button"
+                                                onClick={() => onAnswerChange(qNum, letter)}
+                                                className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
+                                                  isSelected
+                                                    ? 'border-amber-500 bg-amber-50/70 text-slate-900 font-semibold shadow-xs'
+                                                    : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                                                }`}
+                                              >
+                                                <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
+                                                  isSelected
+                                                    ? 'bg-amber-500 text-white shadow-xs'
+                                                    : 'bg-slate-100 text-slate-600 border border-slate-300'
+                                                }`}>
+                                                  {letter}
+                                                </span>
+                                                <span className="flex-1 leading-snug">{optText}</span>
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
+
+                            {/* 3. MATCHING TABLE */}
+                            {category === 'MATCHING' && (() => {
+                              const refBox = group.referenceBox || [];
+                              const placeholderRange = refBox.length > 0
+                                ? `${refBox[0]?.key}–${refBox[refBox.length - 1]?.key}`
+                                : 'Letter';
+
+                              return (
+                                <div className="space-y-4">
+                                  {refBox.length > 0 && (
+                                    <div className="border border-slate-300 p-4 bg-slate-50/60">
+                                      <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-600 mb-2.5 flex items-center gap-1.5">
+                                        <Layers className="w-3.5 h-3.5 text-slate-500" />
+                                        <span>{group.subheading || 'Options Box'}</span>
+                                      </div>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1.5">
+                                        {refBox.map(item => (
+                                          <div key={item.key} className="flex items-baseline gap-2 text-[13px]">
+                                            <span className="font-mono font-bold text-slate-800 shrink-0">[{item.key}]</span>
+                                            <span className="text-slate-700 font-medium">{item.label}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="border border-slate-300 overflow-hidden">
+                                    <table className="w-full border-collapse text-left text-sm">
+                                      <thead>
+                                        <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                          <th className="py-2.5 px-4">{group.subheading || 'Item / Statement'}</th>
+                                          <th className="py-2.5 px-4 w-36 text-center">Answer</th>
+                                          <th className="w-10"></th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {gqs.map((item, idx) => {
+                                          const qNum = item.questionNumber;
+                                          const rawName = item.cleanPrompt || item.text || item.prompt || `Question ${qNum}`;
+                                          const cleanName = cleanGapArtifacts(rawName.replace(/^\d+[\.\:\s\-]+/, ''));
+                                          const val = answers[qNum] || '';
+                                          const isFlagged = flagged[qNum] || false;
+                                          const hint = getRefHint(val, refBox);
+
+                                          return (
+                                            <tr
+                                              key={qNum}
+                                              ref={el => (questionRefs.current[qNum] = el)}
+                                              className={`border-b border-slate-200 last:border-0 transition-colors ${
+                                                isFlagged ? 'bg-amber-50/50' : idx % 2 === 1 ? 'bg-slate-50/30' : 'bg-white'
+                                              }`}
+                                            >
+                                              <td className="py-2.5 px-4 text-[13.5px] font-medium text-slate-800">
+                                                <span className="font-bold text-slate-900 mr-2 font-mono">{qNum}.</span>
+                                                {cleanName}
+                                              </td>
+                                              <td className="py-2.5 px-4 text-center">
+                                                <div className="flex items-center justify-center gap-2">
+                                                  <input
+                                                    type="text"
+                                                    maxLength={2}
+                                                    value={val}
+                                                    onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase())}
+                                                    placeholder={placeholderRange}
+                                                    className={`w-11 h-9 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
+                                                      val
+                                                        ? 'border-amber-500 bg-amber-50/50 text-slate-900'
+                                                        : isFlagged
+                                                        ? 'border-amber-400 bg-amber-50'
+                                                        : 'border-slate-300 focus:border-amber-500'
+                                                    }`}
+                                                  />
+                                                  {hint && (
+                                                    <span className="text-[11px] text-amber-700 italic hidden sm:inline-block truncate max-w-[120px]">
+                                                      {hint}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              </td>
+                                              <td className="pr-3 text-center">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => onToggleFlag(qNum)}
+                                                  className={`p-1 rounded cursor-pointer transition ${
+                                                    isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                                  }`}
+                                                  title={isFlagged ? 'Remove flag' : 'Flag'}
+                                                >
+                                                  <Flag className="w-3 h-3" />
+                                                </button>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+
+                            {/* 4. FLOW CHART */}
+                            {category === 'FLOW_CHART' && (() => {
+                              const refBox = group.referenceBox || [];
+
+                              return (
+                                <div className="space-y-5">
+                                  {refBox.length > 0 && (
+                                    <div className="border border-slate-300 p-4 bg-slate-50/60">
+                                      <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-600 mb-2.5 flex items-center gap-1.5">
+                                        <Layers className="w-3.5 h-3.5 text-slate-500" />
+                                        <span>Options Box</span>
+                                      </div>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-1.5">
+                                        {refBox.map(item => (
+                                          <div key={item.key} className="flex items-baseline gap-2 text-[13px]">
+                                            <span className="font-mono font-bold text-slate-800 shrink-0">[{item.key}]</span>
+                                            <span className="text-slate-700 font-medium">{item.label}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="bg-slate-50/80 border border-slate-300 p-6 sm:p-8">
+                                    {groupTitle && (
+                                      <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-6">
+                                        {groupTitle}
+                                      </div>
+                                    )}
+                                    <div className="flex flex-col items-center space-y-2 max-w-xl mx-auto">
+                                      {gqs.map((step, idx) => {
+                                        const isLast = idx === gqs.length - 1;
+                                        const qNum = step.questionNumber;
+                                        const val = answers[qNum] || '';
+                                        const isFlagged = flagged[qNum] || false;
+                                        const rawText = step.cleanPrompt || step.text || step.prompt || '';
+                                        const { before, after } = splitSentenceAtGap(rawText);
+                                        const hint = getRefHint(val, refBox);
+
+                                        return (
+                                          <React.Fragment key={qNum || idx}>
+                                            <div
+                                              ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
+                                              className={`w-full bg-white border-2 p-3 text-center text-[13.5px] font-semibold text-slate-900 shadow-2xs transition-colors ${
+                                                val ? 'border-amber-400 bg-amber-50/20' : 'border-slate-300'
+                                              }`}
+                                            >
+                                              <div className="flex items-center justify-center gap-2 flex-wrap">
+                                                {before && <span>{before}</span>}
+                                                <span className="inline-flex items-center gap-1">
+                                                  <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center font-mono select-none">
+                                                    {qNum}
+                                                  </span>
+                                                  <input
+                                                    type="text"
+                                                    maxLength={2}
+                                                    value={val}
+                                                    onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase())}
+                                                    placeholder="Letter"
+                                                    className="w-12 h-8 border-2 border-slate-400 focus:border-amber-500 text-center font-bold uppercase text-sm rounded outline-none bg-white transition-colors"
+                                                  />
+                                                  {hint && (
+                                                    <span className="text-[11px] text-amber-700 italic font-normal ml-1">
+                                                      ({hint})
+                                                    </span>
+                                                  )}
+                                                </span>
+                                                {after && <span>{after}</span>}
+                                                <button
+                                                  type="button"
+                                                  onClick={() => onToggleFlag(qNum)}
+                                                  className={`p-1 rounded cursor-pointer transition ml-1 ${
+                                                    isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                                  }`}
+                                                  title={isFlagged ? 'Remove flag' : 'Flag'}
+                                                >
+                                                  <Flag className="w-3 h-3" />
+                                                </button>
+                                              </div>
+                                            </div>
+                                            {!isLast && (
+                                              <div className="text-slate-400 font-bold text-lg select-none py-0.5">
+                                                ↓
+                                              </div>
+                                            )}
+                                          </React.Fragment>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+
+                            {/* 5. SUMMARY MATCHING */}
+                            {category === 'SUMMARY_MATCHING' && (() => {
+                              const refBox = group.referenceBox || [];
+                              return (
+                                <div className="space-y-4">
+                                  {refBox.length > 0 && (
+                                    <div className="border border-slate-300 p-4 bg-slate-50/60">
+                                      <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-600 mb-2.5 flex items-center gap-1.5">
+                                        <Layers className="w-3.5 h-3.5 text-slate-500" />
+                                        <span>Options Box</span>
+                                      </div>
+                                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                        {refBox.map(item => (
+                                          <div key={item.key} className="flex items-baseline gap-2 text-xs">
+                                            <span className="font-mono font-bold text-slate-800">[{item.key}]</span>
+                                            <span className="text-slate-700">{item.label}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  <div className="bg-slate-50/70 border border-slate-200 p-6 sm:p-8">
+                                    {groupTitle && (
+                                      <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-5">
+                                        {groupTitle}
+                                      </div>
+                                    )}
+                                    {renderStructuredNotes({
+                                      items: gqs,
+                                      answers,
+                                      flagged,
+                                      onAnswerChange,
+                                      onToggleFlag,
+                                      questionRefs,
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        );
+                      });
+                    })()}
                   </div>
+                )}
+              </>
+            );
+          })()}
 
-                  {/* Input Type Rendering */}
-                  <div className="mt-4 pl-11">
-                    {q.type === 'MULTIPLE_CHOICE' ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        {q.options?.map((option) => {
-                          const letter = option.charAt(0);
-                          const isSelected = currentVal.toUpperCase() === letter.toUpperCase();
-                          return (
-                            <button
-                              key={option}
-                              type="button"
-                              onClick={() => onAnswerChange(qNum, letter)}
-                              className={`w-full text-left p-3.5 rounded-xl text-xs font-medium border flex items-center justify-between transition-all cursor-pointer ${
-                                isSelected
-                                  ? 'bg-brand-50/80 border-brand-500 text-brand-900 ring-1 ring-brand-500'
-                                  : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
-                              }`}
-                            >
-                              <span>{option}</span>
-                              {isSelected && <Check className="w-4 h-4 text-brand-600 shrink-0" />}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <input
-                        type="text"
-                        value={currentVal}
-                        onChange={(e) => onAnswerChange(qNum, e.target.value)}
-                        placeholder={q.placeholder || `Type your answer for Question ${qNum}...`}
-                        className="w-full max-w-lg px-4 py-3 text-sm rounded-xl border border-slate-300 focus:ring-2 focus:ring-brand-500 focus:border-brand-500 font-medium text-slate-900 bg-white shadow-sm"
-                      />
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </>
-    );
-  })()}
+        </div>
+      </div>
 
-          {/* Bottom Question Navigation Palette */}
-          <div className="p-4 rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="flex items-center justify-between mb-3 text-xs font-semibold text-slate-500">
-              <span className="font-bold text-slate-700">Questions Palette (Part {activePartId})</span>
-              <div className="flex items-center gap-3 text-[11px]">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-brand-500" /> Answered
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400" /> Flagged
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-slate-200" /> Unanswered
-                </span>
-              </div>
-            </div>
+      {/* Docked Scoped Question Palette for Current Part (Strictly Centered Horizontally) */}
+      <div className="w-full flex items-center justify-center py-2.5 bg-white border-t border-slate-200 shrink-0 select-none">
+        <div className="flex flex-wrap items-center justify-center gap-1.5 px-3">
+          <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mr-1 shrink-0">
+            Part {activePartId}:
+          </span>
+          {partQuestions.map((q) => {
+            const qNum = q.questionNumber;
+            const isAns = Boolean(answers[qNum] && answers[qNum].trim());
+            const isFlg = flagged[qNum];
 
-            <div className="grid grid-cols-10 gap-1.5">
-              {partQuestions.map((q) => {
-                const qNum = q.questionNumber;
-                const isAns = Boolean(answers[qNum] && answers[qNum].trim());
-                const isFlg = flagged[qNum];
-
-                return (
-                  <button
-                    key={qNum}
-                    type="button"
-                    onClick={() => {
-                      const el = questionRefs.current[qNum];
-                      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }}
-                    className={`h-9 rounded-xl font-mono text-xs font-bold transition flex items-center justify-center cursor-pointer ${
-                      isFlg 
-                        ? 'bg-amber-400 text-slate-900 ring-2 ring-amber-200 font-extrabold' 
-                        : isAns 
-                          ? 'bg-brand-500 text-white shadow-sm' 
-                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                    }`}
-                  >
-                    {qNum}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
+            return (
+              <button
+                key={qNum}
+                type="button"
+                onClick={() => {
+                  const el = questionRefs.current[qNum];
+                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }}
+                className={`w-7 h-7 rounded text-xs font-semibold transition flex items-center justify-center shrink-0 cursor-pointer ${
+                  isFlg 
+                    ? 'bg-amber-400 text-slate-900 ring-1 ring-amber-300 font-bold' 
+                    : isAns 
+                      ? 'bg-brand-500 text-white shadow-xs font-bold' 
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
+                }`}
+                title={`Question ${qNum}`}
+              >
+                {qNum}
+              </button>
+            );
+          })}
         </div>
       </div>
 

@@ -216,9 +216,27 @@ export async function fetchAllExamSessions() {
   // Fetch live student counts from Supabase for sessions
   if (supabase && map.size > 0) {
     try {
-      const { data: students, error: stdErr } = await supabase
+      // Resilient student query: query only core columns that exist across all schema versions
+      let students = null;
+      let stdErr = null;
+
+      const resPrimary = await supabase
         .from('students')
-        .select('id, exam_id, status, reading_band, listening_band, writing_band, overall_band');
+        .select('id, exam_id, status, overall_band');
+
+      if (!resPrimary.error && Array.isArray(resPrimary.data)) {
+        students = resPrimary.data;
+      } else {
+        // Fallback to absolute base columns
+        const resFallback = await supabase
+          .from('students')
+          .select('id, exam_id, status');
+        if (!resFallback.error && Array.isArray(resFallback.data)) {
+          students = resFallback.data;
+        } else {
+          stdErr = resFallback.error || resPrimary.error;
+        }
+      }
 
       if (!stdErr && Array.isArray(students)) {
         for (const [, session] of map.entries()) {

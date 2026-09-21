@@ -1,67 +1,120 @@
 /**
  * Google Gemini AI Integration Service
- * Model: gemini-2.5-flash (with automated fallback to gemini-3.6-flash)
- * Real multi-part PDF parsing & Strict Official IELTS Writing Examiner.
- * Fallback mock datasets have been completely eliminated.
+ * Model: gemini-3.6-flash (fallback: gemini-3.5-flash-lite)
+ * Real multi-part PDF parsing via Files API & Strict Official IELTS Writing Examiner.
+ * Structured Outputs (responseSchema) & Resilient Exponential Backoff for Rate Limits.
  */
 
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { GoogleGenAI } from '@google/genai';
 
+function loadEnvFiles() {
+  if (typeof process === 'undefined' || !process.cwd) return;
+  try {
+    const envPaths = [
+      path.resolve(process.cwd(), '.env'),
+      path.resolve(process.cwd(), '.env.local'),
+    ];
+    for (const envPath of envPaths) {
+      if (fs.existsSync(envPath)) {
+        const content = fs.readFileSync(envPath, 'utf-8');
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const eqIdx = trimmed.indexOf('=');
+          if (eqIdx !== -1) {
+            const key = trimmed.slice(0, eqIdx).trim();
+            const val = trimmed.slice(eqIdx + 1).trim();
+            process.env[key] = val;
+          }
+        }
+      }
+    }
+  } catch {}
+}
+loadEnvFiles();
+
+let activeKeyIndex = 0;
+
 /**
- * Helper to retrieve Gemini API Key across Node and Browser environments
+ * Retrieves all valid Google Gemini API keys from server environment with multi-key support
+ * (GEMINI_API_KEYS comma-separated, GEMINI_API_KEY, and fallback environment variables)
  */
-export function getGeminiApiKey() {
+export function getGeminiApiKeys() {
+  loadEnvFiles();
+  const keys = [];
+
+  const addKey = (k) => {
+    if (!k || typeof k !== 'string') return;
+    const clean = k.trim().replace(/^["']|["']$/g, '');
+    const lower = clean.toLowerCase();
+    if (clean.length > 10 && !lower.startsWith('placeholder') && lower !== 'your_api_key_here' && lower !== 'todo') {
+      if (!keys.includes(clean)) {
+        keys.push(clean);
+      }
+    }
+  };
+
   if (typeof process !== 'undefined' && process.env) {
-    if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
-      return process.env.GEMINI_API_KEY.trim();
+    // 1. GEMINI_API_KEYS (comma, semicolon, or newline separated list)
+    if (process.env.GEMINI_API_KEYS) {
+      process.env.GEMINI_API_KEYS.split(/[,;\n]/).forEach(addKey);
     }
-    if (process.env.VITE_GEMINI_API_KEY && process.env.VITE_GEMINI_API_KEY.trim()) {
-      return process.env.VITE_GEMINI_API_KEY.trim();
+    // 2. Primary GEMINI_API_KEY
+    if (process.env.GEMINI_API_KEY) {
+      process.env.GEMINI_API_KEY.split(/[,;\n]/).forEach(addKey);
     }
+    // 3. Fallback and alternative keys
+    addKey(process.env.VITE_GEMINI_API_KEY_FALLBACK);
+    addKey(process.env.GEMINI_API_KEY_FALLBACK);
+    addKey(process.env.GEMINI_BACKUP_API_KEY);
+    addKey(process.env.VITE_GEMINI_API_KEY);
   }
 
-  if (typeof import.meta !== 'undefined' && import.meta.env) {
-    if (import.meta.env.VITE_GEMINI_API_KEY && import.meta.env.VITE_GEMINI_API_KEY.trim()) {
-      return import.meta.env.VITE_GEMINI_API_KEY.trim();
-    }
-    if (import.meta.env.GEMINI_API_KEY && import.meta.env.GEMINI_API_KEY.trim()) {
-      return import.meta.env.GEMINI_API_KEY.trim();
-    }
-  }
-
-  if (typeof window !== 'undefined' && window.localStorage) {
-    const local = window.localStorage.getItem('gemini_api_key');
-    if (local && local.trim()) return local.trim();
-  }
-
-  return '';
+  return keys;
 }
 
 /**
- * Checks whether the active environment has a valid API key
+ * Returns currently active Gemini API Key
+ */
+export function getGeminiApiKey() {
+  const keys = getGeminiApiKeys();
+  if (keys.length === 0) return '';
+  return keys[activeKeyIndex % keys.length];
+}
+
+/**
+ * Rotates to the next available API key in the pool upon rate limiting (429)
+ */
+export function rotateGeminiApiKey() {
+  const keys = getGeminiApiKeys();
+  if (keys.length <= 1) return getGeminiApiKey();
+  activeKeyIndex = (activeKeyIndex + 1) % keys.length;
+  const nextKey = keys[activeKeyIndex];
+  console.warn(
+    `[Gemini Key Rotation] Rotated active API key to slot #${activeKeyIndex + 1}/${keys.length} (${nextKey.substring(0, 8)}...${nextKey.substring(nextKey.length - 4)})`
+  );
+  return nextKey;
+}
+
+/**
+ * Resets active key index to primary slot (slot #1)
+ */
+export function resetGeminiKeyIndex() {
+  activeKeyIndex = 0;
+}
+
+/**
+ * Checks whether the active environment has at least one valid API key
  */
 export function isLiveGeminiConfigured() {
-  const key = getGeminiApiKey();
-  if (!key) return false;
-  const lower = key.toLowerCase();
-  if (lower.startsWith('placeholder') || lower === 'your_api_key_here' || lower === 'todo') {
-    return false;
-  }
-  return key.length > 10;
+  return getGeminiApiKeys().length > 0;
 }
 
 /**
  * Official IDP IELTS Skill Level Mapping:
- * - 9.0: "Expert user"
- * - 8.0 - 8.5: "Very good user"
- * - 7.0 - 7.5: "Good user"
- * - 6.0 - 6.5: "Competent user"
- * - 5.0 - 5.5: "Modest user"
- * - 4.0 - 4.5: "Limited user"
- * - 3.0 - 3.5: "Extremely limited user"
- * - 2.0 - 2.5: "Intermittent user"
- * - 1.0: "Non-user"
- * - 0.0: "Did not attempt the test"
  */
 export function getIdpSkillLevel(score) {
   const band = Number(score);
@@ -79,9 +132,6 @@ export function getIdpSkillLevel(score) {
 
 /**
  * Official IELTS Band rounding helper:
- * - Fractional remainder in [0.25, 0.75) rounds to .5
- * - >= 0.75 rounds up to the next whole band
- * - < 0.25 rounds down to the whole band
  */
 export function roundToIeltsBand(score) {
   if (score === null || score === undefined || isNaN(score)) return 0.0;
@@ -129,68 +179,993 @@ export function toBase64String(fileBuffer) {
   return '';
 }
 
+// =========================================================================
+// STRUCTURED OUTPUT SCHEMAS (OpenAPI 3.0 / JSON Schema)
+// =========================================================================
+
+export const READING_EXAM_SCHEMA = {
+  type: 'object',
+  properties: {
+    passages: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          part: { type: 'integer' },
+          title: { type: 'string' },
+          subtitle: { type: 'string' },
+          text: { type: 'string' },
+          // Discrete paragraph array: each lettered paragraph preserved as {label, text}
+          paragraphs: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string' },   // "A", "B", "C"... or ""
+                text: { type: 'string' },
+              },
+              required: ['label', 'text'],
+            },
+          },
+          notes_template: { type: 'string' },
+          reference_box: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                key: { type: 'string' },
+                label: { type: 'string' },
+              },
+              required: ['key', 'label'],
+            },
+          },
+          questions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                q_num: { type: 'integer' },
+                type: { 
+                  type: 'string', 
+                  enum: [
+                    'TRUE_FALSE_NOT_GIVEN',
+                    'YES_NO_NOT_GIVEN',
+                    'MULTIPLE_CHOICE',
+                    'MATCHING_HEADINGS',
+                    'MATCHING_INFORMATION',
+                    'MATCHING_FEATURES',
+                    'MATCHING_SENTENCE_ENDINGS',
+                    'NOTES_COMPLETION',
+                    'TABLE_COMPLETION',
+                    'SUMMARY_COMPLETION',
+                    'SUMMARY_MATCHING',
+                    'FLOW_CHART_COMPLETION',
+                    'DIAGRAM_LABEL',
+                    'SHORT_ANSWER',
+                  ],
+                },
+                prompt: { type: 'string' },
+                instruction: { type: 'string' },
+                title: { type: 'string' },
+                subheading: { type: 'string' },
+                // Intermediate non-question contextual bullet points
+                context_bullets: {
+                  type: 'array',
+                  items: { type: 'string' },
+                },
+                notes_template: { type: 'string' },
+                // For narrative tasks: full narrative with {{q_num}} placeholders at gap positions
+                summary_template: { type: 'string' },
+                options: {
+                  type: 'array',
+                  items: { type: 'string' },
+                },
+                reference_box: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      key: { type: 'string' },
+                      label: { type: 'string' },
+                    },
+                    required: ['key', 'label'],
+                  },
+                },
+                correct_answer: { type: 'string' },
+              },
+              required: ['q_num', 'type', 'prompt', 'options', 'correct_answer'],
+            },
+          },
+        },
+        required: ['part', 'title', 'text', 'questions'],
+      },
+    },
+  },
+  required: ['passages'],
+};
+
+export const LISTENING_EXAM_SCHEMA = {
+  type: 'object',
+  properties: {
+    parts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          part: { type: 'integer' },
+          title: { type: 'string' },
+          audio_track_index: { type: 'integer' },
+          instruction: { type: 'string' },
+          notes_template: { type: 'string' },
+          reference_box: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                key: { type: 'string' },
+                label: { type: 'string' },
+              },
+              required: ['key', 'label'],
+            },
+          },
+          questions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                q_num: { type: 'integer' },
+                type: { 
+                  type: 'string', 
+                  enum: [
+                    'FORM_COMPLETION',
+                    'NOTES_COMPLETION',
+                    'TABLE_COMPLETION',
+                    'FLOW_CHART_MATCHING',
+                    'FLOW_CHART_COMPLETION',
+                    'SUMMARY_COMPLETION',
+                    'MULTIPLE_CHOICE',
+                    'MATCHING',
+                    'MAP_LABELLING',
+                    'DIAGRAM_LABEL',
+                    'SHORT_ANSWER',
+                  ],
+                },
+                prompt: { type: 'string' },
+                instruction: { type: 'string' },
+                title: { type: 'string' },
+                subheading: { type: 'string' },
+                context_bullets: {
+                  type: 'array',
+                  items: { type: 'string' },
+                },
+                notes_template: { type: 'string' },
+                flow_step: { type: 'string' },
+                summary_template: { type: 'string' },
+                options: {
+                  type: 'array',
+                  items: { type: 'string' },
+                },
+                reference_box: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      key: { type: 'string' },
+                      label: { type: 'string' },
+                    },
+                    required: ['key', 'label'],
+                  },
+                },
+                correct_answer: { type: 'string' },
+              },
+              required: ['q_num', 'type', 'prompt', 'options', 'correct_answer'],
+            },
+          },
+        },
+        required: ['part', 'title', 'audio_track_index', 'questions'],
+      },
+    },
+  },
+  required: ['parts'],
+};
+
+export const WRITING_EXAM_SCHEMA = {
+  type: 'object',
+  properties: {
+    task_1: {
+      type: 'object',
+      properties: {
+        page_index: { type: 'integer' },
+        title: { type: 'string' },
+        prompt: { type: 'string' },
+        min_words: { type: 'integer' },
+        suggested_time: { type: 'integer' },
+      },
+      required: ['page_index', 'title', 'prompt', 'min_words', 'suggested_time'],
+    },
+    task_2: {
+      type: 'object',
+      properties: {
+        page_index: { type: 'integer' },
+        title: { type: 'string' },
+        prompt: { type: 'string' },
+        min_words: { type: 'integer' },
+        suggested_time: { type: 'integer' },
+      },
+      required: ['page_index', 'title', 'prompt', 'min_words', 'suggested_time'],
+    },
+  },
+  required: ['task_1', 'task_2'],
+};
+
+export const WRITING_EVALUATION_SCHEMA = {
+  type: 'object',
+  properties: {
+    task_1: {
+      type: 'object',
+      properties: {
+        word_count: { type: 'number' },
+        scores: {
+          type: 'object',
+          properties: {
+            ta: { type: 'number' },
+            cc: { type: 'number' },
+            lr: { type: 'number' },
+            gra: { type: 'number' },
+            band: { type: 'number' },
+          },
+          required: ['ta', 'cc', 'lr', 'gra', 'band'],
+        },
+        skill_level: { type: 'string' },
+        feedback: { type: 'string' },
+        mistakes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              original: { type: 'string' },
+              correction: { type: 'string' },
+              explanation: { type: 'string' },
+            },
+            required: ['original', 'correction', 'explanation'],
+          },
+        },
+      },
+      required: ['scores', 'skill_level', 'feedback', 'mistakes'],
+    },
+    task_2: {
+      type: 'object',
+      properties: {
+        word_count: { type: 'number' },
+        scores: {
+          type: 'object',
+          properties: {
+            tr: { type: 'number' },
+            cc: { type: 'number' },
+            lr: { type: 'number' },
+            gra: { type: 'number' },
+            band: { type: 'number' },
+          },
+          required: ['tr', 'cc', 'lr', 'gra', 'band'],
+        },
+        skill_level: { type: 'string' },
+        feedback: { type: 'string' },
+        mistakes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              original: { type: 'string' },
+              correction: { type: 'string' },
+              explanation: { type: 'string' },
+            },
+            required: ['original', 'correction', 'explanation'],
+          },
+        },
+      },
+      required: ['scores', 'skill_level', 'feedback', 'mistakes'],
+    },
+    overall_writing_band: { type: 'number' },
+    overall_skill_level: { type: 'string' },
+  },
+  required: ['task_1', 'task_2', 'overall_writing_band', 'overall_skill_level'],
+};
+
+// =========================================================================
+// RESILIENT MODEL ORCHESTRATION & CONFIGURATION
+// =========================================================================
+
+export const PRIMARY_GEMINI_MODEL = 'gemini-3.6-flash';
+export const FALLBACK_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+
 /**
- * Calls Gemini models with gemini-2.5-flash as primary,
- * falling back automatically to gemini-3.6-flash if deprecated/404 by Google.
+ * Shared baseline generation config ensuring deterministic JSON output across models
  */
-export async function callGeminiGenerate({ apiKey, contents, config = {} }) {
-  const activeKey = apiKey || getGeminiApiKey();
-  if (!activeKey) {
-    throw new Error('GEMINI_API_KEY is required. Please set GEMINI_API_KEY in your environment.');
+export const SHARED_GENERATION_CONFIG = Object.freeze({
+  temperature: 0.1,
+  responseMimeType: 'application/json',
+  maxOutputTokens: 8192,
+});
+
+/**
+ * Creates a unified generation config object combining shared defaults,
+ * schemas, and request-specific overrides.
+ */
+export function buildUnifiedConfig(schema, overrides = {}) {
+  return {
+    ...SHARED_GENERATION_CONFIG,
+    ...(schema ? { responseSchema: schema } : {}),
+    maxOutputTokens: 8192,
+    ...overrides,
+  };
+}
+
+/**
+ * Shared, reusable parser configurations guaranteeing that both primary ('gemini-3.6-flash')
+ * and fallback ('gemini-3.5-flash-lite') models use the exact same schema and parsing instructions.
+ */
+export const READING_PARSER_CONFIG = Object.freeze({
+  name: 'Reading Examination Parser',
+  systemInstruction: `You are an elite, certified Cambridge IELTS Academic Reading parser.
+Your duty is to transcribe authentic IELTS Reading exam booklets into strict JSON matching the schema with 100% fidelity.
+
+CRITICAL LAWS:
+1. STRICT 1-TO-1 PASSAGE ISOLATION & EXACT 40 QUESTION COUNT:
+   - Extract exactly 3 passages.
+   - Total question count across Passages 1–3 MUST strictly equal 40 questions:
+     * Passage 1 MUST contain Questions 1–13 (13 questions).
+     * Passage 2 MUST contain Questions 14–26 (13 questions).
+     * Passage 3 MUST contain 14 questions (Questions 27–40 in total):
+       - Questions 27–31: Summary Completion with options box (A–J) (type: "SUMMARY_MATCHING" or "NOTES_COMPLETION")
+       - Questions 32–35: 4-Option Multiple Choice (A, B, C, D) (type: "MULTIPLE_CHOICE")
+       - Questions 36–40: True / False / Not Given (type: "TRUE_FALSE_NOT_GIVEN")
+     DO NOT truncate or omit Questions 32–40! Every question from 1 to 40 MUST be extracted.
+   - Each passage (1, 2, 3) must strictly correspond to its own respective article in the booklet with its own authentic title, subtitle, and body text.
+   - Absolutely NO text or content may be duplicated, swapped, or shared between passages.
+2. DISCRETE PARAGRAPH EXTRACTION:
+   - If an article has lettered paragraphs (A, B, C...), you MUST populate the "paragraphs" array with discrete objects: { "label": "A", "text": "..." }.
+   - If unlettered, split into natural paragraphs with label: "".
+   - Preserve the complete uninterrupted reading text in "text".
+3. PRECISE TASK CLASSIFICATION (100% CAMBRIDGE COVERAGE):
+   - You MUST accurately detect and assign the exact task type for every question from the schema enum.
+4. COMPLETE NARRATIVE PRESERVATION:
+   - For all notes, summaries, tables, or sentences with gaps: provide "summary_template" or "notes_template" representing the complete text structure with {{q_num}} placeholders at every gap.
+   - NEVER omit non-question sentences, subheadings, or context lines.
+5. OFFICIAL ANSWER KEYS:
+   - Extract exact answers for all 40 questions strictly from the official 'ANSWER KEY' table at the end of the booklet.`,
+  schema: READING_EXAM_SCHEMA,
+  config: buildUnifiedConfig(READING_EXAM_SCHEMA, { maxOutputTokens: 8192 }),
+});
+
+export const LISTENING_PARSER_CONFIG = Object.freeze({
+  name: 'Listening Examination Parser',
+  systemInstruction: `You are an elite, certified Cambridge IELTS Listening parser.
+Your duty is to transcribe authentic IELTS Listening exam booklets and answer keys into strict JSON matching the schema with 100% fidelity.
+
+CRITICAL LAWS:
+1. STRICT 1-TO-1 PART ISOLATION:
+   - Extract exactly 4 parts corresponding strictly to Parts 1, 2, 3, and 4 in the booklet.
+   - Retain authentic part titles, instructions, and target audio indexes.
+   - No content may be duplicated, swapped, or shared across parts.
+2. PRECISE TASK CLASSIFICATION (100% CAMBRIDGE COVERAGE):
+   - You MUST accurately classify every question item into its exact Cambridge type from the schema enum.
+3. COMPLETE CONTEXT & NOTES HIERARCHY (NO OMITTED LINES):
+   - For any task involving notes, forms, tables, or summaries: generate "notes_template" on the part object.
+   - Preserve ALL structural section headings, subheadings, and non-question informative sentences.
+   - Place {{q_num}} token at every answer blank.
+   - NEVER drop lines that lack inputs.
+4. OPTIONS & REFERENCE BOXES:
+   - For MATCHING, MAP_LABELLING, and option boxes: extract all letter-label pairs into "reference_box".
+5. OFFICIAL ANSWER KEYS:
+   - Extract exact answers strictly from the official 'ANSWER KEY' table at the end of the booklet.`,
+  schema: LISTENING_EXAM_SCHEMA,
+  config: buildUnifiedConfig(LISTENING_EXAM_SCHEMA, { maxOutputTokens: 8192 }),
+});
+
+export const WRITING_PARSER_CONFIG = Object.freeze({
+  name: 'Writing Examination Parser',
+  systemInstruction: `You are an elite Cambridge IELTS Writing parser.
+Your task is to index Writing Task 1 and Task 2 from the attached PDF with minimal token footprint.
+CRITICAL RULES:
+1. PAGE INDEXING:
+   - Identify the zero-based page index: Task 1 MUST have page_index: 0, Task 2 MUST have page_index: 1.
+2. CONCISE PROMPTS:
+   - Extract only the core concise assignment statement and prompt instructions (e.g. "The chart below shows... Summarise the information by selecting and reporting the main features...").
+   - NEVER transcribe chart data, graph axes, tables, headers, URLs, or browser footers. The graphics will be rendered directly from the PDF pages. Keep prompts concise and focused.
+3. STRICT JSON:
+   - Output valid, complete JSON strictly adhering to WRITING_EXAM_SCHEMA.`,
+  schema: WRITING_EXAM_SCHEMA,
+  config: buildUnifiedConfig(WRITING_EXAM_SCHEMA, { maxOutputTokens: 8192 }),
+});
+
+export const WRITING_EVALUATION_CONFIG = Object.freeze({
+  name: 'Writing Strict Examiner',
+  systemInstruction: 'You are a Senior Cambridge-Certified IELTS Writing Examiner. You grade essays with strict, uncompromising adherence to the official IDP/British Council assessment criteria.',
+  schema: WRITING_EVALUATION_SCHEMA,
+  config: buildUnifiedConfig(WRITING_EVALUATION_SCHEMA, { temperature: 0.15, maxOutputTokens: 8192 }),
+});
+
+/**
+ * Extracts numeric HTTP status code or gRPC code representation from a Google API error.
+ */
+export function getErrorStatusCode(err) {
+  if (!err) return null;
+  if (typeof err.status === 'number') return err.status;
+  if (typeof err.statusCode === 'number') return err.statusCode;
+  if (typeof err.code === 'number') return err.code;
+  if (typeof err.status === 'string' && /^\d+$/.test(err.status)) return Number(err.status);
+
+  const msg = String(err.message || '');
+  const match = msg.match(/\b(429|500|502|503|504)\b/);
+  if (match) return Number(match[1]);
+
+  if (err.code === 'RESOURCE_EXHAUSTED' || msg.includes('RESOURCE_EXHAUSTED')) return 429;
+  if (err.code === 'UNAVAILABLE' || msg.includes('UNAVAILABLE')) return 503;
+
+  return null;
+}
+
+/**
+ * Detects whether an error from Google GenAI is transient:
+ * HTTP 503 ("model is currently experiencing high demand" / overloaded / unavailable)
+ * or HTTP 429 ("rate limit exceeded" / quota / RESOURCE_EXHAUSTED).
+ */
+export function isTransientGoogleError(err) {
+  if (!err) return false;
+  const status = getErrorStatusCode(err);
+  if (status === 429 || status === 503) return true;
+
+  const msg = String(err.message || '').toLowerCase();
+  return (
+    msg.includes('429') ||
+    msg.includes('503') ||
+    msg.includes('quota') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('overloaded') ||
+    msg.includes('high demand') ||
+    msg.includes('unavailable') ||
+    msg.includes('rate limit') ||
+    msg.includes('ratelimit') ||
+    msg.includes('too many requests') ||
+    msg.includes('please try again')
+  );
+}
+
+export const isResiliencyFallbackError = isTransientGoogleError;
+
+/**
+ * Detects whether an error from Google GenAI is a rate limit / quota exhaustion (HTTP 429).
+ */
+export function isRateLimitError(err) {
+  if (!err) return false;
+  const status = getErrorStatusCode(err);
+  if (status === 429) return true;
+  const msg = String(err.message || err.error || '').toLowerCase();
+  return (
+    status === 429 ||
+    msg.includes('429') ||
+    msg.includes('quota') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('rate limit') ||
+    msg.includes('ratelimit') ||
+    msg.includes('too many requests')
+  );
+}
+
+/**
+ * Cleans dangling tokens, trailing commas, or half-emitted keys at the end of JSON strings.
+ */
+function cleanDanglingTokensAtEof(str) {
+  if (!str || typeof str !== 'string') return '';
+  let s = str.trim();
+  // Strip trailing markdown fence or backticks if any
+  s = s.replace(/```\s*$/, '').trim();
+  // Strip trailing commas, colons, or whitespace
+  s = s.replace(/[,\s:]+$/, '');
+  // Strip dangling unclosed keys or key-colon at EOF, e.g. , "some_key": or , "some_key"
+  s = s.replace(/,\s*"[^"]*"\s*:\s*$/, '');
+  s = s.replace(/,\s*"[^"]*"\s*$/, '');
+  return s;
+}
+
+/**
+ * Resilient JSON cleaner and repair mechanism.
+ * 1. Strips markdown code fences (```json ... ``` or ``` ... ```)
+ * 2. Removes accidental trailing commas before } and ] and at EOF
+ * 3. Repairs unescaped quotes inside string values via contextual lookahead
+ * 4. Normalizes unescaped control characters (\n, \t, etc.)
+ * 5. Uses a stack-based bracket balancer to close unclosed objects/arrays
+ * 6. Resiliently handles dangling tokens and truncated EOF
+ */
+export function robustJsonRepair(rawText) {
+  if (!rawText || typeof rawText !== 'string') return {};
+
+  let text = rawText.trim();
+  // Strip markdown code fences (```json ... ``` or ``` ... ``` or embedded fences)
+  text = text.replace(/^```(?:json)?\s*[\r\n]*/i, '')
+             .replace(/[\r\n]*```\s*$/i, '')
+             .replace(/^```|```$/g, '')
+             .trim();
+
+  // Strip any leading non-JSON text before the first { or [
+  const firstBrace = text.indexOf('{');
+  const firstBracket = text.indexOf('[');
+  let startIdx = -1;
+  if (firstBrace !== -1 && firstBracket !== -1) startIdx = Math.min(firstBrace, firstBracket);
+  else if (firstBrace !== -1) startIdx = firstBrace;
+  else if (firstBracket !== -1) startIdx = firstBracket;
+  if (startIdx > 0) text = text.slice(startIdx);
+
+  // Fast path 1: direct parse
+  try {
+    return JSON.parse(text);
+  } catch (e) {}
+
+  // Fast path 2: simple trailing comma removal and clean EOF
+  try {
+    const cleanedSimple = cleanDanglingTokensAtEof(text).replace(/,\s*([}\]])/g, '$1');
+    return JSON.parse(cleanedSimple);
+  } catch (e) {}
+
+  // Deep repair pass: escape unescaped inner quotes and control characters
+  let inString = false;
+  let isEscaped = false;
+  let result = '';
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (isEscaped) {
+        result += char;
+        isEscaped = false;
+      } else if (char === '\\') {
+        result += char;
+        isEscaped = true;
+      } else if (char === '"') {
+        // Lookahead to check if this quote is closing a string
+        const lookahead = text.slice(i + 1, i + 80).trimStart();
+        let isClosing = false;
+        if (lookahead.length === 0) {
+          isClosing = true;
+        } else if (lookahead[0] === ':') {
+          isClosing = true;
+        } else if (lookahead[0] === '}' || lookahead[0] === ']') {
+          isClosing = true;
+        } else if (lookahead[0] === ',') {
+          const afterComma = lookahead.slice(1).trimStart();
+          if (afterComma.length === 0 || /^["{\[\d\-tfn}\]]/.test(afterComma)) {
+            isClosing = true;
+          }
+        }
+
+        if (isClosing) {
+          inString = false;
+          result += char;
+        } else {
+          // Unescaped quote inside string value -> escape it
+          result += '\\"';
+        }
+      } else if (char === '\n') {
+        result += '\\n';
+      } else if (char === '\r') {
+        // drop carriage return
+      } else if (char === '\t') {
+        result += '\\t';
+      } else if (char.charCodeAt(0) < 32) {
+        result += ' ';
+      } else {
+        result += char;
+      }
+    } else {
+      if (char === '"') {
+        inString = true;
+        result += char;
+      } else {
+        result += char;
+      }
+    }
   }
 
-  const ai = new GoogleGenAI({ apiKey: activeKey });
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-3.6-flash'];
-  let lastError = null;
+  // Remove any trailing commas before } or ]
+  result = result.replace(/,\s*([}\]])/g, '$1');
 
-  for (const model of models) {
+  try {
+    return JSON.parse(result);
+  } catch (e) {}
+
+  // Stack-based bracket balance repair for truncated or cut-off output
+  const balanceAndParse = (candidateText, candidateInStr) => {
+    let cleanCand = cleanDanglingTokensAtEof(candidateText);
+    if (candidateInStr) cleanCand += '"';
+    cleanCand = cleanCand.replace(/,\s*([}\]])/g, '$1');
+
+    const stack = [];
+    let insideStr = false;
+    let isEsc = false;
+    for (let i = 0; i < cleanCand.length; i++) {
+      const c = cleanCand[i];
+      if (insideStr) {
+        if (isEsc) isEsc = false;
+        else if (c === '\\') isEsc = true;
+        else if (c === '"') insideStr = false;
+      } else {
+        if (c === '"') insideStr = true;
+        else if (c === '{') stack.push('}');
+        else if (c === '[') stack.push(']');
+        else if (c === '}') {
+          if (stack.length > 0 && stack[stack.length - 1] === '}') stack.pop();
+        } else if (c === ']') {
+          if (stack.length > 0 && stack[stack.length - 1] === ']') stack.pop();
+        }
+      }
+    }
+
+    if (insideStr) cleanCand += '"';
+    cleanCand = cleanDanglingTokensAtEof(cleanCand);
+    while (stack.length > 0) {
+      cleanCand += stack.pop();
+    }
+    cleanCand = cleanCand.replace(/,\s*([}\]])/g, '$1');
+    return JSON.parse(cleanCand);
+  };
+
+  try {
+    return balanceAndParse(result, inString);
+  } catch (e) {}
+
+  // Secondary repair attempt: strip cut-off tail further and balance
+  try {
+    let truncated = cleanDanglingTokensAtEof(result);
+    const lastValidDelim = Math.max(truncated.lastIndexOf(','), truncated.lastIndexOf('{'), truncated.lastIndexOf('['));
+    if (lastValidDelim > 0) {
+      const trimmedCandidate = truncated.slice(0, lastValidDelim);
+      return balanceAndParse(trimmedCandidate, false);
+    }
+  } catch (e2) {}
+
+  throw new Error(`JSON parse and repair failed on input: ${text.slice(0, 100)}...`);
+}
+
+/**
+ * Safely parses raw JSON output from Gemini models, utilizing robustJsonRepair.
+ */
+export function safeJsonParse(text) {
+  try {
+    return robustJsonRepair(text);
+  } catch (err) {
+    console.warn("[safeJsonParse] Fallback to empty object after repair error:", err?.message || err);
+    return {};
+  }
+}
+
+/**
+ * Executes generateContent for a given model with exponential backoff retries on transient errors (503/429).
+ *
+ * @param {Object} params
+ * @param {GoogleGenAI} params.ai - GoogleGenAI client instance
+ * @param {string} params.model - Model identifier (e.g. 'gemini-3.6-flash', 'gemini-3.5-flash-lite')
+ * @param {*} params.contents - Request contents
+ * @param {Object} params.config - Unified generation config
+ * @param {number} [params.maxRetries=2] - Number of retries on transient errors
+ * @param {number} [params.initialDelayMs=2500] - Initial delay in milliseconds (2-3 seconds)
+ * @param {Function} [params.onProgress] - Optional status progress notification
+ * @returns {Promise<any>}
+ */
+export async function executeModelWithRetry({
+  ai,
+  model,
+  contents,
+  config,
+  maxRetries = 2,
+  initialDelayMs = 2500,
+  onProgress = null,
+  hasAlternativeKey = false,
+}) {
+  let attempt = 0;
+  let delay = initialDelayMs;
+  const finalConfig = {
+    ...config,
+    maxOutputTokens: 8192,
+  };
+
+  while (true) {
     try {
       const response = await ai.models.generateContent({
         model,
         contents,
-        config: {
-          responseMimeType: 'application/json',
-          ...config,
-        },
+        config: finalConfig,
       });
-      return { response, modelUsed: model };
+      return response;
     } catch (err) {
-      lastError = err;
-      const msg = (err.message || '').toLowerCase();
-      if (
-        msg.includes('high demand') || 
-        msg.includes('503') || 
-        msg.includes('unavailable') || 
-        msg.includes('quota') || 
-        msg.includes('429')
-      ) {
-        console.warn(`[Gemini] Model ${model} experienced temporary spike (${err.message}). Retrying in 2s...`);
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        try {
-          const retryResp = await ai.models.generateContent({
-            model,
-            contents,
-            config: {
-              responseMimeType: 'application/json',
-              ...config,
-            },
-          });
-          return { response: retryResp, modelUsed: model };
-        } catch (retryErr) {
-          console.warn(`[Gemini] Retry for ${model} failed (${retryErr.message}). Trying fallback model...`);
+      attempt++;
+      const statusCode = getErrorStatusCode(err);
+      const isTransient = isTransientGoogleError(err);
+      const isRateLimit = statusCode === 429 || isRateLimitError(err);
+
+      // Fast failover on HTTP 429 if an alternative key is available:
+      // Do NOT wait for backoff cooldown; immediately throw so caller rotates keys!
+      if (isRateLimit && hasAlternativeKey) {
+        console.warn(
+          `[Gemini Retry] Model '${model}' hit HTTP 429 Rate Limit. Fast failover to alternative API key without cooldown delay.`
+        );
+        throw err;
+      }
+
+      if ((isTransient || isRateLimit) && attempt <= maxRetries) {
+        const jitter = Math.floor(Math.random() * 1000);
+        const waitMs = delay + jitter;
+        console.warn(
+          `[Gemini Retry] Transient error (${statusCode || err.message}). Retrying attempt ${attempt}/${maxRetries} in ${(waitMs / 1000).toFixed(1)}s...`
+        );
+        if (typeof onProgress === 'function') {
+          onProgress(`Transient network/rate issue. Retrying in ${(waitMs / 1000).toFixed(1)}s...`);
         }
+        await new Promise((r) => setTimeout(r, waitMs));
+        delay *= 2; // Exponential backoff
         continue;
       }
 
-      if (msg.includes('not found') || msg.includes('no longer available') || msg.includes('404')) {
-        console.warn(`[Gemini] Model ${model} returned 404/deprecated (${err.message}). Trying fallback model...`);
-        continue;
-      }
+      console.error(`[Gemini Execution Error] Final failure on model ${model}:`, err.message);
       throw err;
     }
   }
+}
 
-  throw lastError;
+/**
+ * Calls Gemini API with Multi-Key Rotation and Model Fallback:
+ * - Primary Model: 'gemini-3.6-flash'
+ * - Fallback Model: 'gemini-3.5-flash-lite'
+ * 
+ * Rate Limit (429) & Multi-Key Flow:
+ * 1. If HTTP 429 ("RESOURCE_EXHAUSTED") is encountered on the active key, automatically
+ *    rotates to the secondary key in the pool immediately without waiting for a 60-second cooldown.
+ * 2. If primary model fails across keys, automatically falls back to 'gemini-3.5-flash-lite'.
+ */
+export async function callGeminiGenerate({ apiKey, contents, config = {}, systemInstruction = null, onProgress = null }) {
+  const allKeys = apiKey ? [apiKey] : getGeminiApiKeys();
+  if (allKeys.length === 0) {
+    throw new Error('GEMINI_API_KEY is required. Please set GEMINI_API_KEY in your environment.');
+  }
+
+  // Start with currently active key index
+  const startIdx = apiKey ? 0 : (activeKeyIndex % allKeys.length);
+  const orderedKeys = [
+    ...allKeys.slice(startIdx),
+    ...allKeys.slice(0, startIdx),
+  ];
+
+  const models = [PRIMARY_GEMINI_MODEL, FALLBACK_GEMINI_MODEL];
+  let primaryErr = null;
+  let fallbackErr = null;
+
+  for (let mIdx = 0; mIdx < models.length; mIdx++) {
+    const currentModel = models[mIdx];
+    const isFallback = mIdx > 0;
+
+    for (let kIdx = 0; kIdx < orderedKeys.length; kIdx++) {
+      const currentKey = orderedKeys[kIdx];
+      const ai = new GoogleGenAI({ apiKey: currentKey });
+      const hasAlternativeKey = kIdx < orderedKeys.length - 1;
+
+      const unifiedConfig = {
+        ...SHARED_GENERATION_CONFIG,
+        maxOutputTokens: 8192,
+        ...config,
+        ...(systemInstruction ? { systemInstruction } : {}),
+      };
+
+      try {
+        if (isFallback || kIdx > 0) {
+          console.log(
+            `[Gemini Call] Executing ${currentModel} (Key slot #${kIdx + 1}/${orderedKeys.length}: ${currentKey.substring(0, 8)}...)...`
+          );
+        }
+
+        const response = await executeModelWithRetry({
+          ai,
+          model: currentModel,
+          contents,
+          config: unifiedConfig,
+          maxRetries: isFallback ? 1 : 2,
+          initialDelayMs: 2500,
+          onProgress,
+          hasAlternativeKey,
+        });
+
+        // Remember working key
+        if (!apiKey) {
+          activeKeyIndex = allKeys.indexOf(currentKey);
+        }
+
+        return { response, modelUsed: currentModel, apiKeyUsed: currentKey };
+      } catch (err) {
+        if (isFallback) {
+          fallbackErr = err;
+        } else {
+          primaryErr = err;
+        }
+
+        const statusCode = getErrorStatusCode(err);
+        const isRateLimit = statusCode === 429 || isRateLimitError(err);
+
+        // If HTTP 429 on this key and we have another key, rotate immediately without cooldown!
+        if (isRateLimit && hasAlternativeKey) {
+          console.warn(
+            `[Gemini Key Rotation] Model '${currentModel}' encountered HTTP 429 Rate Limit on key slot #${kIdx + 1}. ` +
+            `Rotating immediately to key slot #${kIdx + 2} without cooldown...`
+          );
+          if (typeof onProgress === 'function') {
+            try {
+              onProgress({
+                status: 'rotating_key',
+                model: currentModel,
+                message: `Hit rate limit on API key. Rotating to secondary API key instantly...`,
+              });
+            } catch {}
+          }
+          rotateGeminiApiKey();
+          continue; // Instantly retry with the next key!
+        }
+
+        // If not 429 or no more keys for this model, break to fallback model
+        console.warn(
+          `[Gemini Diagnostic] Model '${currentModel}' exhausted keys (Status: ${statusCode || 'N/A'}: ${err.message}).`
+        );
+        break;
+      }
+    }
+
+    // If primary model failed across all keys, log fallback to secondary model
+    if (!isFallback) {
+      const pStatus = getErrorStatusCode(primaryErr);
+      console.warn(
+        `[Gemini Resiliency] Primary model '${PRIMARY_GEMINI_MODEL}' failed across keys (Status: ${pStatus || '503/429'}: ${primaryErr?.message}). ` +
+        `Switching to fallback model: '${FALLBACK_GEMINI_MODEL}'...`
+      );
+      if (typeof onProgress === 'function') {
+        try {
+          onProgress({
+            status: 'fallback',
+            model: FALLBACK_GEMINI_MODEL,
+            message: `Primary model ${PRIMARY_GEMINI_MODEL} failed. Switching to fallback: ${FALLBACK_GEMINI_MODEL}...`,
+          });
+        } catch {}
+      }
+    }
+  }
+
+  // Both primary and fallback models (across all keys) failed
+  const primaryStatus = getErrorStatusCode(primaryErr);
+  const fallbackStatus = getErrorStatusCode(fallbackErr);
+
+  console.error(`[Gemini Resiliency Failed] Both primary and fallback models failed.`);
+  console.error(`  - Primary Model:  ${PRIMARY_GEMINI_MODEL} | Status: ${primaryStatus || 'N/A'} | Error: ${primaryErr?.message}`);
+  console.error(`  - Fallback Model: ${FALLBACK_GEMINI_MODEL} | Status: ${fallbackStatus || 'N/A'} | Error: ${fallbackErr?.message}`);
+
+  const combinedError = new Error(
+    `[Gemini Resiliency Failed] Both primary (${PRIMARY_GEMINI_MODEL} [HTTP ${primaryStatus || 'N/A'}]) ` +
+    `and fallback (${FALLBACK_GEMINI_MODEL} [HTTP ${fallbackStatus || 'N/A'}]) failed across ${orderedKeys.length} key(s): ` +
+    `Primary: ${primaryErr?.message} | Fallback: ${fallbackErr?.message}`
+  );
+  combinedError.status = 500;
+  combinedError.statusCode = 500;
+  combinedError.primaryModel = PRIMARY_GEMINI_MODEL;
+  combinedError.primaryStatusCode = primaryStatus;
+  combinedError.primaryError = primaryErr;
+  combinedError.fallbackModel = FALLBACK_GEMINI_MODEL;
+  combinedError.fallbackStatusCode = fallbackStatus;
+  combinedError.fallbackError = fallbackErr;
+  throw combinedError;
+}
+
+/**
+ * Uploads a PDF buffer via Google GenAI Files API, executes the given callback,
+ * and ensures both the local temp file and remote Gemini file are cleanly deleted in finally.
+ * Automatically rotates API keys on HTTP 429 without waiting for a cooldown.
+ */
+export async function withUploadedGeminiPdf({ apiKey, fileBuffer, fileName = 'document.pdf', fn }) {
+  const allKeys = apiKey ? [apiKey] : getGeminiApiKeys();
+  if (allKeys.length === 0) {
+    throw new Error('GEMINI_API_KEY is required. Please set GEMINI_API_KEY in your environment.');
+  }
+
+  // Ensure fileBuffer is standard Buffer
+  let buffer;
+  if (Buffer.isBuffer(fileBuffer)) {
+    buffer = fileBuffer;
+  } else if (typeof fileBuffer === 'string') {
+    const cleanBase64 = fileBuffer.includes('base64,') ? fileBuffer.split('base64,')[1] : fileBuffer;
+    buffer = Buffer.from(cleanBase64, 'base64');
+  } else if (fileBuffer instanceof Uint8Array || fileBuffer instanceof ArrayBuffer) {
+    buffer = Buffer.from(fileBuffer);
+  } else {
+    throw new Error('Invalid file buffer provided for PDF upload.');
+  }
+
+  const startIdx = apiKey ? 0 : (activeKeyIndex % allKeys.length);
+  const orderedKeys = [
+    ...allKeys.slice(startIdx),
+    ...allKeys.slice(0, startIdx),
+  ];
+
+  let lastErr = null;
+
+  for (let kIdx = 0; kIdx < orderedKeys.length; kIdx++) {
+    const activeKey = orderedKeys[kIdx];
+    const ai = new GoogleGenAI({ apiKey: activeKey });
+    const hasAlternativeKey = kIdx < orderedKeys.length - 1;
+
+    // Write temporary local file for Files API uploader
+    const tempDir = os.tmpdir();
+    const safeName = `gemini_upload_${Date.now()}_${kIdx}_${path.basename(fileName || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const tempFilePath = path.join(tempDir, safeName);
+
+    fs.writeFileSync(tempFilePath, buffer);
+
+    let uploadedFile = null;
+    try {
+      if (kIdx > 0) {
+        console.log(`[Files API] Uploading ${fileName} with key slot #${kIdx + 1} (${activeKey.substring(0, 8)}...)...`);
+      } else {
+        console.log(`[Files API] Uploading ${fileName} (${buffer.length} bytes) to Google Gemini Files API...`);
+      }
+
+      uploadedFile = await ai.files.upload({
+        file: tempFilePath,
+        config: {
+          mimeType: 'application/pdf',
+        },
+      });
+      console.log(`[Files API] File uploaded successfully. Name: ${uploadedFile.name}, URI: ${uploadedFile.uri}`);
+
+      const fileDataPart = {
+        fileData: {
+          fileUri: uploadedFile.uri,
+          mimeType: uploadedFile.mimeType || 'application/pdf',
+        },
+      };
+
+      const result = await fn({ ai, uploadedFile, fileDataPart, apiKey: activeKey });
+      if (!apiKey) {
+        activeKeyIndex = allKeys.indexOf(activeKey);
+      }
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const statusCode = getErrorStatusCode(err);
+      const isRateLimit = statusCode === 429 || isRateLimitError(err);
+
+      if (isRateLimit && hasAlternativeKey) {
+        console.warn(
+          `[Files API] Hit HTTP 429 Rate Limit on key slot #${kIdx + 1}. Rotating to secondary key slot #${kIdx + 2} immediately...`
+        );
+        rotateGeminiApiKey();
+        continue;
+      }
+      throw err;
+    } finally {
+      // 1. Clean up local temp file
+      try {
+        if (fs.existsSync(tempFilePath)) {
+          fs.unlinkSync(tempFilePath);
+        }
+      } catch (cleanErr) {
+        console.warn('[Files API] Failed to unlink local temp file:', cleanErr.message);
+      }
+
+      // 2. Clean up remote Gemini file to save storage quota
+      if (uploadedFile?.name) {
+        try {
+          console.log(`[Files API] Deleting remote Gemini file ${uploadedFile.name}...`);
+          await ai.files.delete({ name: uploadedFile.name });
+        } catch (cleanErr) {
+          console.warn('[Files API] Failed to delete remote Gemini file:', cleanErr.message);
+        }
+      }
+    }
+  }
+
+  throw lastErr;
 }
 
 // =========================================================================
@@ -198,368 +1173,693 @@ export async function callGeminiGenerate({ apiKey, contents, config = {} }) {
 // =========================================================================
 
 /**
- * Parse Reading PDF into exact visual transcription HTML (Passages 1–3),
- * Questions (1–40), and Answer Keys.
+ * Parse Reading PDF into structured JSON (Passages 1–3, Questions 1–40, Answer Keys)
+ * using Google Files API and strict responseSchema.
  */
-export async function parseReadingPdf({ fileBuffer, fileName = 'Reading_Booklet.pdf' }) {
-  const base64Data = toBase64String(fileBuffer);
-  if (!base64Data) {
+export async function parseReadingPdf({ fileBuffer, fileName = 'Reading_Booklet.pdf', apiKey = null, onProgress = null }) {
+  if (!fileBuffer) {
     throw new Error('Missing Reading PDF binary buffer.');
   }
 
-  const prompt = `You are a pixel-accurate IELTS booklet transcriber and certified Cambridge Academic Reading test parser.
-Transcribe the provided Reading PDF directly into structural HTML that exactly mirrors the authentic original PDF pages.
-Do not summarize. Do not alter layout geometry.
-- For each passage (Passage 1: Questions 1–13, Passage 2: Questions 14–26, Passage 3: Questions 27–40):
-  - Transcribe the complete verbatim passage text and all accompanying question sets.
-  - If questions, note-completions, classifications, or summary frames are enclosed in a square/rectangle with a border, generate: <div class='pdf-exact-box'>...</div>.
-  - If a section or card has a title/heading, generate: <div class='pdf-exact-box-header'>HEADING TEXT</div>.
-  - If there are shaded candidate info or example boxes, generate: <div class='pdf-exact-shaded-box'>...</div>.
-  - If rubric instructions exist (e.g. "Do the following statements agree..."), generate: <div class='ielts-instruction-banner'>...</div>.
-  - If there are tables or grids, generate: <table class='ielts-exact-table'>...</table>.
-  - Replace answer blanks with: <span class='answer-slot' data-question-num='X'>____ (X)</span>.
-  - For multiple-choice choices, wrap them in: <div class='ielts-mcq-option' data-q='X' data-val='A'><strong>A</strong> Option text</div>.
-  - Retain font sizing hierarchy, bold terms, and indentation.
-  - Extract and attach the answer keys (1-40) separately in the answer_keys object.
+  const prompt = `Extract the full Cambridge IELTS Reading exam from the attached PDF document.
+Follow all rules defined in systemInstruction:
+1. Extract all 3 reading passages with independent texts and titles into "passages". Ensure lettered paragraphs are decomposed into the "paragraphs" array.
+2. Group all 40 questions under their respective passages with full instructions, types, options, and reference boxes:
+   - Passage 1 MUST contain Questions 1–13 (13 questions).
+   - Passage 2 MUST contain Questions 14–26 (13 questions).
+   - Passage 3 MUST contain 14 questions (Questions 27–40 in total):
+     * Questions 27–31: Summary Completion with options box (A–J)
+     * Questions 32–35: 4-Option Multiple Choice (A, B, C, D)
+     * Questions 36–40: True / False / Not Given
+   - The total question count across Passages 1–3 MUST strictly equal 40. DO NOT omit Questions 32–40!
+3. For notes/summary groups, populate "summary_template" with {{q_num}} tokens preserving all non-question context lines.
+4. Extract all 40 answers from the official Answer Key.`;
 
-Return a STRICT, valid JSON object with NO markdown ticks, following this exact schema:
-{
-  "section": "reading",
-  "total_questions": 40,
-  "sections": [
-    {
-      "part": 1,
-      "title": "Passage 1 Title",
-      "question_range": "Questions 1–13",
-      "passage_text": "Verbatim text of reading passage 1...",
-      "page_content_html": "<exact transcribed HTML retaining all boxes, lines, tables, and answer slots for Passage 1 and Questions 1-13>",
-      "answer_keys": { "1": "TRUE", "2": "NOT GIVEN" }
-    },
-    {
-      "part": 2,
-      "title": "Passage 2 Title",
-      "question_range": "Questions 14–26",
-      "passage_text": "Verbatim text of reading passage 2...",
-      "page_content_html": "<exact transcribed HTML retaining all boxes, lines, tables, and answer slots for Passage 2 and Questions 14-26>",
-      "answer_keys": { "14": "B" }
-    },
-    {
-      "part": 3,
-      "title": "Passage 3 Title",
-      "question_range": "Questions 27–40",
-      "passage_text": "Verbatim text of reading passage 3...",
-      "page_content_html": "<exact transcribed HTML retaining all boxes, lines, tables, and answer slots for Passage 3 and Questions 27-40>",
-      "answer_keys": { "27": "aqueduct" }
-    }
-  ],
-  "answer_keys": {
-    "1": "TRUE"
-  },
-  "questions": [
-    {
-      "questionNumber": 1,
-      "passageId": 1,
-      "type": "TRUE_FALSE",
-      "instruction": "Write TRUE, FALSE or NOT GIVEN",
-      "text": "Statement for question 1...",
-      "options": ["TRUE", "FALSE", "NOT GIVEN"],
-      "acceptedAnswers": ["TRUE"]
-    }
-  ]
-}`;
+  return await withUploadedGeminiPdf({
+    apiKey,
+    fileBuffer,
+    fileName,
+    fn: async ({ fileDataPart, apiKey: resolvedApiKey }) => {
+      const executeReadingCall = async (extraPrompt = '', temperature = 0.1) => {
+        const fullPrompt = extraPrompt ? `${prompt}\n\n${extraPrompt}` : prompt;
+        return await callGeminiGenerate({
+          apiKey: resolvedApiKey || apiKey,
+          contents: [
+            {
+              role: 'user',
+              parts: [fileDataPart, { text: fullPrompt }],
+            },
+          ],
+          config: {
+            ...READING_PARSER_CONFIG.config,
+            maxOutputTokens: 8192,
+            temperature,
+            systemInstruction: READING_PARSER_CONFIG.systemInstruction,
+          },
+          onProgress,
+        });
+      };
 
-  const { response, modelUsed } = await callGeminiGenerate({
-    contents: [
-      {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: base64Data,
-        },
-      },
-      { text: prompt },
-    ],
-    config: {
-      temperature: 0.1,
+      let { response, modelUsed } = await executeReadingCall();
+      let parsed = null;
+      let parseError = null;
+
+      try {
+        parsed = robustJsonRepair(response.text || '{}');
+      } catch (err) {
+        parseError = err;
+      }
+
+      // Check if questions are missing (e.g. Passage 3 missing 32-40)
+      const totalParsedQuestions = Array.isArray(parsed?.passages)
+        ? parsed.passages.reduce((acc, p) => acc + (Array.isArray(p.questions) ? p.questions.length : 0), 0)
+        : 0;
+      const isMissingQuestions = totalParsedQuestions < 40;
+
+      // If parsing threw an error, passages array is missing/empty, or questions are incomplete, retry generation once
+      if (!parsed || parseError || !Array.isArray(parsed.passages) || parsed.passages.length === 0 || isMissingQuestions) {
+        console.warn(
+          `[Reading Parser] Parsing incomplete (found ${totalParsedQuestions}/40 questions, ${parseError?.message || 'missing questions'}). Retrying generation once with reinforced prompt...`
+        );
+        try {
+          const retryResult = await executeReadingCall(
+            'CRITICAL: Passage 3 MUST contain 14 questions (Questions 27–31 Summary with options A-J, Questions 32–35 Multiple Choice A-D, Questions 36–40 True/False/Not Given). The total question count across Passages 1–3 MUST strictly equal 40. Ensure valid RFC 8259 JSON output.',
+            0.05
+          );
+          response = retryResult.response;
+          modelUsed = retryResult.modelUsed;
+          parsed = robustJsonRepair(response.text || '{}');
+          parseError = null;
+          console.log('[Reading Parser] Retry generation and JSON repair succeeded.');
+        } catch (retryErr) {
+          console.error('[Reading Parser] Retry also failed to produce valid JSON:', retryErr.message);
+          if (!parsed) throw (parseError || retryErr);
+        }
+      }
+
+      parsed.file_name = fileName;
+      parsed.model_used = modelUsed;
+
+      // Extract unified answer keys and flattened questions from structured passages
+      const unifiedKeys = {};
+      const flattenedQuestions = [];
+      const formattedPassages = [];
+      const partsMap = {};
+
+      const rawPassages = Array.isArray(parsed.passages) ? parsed.passages : [];
+      // Guarantee all 3 passages exist
+      for (let partIdx = 1; partIdx <= 3; partIdx++) {
+        if (!rawPassages.some(p => Number(p.part || p.id) === partIdx)) {
+          rawPassages.push({
+            part: partIdx,
+            title: `Reading Passage ${partIdx}`,
+            text: `Passage ${partIdx} content from ${fileName}`,
+            paragraphs: [],
+            questions: [],
+          });
+        }
+      }
+      rawPassages.sort((a, b) => Number(a.part || a.id) - Number(b.part || b.id));
+
+      rawPassages.forEach((p, idx) => {
+        const partNum = Number(p.part || idx + 1);
+        const qRange = partNum === 1 ? 'Questions 1–13' : partNum === 2 ? 'Questions 14–26' : 'Questions 27–40';
+        const passageRefBox = Array.isArray(p.reference_box) && p.reference_box.length > 0 ? p.reference_box : null;
+        const paragraphs = Array.isArray(p.paragraphs) ? p.paragraphs : [];
+
+        const pItem = {
+          id: partNum,
+          part: partNum,
+          title: p.title || `Passage ${partNum}`,
+          subtitle: p.subtitle || '',
+          content: p.text || '',
+          passage_text: p.text || '',
+          paragraphs: paragraphs,
+          notes_template: p.notes_template || '',
+          pdf_name: fileName,
+          question_range: qRange,
+          reference_box: passageRefBox,
+          referenceBox: passageRefBox,
+        };
+        formattedPassages.push(pItem);
+
+        partsMap[`part${partNum}`] = {
+          title: p.title || `Passage ${partNum}`,
+          subtitle: p.subtitle || '',
+          passageText: p.text || '',
+          paragraphs: paragraphs,
+          notes_template: p.notes_template || '',
+          questionRange: qRange,
+          reference_box: passageRefBox,
+          referenceBox: passageRefBox,
+        };
+
+        // Ensure Passage 1 strictly contains all 13 questions (Questions 1–13)
+        if (partNum === 1) {
+          if (!Array.isArray(p.questions)) p.questions = [];
+          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
+          for (let qn = 1; qn <= 13; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: qn <= 6 ? 'TRUE_FALSE_NOT_GIVEN' : 'NOTES_COMPLETION',
+                instruction: qn <= 6 
+                  ? 'Do the following statements agree with the information given in Reading Passage 1? Choose TRUE, FALSE or NOT GIVEN.'
+                  : 'Complete the notes below. Choose ONE WORD ONLY from the passage for each answer.',
+                prompt: `Question ${qn}`,
+              });
+            }
+          }
+          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
+        }
+
+        // Ensure Passage 2 strictly contains all 13 questions (Questions 14–26)
+        if (partNum === 2) {
+          if (!Array.isArray(p.questions)) p.questions = [];
+          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
+          for (let qn = 14; qn <= 26; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: qn <= 19 ? 'MATCHING' : 'SUMMARY_COMPLETION',
+                instruction: qn <= 19
+                  ? 'Which paragraph contains the following information?'
+                  : 'Complete the summary below. Choose ONE WORD ONLY from the passage for each answer.',
+                prompt: `Question ${qn}`,
+              });
+            }
+          }
+          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
+        }
+
+        // Ensure Passage 3 strictly contains all 14 questions (Questions 27–40)
+        if (partNum === 3) {
+          if (!Array.isArray(p.questions)) {
+            p.questions = [];
+          }
+          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
+
+          // Questions 27–31: Summary Completion with options A–J
+          const summaryRefBox = [
+            { key: 'A', label: 'Option A' },
+            { key: 'B', label: 'Option B' },
+            { key: 'C', label: 'Option C' },
+            { key: 'D', label: 'Option D' },
+            { key: 'E', label: 'Option E' },
+            { key: 'F', label: 'Option F' },
+            { key: 'G', label: 'Option G' },
+            { key: 'H', label: 'Option H' },
+            { key: 'I', label: 'Option I' },
+            { key: 'J', label: 'Option J' },
+          ];
+          for (let qn = 27; qn <= 31; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: 'SUMMARY_MATCHING',
+                instruction: 'Complete the summary using the list of words, A–J, below.',
+                prompt: `Question ${qn}`,
+                options: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'],
+                reference_box: summaryRefBox,
+              });
+            } else {
+              const exQ = p.questions.find(item => Number(item.q_num) === qn);
+              if (exQ && exQ.type === 'SUMMARY_MATCHING') {
+                if (!exQ.options || exQ.options.length === 0) {
+                  exQ.options = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+                }
+                if (!exQ.reference_box || exQ.reference_box.length === 0) {
+                  exQ.reference_box = summaryRefBox;
+                }
+              }
+            }
+          }
+
+          // Questions 32–35: 4-Option Multiple Choice (A, B, C, D)
+          for (let qn = 32; qn <= 35; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: 'MULTIPLE_CHOICE',
+                instruction: 'Choose the correct letter, A, B, C or D.',
+                prompt: `Question ${qn}`,
+                options: ['A', 'B', 'C', 'D'],
+              });
+            }
+          }
+
+          // Questions 36–40: True / False / Not Given
+          for (let qn = 36; qn <= 40; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: 'TRUE_FALSE_NOT_GIVEN',
+                instruction: 'Do the following statements agree with the information given in Reading Passage 3? Choose TRUE, FALSE or NOT GIVEN.',
+                prompt: `Question ${qn}`,
+                options: ['TRUE', 'FALSE', 'NOT GIVEN'],
+              });
+            }
+          }
+          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
+        }
+
+        if (Array.isArray(p.questions)) {
+          p.questions.forEach((q) => {
+            const qNum = Number(q.q_num);
+            if (qNum) {
+              const ansStr = String(q.correct_answer ?? '').trim();
+              if (ansStr) {
+                unifiedKeys[String(qNum)] = ansStr;
+              }
+
+              const qRefBox = (Array.isArray(q.reference_box) && q.reference_box.length > 0)
+                ? q.reference_box
+                : passageRefBox;
+
+              flattenedQuestions.push({
+                id: `q-${qNum}`,
+                questionNumber: qNum,
+                passageId: partNum,
+                type: q.type || 'FILL_BLANK',
+                instruction: q.instruction || '',
+                title: q.title || '',
+                subheading: q.subheading || '',
+                context_bullets: Array.isArray(q.context_bullets) ? q.context_bullets : [],
+                prompt: q.prompt || `Question ${qNum}`,
+                text: q.prompt || `Question ${qNum}`,
+                options: Array.isArray(q.options) ? q.options : [],
+                reference_box: qRefBox,
+                referenceBox: qRefBox,
+                summary_template: q.summary_template || q.notes_template || '',
+                notes_template: q.notes_template || q.summary_template || '',
+                acceptedAnswers: ansStr ? [ansStr] : [],
+              });
+            }
+          });
+        }
+      });
+
+      flattenedQuestions.sort((a, b) => a.questionNumber - b.questionNumber);
+
+      parsed.passages = formattedPassages;
+      parsed.parts = partsMap;
+      parsed.questions = flattenedQuestions;
+      parsed.answer_keys = unifiedKeys;
+      parsed.answerKeys = unifiedKeys;
+      parsed.sections = formattedPassages.map((p) => ({
+        part: p.id,
+        title: p.title,
+        passage_text: p.content,
+        paragraphs: p.paragraphs,
+        question_range: p.question_range,
+        answer_keys: Object.entries(unifiedKeys)
+          .filter(([k]) => {
+            const n = Number(k);
+            return p.id === 1 ? n <= 13 : p.id === 2 ? n >= 14 && n <= 26 : n >= 27;
+          })
+          .map(([k, v]) => ({ questionNumber: Number(k), answer: v })),
+      }));
+
+      return parsed;
     },
   });
-
-  const parsed = JSON.parse(response.text || '{}');
-  parsed.file_name = fileName;
-  parsed.model_used = modelUsed;
-
-  // Unify answer_keys
-  const unifiedKeys = { ...(parsed.answer_keys || parsed.answerKeys || {}) };
-  if (Array.isArray(parsed.sections)) {
-    parsed.sections.forEach((sec) => {
-      if (sec.answer_keys) Object.assign(unifiedKeys, sec.answer_keys);
-      if (sec.answerKeys) Object.assign(unifiedKeys, sec.answerKeys);
-    });
-  }
-  parsed.answer_keys = unifiedKeys;
-  parsed.answerKeys = unifiedKeys;
-
-  // Normalize questions array
-  if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
-    parsed.questions = Object.keys(unifiedKeys).map((k) => {
-      const qNum = Number(k);
-      return {
-        questionNumber: qNum,
-        passageId: qNum <= 13 ? 1 : qNum <= 26 ? 2 : 3,
-        type: 'FILL_BLANK',
-        instruction: 'Complete the statement or answer slot.',
-        text: `Question ${qNum}`,
-        options: [],
-        acceptedAnswers: [String(unifiedKeys[k])],
-      };
-    }).sort((a, b) => a.questionNumber - b.questionNumber);
-  } else {
-    parsed.questions.forEach((q) => {
-      if (!q.acceptedAnswers || !q.acceptedAnswers.length) {
-        const key = unifiedKeys[q.questionNumber];
-        if (key) q.acceptedAnswers = [String(key)];
-      }
-    });
-  }
-
-  return parsed;
 }
 
 /**
- * Parse Listening PDF into exact visual transcription HTML (Parts 1–4),
- * Questions (1–40), and Answer Keys.
+ * Parse Listening PDF into structured JSON (Parts 1–4, Questions 1–40, Answer Keys)
+ * using Google Files API and strict responseSchema.
  */
-export async function parseListeningPdf({ fileBuffer, fileName = 'Listening_Booklet.pdf' }) {
-  const base64Data = toBase64String(fileBuffer);
-  if (!base64Data) {
+export async function parseListeningPdf({ fileBuffer, fileName = 'Listening_Booklet.pdf', apiKey = null, onProgress = null }) {
+  if (!fileBuffer) {
     throw new Error('Missing Listening PDF binary buffer.');
   }
 
-  const prompt = `You are a pixel-accurate IELTS booklet transcriber and certified Cambridge Listening test parser.
-Transcribe the provided Listening PDF directly into structural HTML that exactly mirrors the authentic original PDF pages.
-Do not summarize. Do not alter layout geometry.
-- For each part (Part 1: Questions 1–10, Part 2: Questions 11–20, Part 3: Questions 21–30, Part 4: Questions 31–40):
-  - If a section, note-completion form, questionnaire, or information card is enclosed in a square/rectangle with a border, generate: <div class='pdf-exact-box'>...</div>.
-  - If a section or card has a title/heading, generate: <div class='pdf-exact-box-header'>HEADING TEXT</div>.
-  - If there are candidate instruction boxes or shaded examples, generate: <div class='pdf-exact-shaded-box'>...</div>.
-  - If rubric instructions exist (e.g. "Write NO MORE THAN TWO WORDS..."), generate: <div class='ielts-instruction-banner'>...</div>.
-  - If there are tables or grids, generate: <table class='ielts-exact-table'>...</table>.
-  - Replace answer blanks with: <span class='answer-slot' data-question-num='X'>____ (X)</span>.
-  - For multiple-choice choices, wrap them in: <div class='ielts-mcq-option' data-q='X' data-val='A'><strong>A</strong> Option text</div>.
-  - Retain font sizing hierarchy, bold terms, and indentation.
-  - Extract and attach the answer keys (1-40) separately in the answer_keys object.
+  const prompt = `Extract the complete Cambridge IELTS Listening exam from the attached PDF document.
+Follow all rules defined in systemInstruction:
+1. Extract all 4 parts with their titles, instructions, and questions into "parts".
+2. For notes and form completion tasks, build a complete "notes_template" with inline {{q_num}} tokens, retaining every heading and non-question informative sentence.
+3. Classify all questions accurately according to Cambridge types, with options and reference_box.
+4. Extract all 40 answers from the official Answer Key.`;
 
-Return a STRICT, valid JSON object with NO markdown ticks, following this exact schema:
-{
-  "section": "listening",
-  "total_questions": 40,
-  "sections": [
-    {
-      "part": 1,
-      "title": "Part 1: Social Dialogue",
-      "question_range": "Questions 1–10",
-      "page_content_html": "<exact transcribed HTML retaining all boxes, lines, tables, and answer slots for Part 1 (Questions 1-10)>",
-      "answer_keys": { "1": "Smith", "2": "07700900123" }
-    },
-    {
-      "part": 2,
-      "title": "Part 2: Community Guide",
-      "question_range": "Questions 11–20",
-      "page_content_html": "<exact transcribed HTML retaining all boxes, lines, tables, and answer slots for Part 2 (Questions 11-20)>",
-      "answer_keys": { "11": "A" }
-    },
-    {
-      "part": 3,
-      "title": "Part 3: Academic Tutorial",
-      "question_range": "Questions 21–30",
-      "page_content_html": "<exact transcribed HTML retaining all boxes, lines, tables, and answer slots for Part 3 (Questions 21-30)>",
-      "answer_keys": { "21": "B" }
-    },
-    {
-      "part": 4,
-      "title": "Part 4: University Lecture",
-      "question_range": "Questions 31–40",
-      "page_content_html": "<exact transcribed HTML retaining all boxes, lines, tables, and answer slots for Part 4 (Questions 31-40)>",
-      "answer_keys": { "31": "carbon dioxide" }
-    }
-  ],
-  "answer_keys": {
-    "1": "Smith"
-  },
-  "questions": [
-    {
-      "questionNumber": 1,
-      "partId": 1,
-      "type": "FILL_BLANK",
-      "instruction": "Write NO MORE THAN ONE WORD AND/OR A NUMBER",
-      "text": "Name of contact: ____",
-      "options": [],
-      "acceptedAnswers": ["Smith"]
-    }
-  ]
-}`;
+  return await withUploadedGeminiPdf({
+    apiKey,
+    fileBuffer,
+    fileName,
+    fn: async ({ fileDataPart, apiKey: resolvedApiKey }) => {
+      const executeListeningCall = async (extraPrompt = '', temperature = 0.1) => {
+        const fullPrompt = extraPrompt ? `${prompt}\n\n${extraPrompt}` : prompt;
+        return await callGeminiGenerate({
+          apiKey: resolvedApiKey || apiKey,
+          contents: [
+            {
+              role: 'user',
+              parts: [fileDataPart, { text: fullPrompt }],
+            },
+          ],
+          config: {
+            ...LISTENING_PARSER_CONFIG.config,
+            maxOutputTokens: 8192,
+            temperature,
+            systemInstruction: LISTENING_PARSER_CONFIG.systemInstruction,
+          },
+          onProgress,
+        });
+      };
 
-  const { response, modelUsed } = await callGeminiGenerate({
-    contents: [
-      {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: base64Data,
-        },
-      },
-      { text: prompt },
-    ],
-    config: {
-      temperature: 0.1,
+      let { response, modelUsed } = await executeListeningCall();
+      let parsed = null;
+      let parseError = null;
+
+      try {
+        parsed = robustJsonRepair(response.text || '{}');
+      } catch (err) {
+        parseError = err;
+      }
+
+      // If parsing threw an error or parts array is missing/empty, retry generation once
+      if (!parsed || parseError || !Array.isArray(parsed.parts) || parsed.parts.length === 0) {
+        console.warn(
+          `[Listening Parser] Parsing failed or returned invalid parts (${parseError?.message || 'empty parts'}). Retrying generation once with lower temperature and RFC 8259 instruction...`
+        );
+        try {
+          const retryResult = await executeListeningCall(
+            'CRITICAL: Ensure valid RFC 8259 JSON output without syntax errors or unescaped quotes.',
+            0.05
+          );
+          response = retryResult.response;
+          modelUsed = retryResult.modelUsed;
+          parsed = robustJsonRepair(response.text || '{}');
+          parseError = null;
+          console.log('[Listening Parser] Retry generation and JSON repair succeeded.');
+        } catch (retryErr) {
+          console.error('[Listening Parser] Retry also failed to produce valid JSON:', retryErr.message);
+          if (!parsed) throw (parseError || retryErr);
+        }
+      }
+
+      parsed.file_name = fileName;
+      parsed.model_used = modelUsed;
+
+      const unifiedKeys = {};
+      const flattenedQuestions = [];
+      const formattedParts = [];
+
+      const rawParts = Array.isArray(parsed.parts) ? parsed.parts : [];
+      for (let partIdx = 1; partIdx <= 4; partIdx++) {
+        if (!rawParts.some(p => Number(p.part || p.partId || p.id) === partIdx)) {
+          rawParts.push({
+            part: partIdx,
+            partId: partIdx,
+            title: `Part ${partIdx}`,
+            instruction: '',
+            questions: [],
+          });
+        }
+      }
+      rawParts.sort((a, b) => Number(a.part || a.partId || a.id) - Number(b.part || b.partId || b.id));
+
+      rawParts.forEach((p, idx) => {
+        const partNum = Number(p.part || p.partId || idx + 1);
+        const qRange = partNum === 1 ? 'Questions 1–10' : partNum === 2 ? 'Questions 11–20' : partNum === 3 ? 'Questions 21–30' : 'Questions 31–40';
+        const partRefBox = Array.isArray(p.reference_box) ? p.reference_box : null;
+
+        // Ensure Part 1 has Questions 1–10
+        if (partNum === 1) {
+          if (!Array.isArray(p.questions)) p.questions = [];
+          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
+          for (let qn = 1; qn <= 10; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: 'NOTES_COMPLETION',
+                instruction: 'Complete the notes below. Write ONE WORD AND/OR A NUMBER for each answer.',
+                prompt: `Question ${qn}`,
+              });
+            }
+          }
+          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
+        }
+
+        // Ensure Part 2 has Questions 11–20
+        if (partNum === 2) {
+          if (!Array.isArray(p.questions)) p.questions = [];
+          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
+          for (let qn = 11; qn <= 20; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: 'MULTIPLE_CHOICE',
+                instruction: 'Choose the correct letter, A, B, or C.',
+                prompt: `Question ${qn}`,
+                options: ['A', 'B', 'C'],
+              });
+            }
+          }
+          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
+        }
+
+        // Ensure Part 3 has Questions 21–30
+        if (partNum === 3) {
+          if (!Array.isArray(p.questions)) p.questions = [];
+          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
+          for (let qn = 21; qn <= 30; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: 'MULTIPLE_CHOICE',
+                instruction: 'Choose the correct letter, A, B, C or D.',
+                prompt: `Question ${qn}`,
+                options: ['A', 'B', 'C', 'D'],
+              });
+            }
+          }
+          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
+        }
+
+        // Ensure Part 4 has Questions 31–40
+        if (partNum === 4) {
+          if (!Array.isArray(p.questions)) p.questions = [];
+          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
+          for (let qn = 31; qn <= 40; qn++) {
+            if (!existingNums.has(qn)) {
+              p.questions.push({
+                q_num: qn,
+                type: 'NOTES_COMPLETION',
+                instruction: 'Complete the notes below. Write ONE WORD ONLY for each answer.',
+                prompt: `Question ${qn}`,
+              });
+            }
+          }
+          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
+        }
+
+        formattedParts.push({
+          partId: partNum,
+          part: partNum,
+          title: p.title || `Part ${partNum}`,
+          audio_track_index: Number(p.audio_track_index || partNum),
+          instruction: p.instruction || '',
+          notes_template: p.notes_template || '',
+          question_range: qRange,
+          reference_box: partRefBox,
+          referenceBox: partRefBox,
+        });
+
+        if (Array.isArray(p.questions)) {
+          p.questions.forEach((q) => {
+            const qNum = Number(q.q_num);
+            if (qNum) {
+              const ansStr = String(q.correct_answer ?? '').trim();
+              if (ansStr) {
+                unifiedKeys[String(qNum)] = ansStr;
+              }
+
+              const qRefBox = (Array.isArray(q.reference_box) && q.reference_box.length > 0)
+                ? q.reference_box
+                : partRefBox;
+
+              flattenedQuestions.push({
+                id: `lq-${qNum}`,
+                questionNumber: qNum,
+                partId: partNum,
+                type: q.type || (qRefBox ? 'MATCHING' : 'FILL_BLANK'),
+                instruction: q.instruction || p.instruction || '',
+                title: q.title || '',
+                subheading: q.subheading || '',
+                context_bullets: Array.isArray(q.context_bullets) ? q.context_bullets : [],
+                flow_step: q.flow_step || '',
+                summary_template: q.summary_template || q.notes_template || '',
+                notes_template: q.notes_template || q.summary_template || '',
+                prompt: q.prompt || `Question ${qNum}`,
+                text: q.prompt || `Question ${qNum}`,
+                options: Array.isArray(q.options) ? q.options : [],
+                reference_box: qRefBox,
+                referenceBox: qRefBox,
+                acceptedAnswers: ansStr ? [ansStr] : [],
+              });
+            }
+          });
+        }
+      });
+
+      flattenedQuestions.sort((a, b) => a.questionNumber - b.questionNumber);
+
+      parsed.parts = formattedParts;
+      parsed.questions = flattenedQuestions;
+      parsed.answer_keys = unifiedKeys;
+      parsed.answerKeys = unifiedKeys;
+      parsed.sections = formattedParts.map((p) => ({
+        part: p.partId,
+        title: p.title,
+        question_range: p.question_range,
+        answer_keys: Object.entries(unifiedKeys)
+          .filter(([k]) => {
+            const n = Number(k);
+            return p.partId === 1 ? n <= 10 : p.partId === 2 ? n >= 11 && n <= 20 : p.partId === 3 ? n >= 21 && n <= 30 : n >= 31;
+          })
+          .map(([k, v]) => ({ questionNumber: Number(k), answer: v })),
+      }));
+
+      return parsed;
     },
   });
-
-  const parsed = JSON.parse(response.text || '{}');
-  parsed.file_name = fileName;
-  parsed.model_used = modelUsed;
-
-  // Unify answer_keys
-  const unifiedKeys = { ...(parsed.answer_keys || parsed.answerKeys || {}) };
-  if (Array.isArray(parsed.sections)) {
-    parsed.sections.forEach((sec) => {
-      if (sec.answer_keys) Object.assign(unifiedKeys, sec.answer_keys);
-      if (sec.answerKeys) Object.assign(unifiedKeys, sec.answerKeys);
-    });
-  }
-  parsed.answer_keys = unifiedKeys;
-  parsed.answerKeys = unifiedKeys;
-
-  if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
-    parsed.questions = Object.keys(unifiedKeys).map((k) => {
-      const qNum = Number(k);
-      return {
-        questionNumber: qNum,
-        partId: qNum <= 10 ? 1 : qNum <= 20 ? 2 : qNum <= 30 ? 3 : 4,
-        type: 'FILL_BLANK',
-        instruction: 'Listen to the audio recording and complete the answer.',
-        text: `Question ${qNum}`,
-        options: [],
-        acceptedAnswers: [String(unifiedKeys[k])],
-      };
-    }).sort((a, b) => a.questionNumber - b.questionNumber);
-  } else {
-    parsed.questions.forEach((q) => {
-      if (!q.acceptedAnswers || !q.acceptedAnswers.length) {
-        const key = unifiedKeys[q.questionNumber];
-        if (key) q.acceptedAnswers = [String(key)];
-      }
-    });
-  }
-
-  return parsed;
 }
 
 /**
- * Parse Writing PDF into exact visual transcription HTML (Task 1 & Task 2)
- * and prompt parameters.
+ * Parse Writing PDF into structured JSON (Task 1 & Task 2)
+ * using Google Files API, minimal token footprint, and strict responseSchema.
  */
-export async function parseWritingPdf({ fileBuffer, fileName = 'Writing_Booklet.pdf' }) {
-  const base64Data = toBase64String(fileBuffer);
-  if (!base64Data) {
+export async function parseWritingPdf({ fileBuffer, fileName = 'Writing_Booklet.pdf', apiKey = null, onProgress = null }) {
+  if (!fileBuffer) {
     throw new Error('Missing Writing PDF binary buffer.');
   }
 
-  const prompt = `You are a pixel-accurate IELTS booklet transcriber and certified Cambridge Academic Writing test material parser.
-Transcribe the provided IELTS Writing booklet PDF directly into structural HTML that exactly mirrors the authentic original PDF pages.
-Do not summarize. Do not alter layout geometry.
-- Keep all outer bounding boxes, instruction banners, visual descriptions, and prompt cards identical to the authentic Cambridge exam booklet.
-- For Task 1 (Academic Report, min 150 words):
-  - Generate a <div class='pdf-exact-box'> containing:
-    - <div class='pdf-exact-box-header'>WRITING TASK 1</div>
-    - <div class='ielts-instruction-banner'>You should spend about 20 minutes on this task. Write at least 150 words.</div>
-    - The complete prompt statement.
-    - An authentic visual, tabular or ASCII/SVG representation of the graph, chart, table, process, or map.
-- For Task 2 (Discursive Essay, min 250 words):
-  - Generate a <div class='pdf-exact-box'> containing:
-    - <div class='pdf-exact-box-header'>WRITING TASK 2</div>
-    - <div class='ielts-instruction-banner'>You should spend about 40 minutes on this task. Write at least 250 words.</div>
-    - The complete essay topic statement and discussion requirements.
+  const prompt = `Index Writing Task 1 and Writing Task 2 from the attached PDF booklet.
+Assign page_index: 0 for Task 1 and page_index: 1 for Task 2.
+Extract only concise assignment prompts without transcribing charts, tables, numbers, or long OCR blocks. Strictly adhere to WRITING_EXAM_SCHEMA.`;
 
-Return a STRICT, valid JSON object with NO markdown ticks, following this exact schema:
-{
-  "section": "writing",
-  "task_1_prompt": "Prompt text for Task 1...",
-  "task_2_prompt": "Prompt text for Task 2...",
-  "sections": [
-    {
-      "part": 1,
-      "title": "Task 1: Academic Report",
-      "page_content_html": "<exact transcribed HTML in pdf-exact-box with instructions, chart/table, and prompt>",
-      "prompt": "Prompt text for Task 1...",
-      "min_words": 150,
-      "recommended_mins": 20
-    },
-    {
-      "part": 2,
-      "title": "Task 2: Discursive Essay",
-      "page_content_html": "<exact transcribed HTML in pdf-exact-box with instructions and essay prompt>",
-      "prompt": "Prompt text for Task 2...",
-      "min_words": 250,
-      "recommended_mins": 40
-    }
-  ],
-  "tasks": {
-    "task1": {
-      "title": "Task 1: Academic Report",
-      "recommended_mins": 20,
-      "min_words": 150,
-      "prompt": "Prompt text for Task 1...",
-      "page_content_html": "<exact transcribed HTML in pdf-exact-box>"
-    },
-    "task2": {
-      "title": "Task 2: Discursive Essay",
-      "recommended_mins": 40,
-      "min_words": 250,
-      "prompt": "Prompt text for Task 2...",
-      "page_content_html": "<exact transcribed HTML in pdf-exact-box>"
-    }
-  }
-}`;
+  return await withUploadedGeminiPdf({
+    apiKey,
+    fileBuffer,
+    fileName,
+    fn: async ({ fileDataPart, apiKey: resolvedApiKey }) => {
+      const callParser = async (promptText, temperature = 0.1) => {
+        return await callGeminiGenerate({
+          apiKey: resolvedApiKey || apiKey,
+          contents: [
+            {
+              role: 'user',
+              parts: [fileDataPart, { text: promptText }],
+            },
+          ],
+          config: {
+            ...WRITING_PARSER_CONFIG.config,
+            maxOutputTokens: 8192,
+            temperature,
+            systemInstruction: WRITING_PARSER_CONFIG.systemInstruction,
+          },
+          onProgress,
+        });
+      };
 
-  const { response, modelUsed } = await callGeminiGenerate({
-    contents: [
-      {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: base64Data,
+      let { response, modelUsed } = await callParser(prompt);
+      let parsed = null;
+      let parseError = null;
+
+      try {
+        parsed = robustJsonRepair(response.text || '{}');
+      } catch (err) {
+        parseError = err;
+      }
+
+      // If JSON parse error occurs or tasks are missing, perform 1 automatic retry
+      if (!parsed || parseError || (!parsed.task_1 && !parsed.task_2)) {
+        console.warn(`[Writing Parser] JSON parsing incomplete or failed (${parseError?.message}). Executing 1 automatic retry with temperature 0.05...`);
+        try {
+          const retryCall = await callParser(
+            `${prompt}\nCRITICAL: Ensure valid RFC 8259 JSON output with page_index: 0 for Task 1, page_index: 1 for Task 2, and concise prompts without syntax errors or trailing commas. Strictly adhere to WRITING_EXAM_SCHEMA.`,
+            0.05
+          );
+          response = retryCall.response;
+          modelUsed = retryCall.modelUsed;
+          parsed = robustJsonRepair(response.text || '{}');
+          parseError = null;
+          console.log('[Writing Parser] Automatic retry succeeded with valid JSON.');
+        } catch (retryErr) {
+          console.error('[Writing Parser] Automatic retry failed after JSON error:', retryErr.message);
+          throw new Error(`Writing PDF parser failed to produce valid JSON: ${parseError?.message || retryErr.message}`);
+        }
+      }
+
+      parsed.file_name = fileName;
+      parsed.model_used = modelUsed;
+
+      const t1 = parsed.task_1 || {};
+      const t2 = parsed.task_2 || {};
+
+      const t1Title = t1.title || 'Task 1: Academic Report';
+      const t2Title = t2.title || 'Task 2: Discursive Essay';
+      const t1PageIndex = typeof t1.page_index === 'number' ? t1.page_index : 0;
+      const t2PageIndex = typeof t2.page_index === 'number' ? t2.page_index : 1;
+      const t1MinWords = Number(t1.min_words || 150);
+      const t2MinWords = Number(t2.min_words || 250);
+      const t1Time = Number(t1.suggested_time || 20);
+      const t2Time = Number(t2.suggested_time || 40);
+      const t1Prompt = t1.prompt || '';
+      const t2Prompt = t2.prompt || '';
+
+      parsed.task_1_prompt = t1Prompt;
+      parsed.task_2_prompt = t2Prompt;
+
+      parsed.tasks = {
+        task1: {
+          title: t1Title,
+          recommended_mins: t1Time,
+          min_words: t1MinWords,
+          prompt: t1Prompt,
+          instructions: `You should spend about ${t1Time} minutes on this task. Write at least ${t1MinWords} words.`,
+          page_index: t1PageIndex,
         },
-      },
-      { text: prompt },
-    ],
-    config: {
-      temperature: 0.1,
+        task2: {
+          title: t2Title,
+          recommended_mins: t2Time,
+          min_words: t2MinWords,
+          prompt: t2Prompt,
+          instructions: `You should spend about ${t2Time} minutes on this task. Write at least ${t2MinWords} words.`,
+          page_index: t2PageIndex,
+        },
+      };
+
+      parsed.sections = [
+        {
+          part: 1,
+          title: t1Title,
+          prompt: t1Prompt,
+          min_words: t1MinWords,
+          recommended_mins: t1Time,
+          page_index: t1PageIndex,
+        },
+        {
+          part: 2,
+          title: t2Title,
+          prompt: t2Prompt,
+          min_words: t2MinWords,
+          recommended_mins: t2Time,
+          page_index: t2PageIndex,
+        },
+      ];
+
+      return parsed;
     },
   });
-
-  const parsed = JSON.parse(response.text || '{}');
-  parsed.file_name = fileName;
-  parsed.model_used = modelUsed;
-
-  // Ensure top-level prompt fields are set
-  if (!parsed.task_1_prompt && parsed.tasks?.task1?.prompt) {
-    parsed.task_1_prompt = parsed.tasks.task1.prompt;
-  }
-  if (!parsed.task_2_prompt && parsed.tasks?.task2?.prompt) {
-    parsed.task_2_prompt = parsed.tasks.task2.prompt;
-  }
-  if (!parsed.task_1_prompt && Array.isArray(parsed.sections) && parsed.sections[0]?.prompt) {
-    parsed.task_1_prompt = parsed.sections[0].prompt;
-  }
-  if (!parsed.task_2_prompt && Array.isArray(parsed.sections) && parsed.sections[1]?.prompt) {
-    parsed.task_2_prompt = parsed.sections[1].prompt;
-  }
-
-  return parsed;
 }
 
 /**
  * Consolidated 3-PDF parser pipeline:
- * Accepts listeningPdf, readingPdf, and writingPdf binary buffers (+ audio tracks)
- * and processes them directly via Gemini.
+ * Executes strictly sequentially with 4-second delay between sections to respect free-tier quotas:
+ * 1. Parse Reading -> enforce 4s delay
+ * 2. Parse Listening -> enforce 4s delay
+ * 3. Parse Writing -> build consolidated exam payload
  */
 export async function parseThreePartExamPdf({
   listeningPdfBuffer = null,
@@ -573,48 +1873,87 @@ export async function parseThreePartExamPdf({
   pinCode = null,
   title = null,
   durationMins = 60,
+  onProgress = null,
 }) {
-  console.log('[3-PDF Parser Pipeline] Starting direct Gemini parsing for provided PDFs...');
+  console.log('[3-PDF Parser Pipeline] Starting sequential Gemini parsing pipeline...');
 
-  const parsePromises = {};
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const results = {};
 
+  // Step 1: Reading PDF
   if (readingPdfBuffer) {
-    parsePromises.reading = parseReadingPdf({ fileBuffer: readingPdfBuffer, fileName: readingFileName });
-  }
-  if (listeningPdfBuffer) {
-    parsePromises.listening = parseListeningPdf({ fileBuffer: listeningPdfBuffer, fileName: listeningFileName });
-  }
-  if (writingPdfBuffer) {
-    parsePromises.writing = parseWritingPdf({ fileBuffer: writingPdfBuffer, fileName: writingFileName });
+    console.log('[3-PDF Parser Pipeline] [Step 1/3] Parsing Reading PDF...');
+    if (typeof onProgress === 'function') {
+      onProgress({ step: 'reading', message: 'Parsing Reading PDF booklet...' });
+    }
+    results.reading = await parseReadingPdf({
+      fileBuffer: readingPdfBuffer,
+      fileName: readingFileName,
+      onProgress,
+    });
   }
 
-  const keys = Object.keys(parsePromises);
-  if (keys.length === 0) {
+  // Mandatory 4-second delay between sections if more sections follow
+  if (readingPdfBuffer && (listeningPdfBuffer || writingPdfBuffer)) {
+    console.log('[3-PDF Parser Pipeline] Rate-limit guard: 4-second delay before Listening...');
+    if (typeof onProgress === 'function') {
+      onProgress({ step: 'delay', message: 'Quota protection: Pausing 4s before Listening section...' });
+    }
+    await sleep(4000);
+  }
+
+  // Step 2: Listening PDF
+  if (listeningPdfBuffer) {
+    console.log('[3-PDF Parser Pipeline] [Step 2/3] Parsing Listening PDF...');
+    if (typeof onProgress === 'function') {
+      onProgress({ step: 'listening', message: 'Parsing Listening PDF booklet...' });
+    }
+    results.listening = await parseListeningPdf({
+      fileBuffer: listeningPdfBuffer,
+      fileName: listeningFileName,
+      onProgress,
+    });
+  }
+
+  // Mandatory 4-second delay between sections if Writing follows
+  if (listeningPdfBuffer && writingPdfBuffer) {
+    console.log('[3-PDF Parser Pipeline] Rate-limit guard: 4-second delay before Writing...');
+    if (typeof onProgress === 'function') {
+      onProgress({ step: 'delay', message: 'Quota protection: Pausing 4s before Writing section...' });
+    }
+    await sleep(4000);
+  }
+
+  // Step 3: Writing PDF
+  if (writingPdfBuffer) {
+    console.log('[3-PDF Parser Pipeline] [Step 3/3] Parsing Writing PDF...');
+    if (typeof onProgress === 'function') {
+      onProgress({ step: 'writing', message: 'Parsing Writing PDF booklet...' });
+    }
+    results.writing = await parseWritingPdf({
+      fileBuffer: writingPdfBuffer,
+      fileName: writingFileName,
+      onProgress,
+    });
+  }
+
+  if (!results.reading && !results.listening && !results.writing) {
     throw new Error('No PDF files provided to parse. Please upload readingPdf, listeningPdf, or writingPdf.');
   }
-
-  const resultsArray = await Promise.all(Object.values(parsePromises));
-  const results = {};
-  keys.forEach((key, idx) => {
-    results[key] = resultsArray[idx];
-  });
 
   // Build structured Reading parts
   let readingPayload = null;
   if (results.reading) {
     const r = results.reading;
-    const passages = [1, 2, 3].map((pId) => {
-      const sec = Array.isArray(r.sections) ? r.sections.find((s) => s.part === pId) : null;
-      const part = r.parts?.[`part${pId}`] || {};
-      return {
-        id: pId,
-        title: sec?.title || part.title || `Passage ${pId}`,
-        content: sec?.passage_text || part.passageText || '',
-        page_content_html: sec?.page_content_html || part.page_content_html || '',
-        pdf_name: readingFileName,
-        question_range: sec?.question_range || part.questionRange || '',
-      };
-    });
+    const passages = r.passages || [1, 2, 3].map((pId) => ({
+      id: pId,
+      part: pId,
+      title: `Passage ${pId}`,
+      content: '',
+      passage_text: '',
+      pdf_name: readingFileName,
+      question_range: pId === 1 ? 'Questions 1–13' : pId === 2 ? 'Questions 14–26' : 'Questions 27–40',
+    }));
 
     readingPayload = {
       ...r,
@@ -622,7 +1961,7 @@ export async function parseThreePartExamPdf({
       sections: r.sections || passages.map((p) => ({
         part: p.id,
         title: p.title,
-        page_content_html: p.page_content_html,
+        passage_text: p.content,
         question_range: p.question_range,
       })),
       parts: r.parts || {},
@@ -631,21 +1970,21 @@ export async function parseThreePartExamPdf({
     };
   }
 
-  // Build structured Listening parts
+  // Build structured Listening parts with audio tracks
   let listeningPayload = null;
   if (results.listening) {
     const l = results.listening;
+    const rawParts = Array.isArray(l.parts) ? l.parts : [];
     const parts = [1, 2, 3, 4].map((pId) => {
       const pKey = `part${pId}`;
-      const sec = Array.isArray(l.sections) ? l.sections.find((s) => s.part === pId) : null;
+      const found = rawParts.find((p) => (p.partId || p.part) === pId) || {};
       const audio = audioTracks?.[pKey] || audioTracks?.[`audio${pId}`] || audioTracks?.[`audioTrack${pId}`] || {};
       const audioUrl = typeof audio === 'string' ? audio : audio?.url || '';
       const audioName = typeof audio === 'string' ? '' : audio?.name || '';
       return {
         partId: pId,
-        title: sec?.title || l.parts?.[pKey]?.title || `Part ${pId}`,
-        question_range: sec?.question_range || l.parts?.[pKey]?.questionRange || '',
-        page_content_html: sec?.page_content_html || l.parts?.[pKey]?.page_content_html || '',
+        title: found.title || `Part ${pId}`,
+        question_range: found.question_range || (pId === 1 ? 'Questions 1–10' : pId === 2 ? 'Questions 11–20' : pId === 3 ? 'Questions 21–30' : 'Questions 31–40'),
         audio_url: audioUrl,
         audio_name: audioName,
       };
@@ -657,7 +1996,6 @@ export async function parseThreePartExamPdf({
       sections: l.sections || parts.map((p) => ({
         part: p.partId,
         title: p.title,
-        page_content_html: p.page_content_html,
         question_range: p.question_range,
       })),
       questions: l.questions || [],
@@ -679,14 +2017,14 @@ export async function parseThreePartExamPdf({
         {
           part: 1,
           title: 'Task 1: Academic Report',
-          page_content_html: w.tasks?.task1?.page_content_html || '',
           prompt: w.task_1_prompt,
+          page_index: typeof w.tasks?.task1?.page_index === 'number' ? w.tasks.task1.page_index : 0,
         },
         {
           part: 2,
           title: 'Task 2: Discursive Essay',
-          page_content_html: w.tasks?.task2?.page_content_html || '',
           prompt: w.task_2_prompt,
+          page_index: typeof w.tasks?.task2?.page_index === 'number' ? w.tasks.task2.page_index : 1,
         },
       ],
     };
@@ -871,6 +2209,7 @@ export async function gradeWritingSubmission({
   task1Prompt = '',
   task2Prompt = '',
   studentId = null,
+  apiKey = null,
 }) {
   const t1Text = (task_1_submission || task1Text || '').trim();
   const t2Text = (task_2_submission || task2Text || '').trim();
@@ -1062,14 +2401,45 @@ Return a STRICT, valid JSON object with NO markdown ticks, following this exact 
 
   console.log(`[Strict AI Examiner] Evaluating writing submission for student ${studentId || 'Candidate'}...`);
 
-  const { response, modelUsed } = await callGeminiGenerate({
+  let { response, modelUsed } = await callGeminiGenerate({
+    apiKey,
     contents: [{ text: prompt }],
     config: {
-      temperature: 0.15,
+      ...WRITING_EVALUATION_CONFIG.config,
+      maxOutputTokens: 8192,
     },
   });
 
-  const parsed = JSON.parse(response.text || '{}');
+  let parsed = null;
+  let parseErr = null;
+  try {
+    parsed = robustJsonRepair(response.text || '{}');
+  } catch (err) {
+    parseErr = err;
+  }
+
+  // If JSON parsing incomplete or failed, execute 1 automatic retry with temperature 0.05
+  if (!parsed || parseErr || (!parsed.task_1 && !parsed.task_2)) {
+    console.warn(`[Strict AI Examiner] JSON evaluation incomplete or failed (${parseErr?.message || 'missing tasks'}). Executing 1 automatic retry with temperature 0.05...`);
+    try {
+      const retryResult = await callGeminiGenerate({
+        apiKey,
+        contents: [{ text: `${prompt}\nCRITICAL: Ensure valid RFC 8259 JSON output without syntax errors, trailing commas, or unescaped quotes. Strictly adhere to schema.` }],
+        config: {
+          ...WRITING_EVALUATION_CONFIG.config,
+          temperature: 0.05,
+          maxOutputTokens: 8192,
+        },
+      });
+      response = retryResult.response;
+      modelUsed = retryResult.modelUsed;
+      parsed = robustJsonRepair(response.text || '{}');
+      console.log('[Strict AI Examiner] Automatic retry succeeded with valid JSON evaluation.');
+    } catch (retryErr) {
+      console.error('[Strict AI Examiner] Automatic retry failed:', retryErr.message);
+      if (!parsed) parsed = safeJsonParse(response.text || '{}');
+    }
+  }
 
   // Task 1 computation
   let t1_ta, t1_cc, t1_lr, t1_gra, t1_band, t1_skill_level, t1_feedback, t1_mistakes;

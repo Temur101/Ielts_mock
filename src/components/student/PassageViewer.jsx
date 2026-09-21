@@ -9,27 +9,121 @@ import {
   Sparkles 
 } from 'lucide-react';
 
+/**
+ * Universal IELTS Passage Paragraph Parser:
+ * Splits passage content into distinct paragraphs (A, B, C, D, E, F, G, H...)
+ * even if the content is concatenated into a single unbroken wall of text without newlines,
+ * or standard double newlines. Unlettered articles are preserved cleanly with label: null.
+ */
+function parsePassageIntoParagraphs(content) {
+  if (!content || typeof content !== 'string') return [];
+  const text = content.trim();
+  if (!text) return [];
+
+  // 1. Detect sequential lettered paragraph markers A, B, C, D, E, F, G, H...
+  const candidateLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'];
+  const markers = [];
+  let lastSearchPos = 0;
+
+  for (let i = 0; i < candidateLetters.length; i++) {
+    const letter = candidateLetters[i];
+    const sub = text.slice(lastSearchPos);
+
+    // Matches e.g.:
+    // "A. In the...", "A  In the...", "Paragraph A: ...", "[A] In the...", "**A** ..."
+    const p1 = (i === 0)
+      ? new RegExp(`(?:^|[\\.\\!\\?]\\s+|[\\n\\r]+\\s*|\\b(?:Paragraph|Section)\\s+|\\[|\\s{2,})(?:\\*\\*)?(?:Paragraph\\s+|Section\\s+)?(?:[\\[\\(])?${letter}(?:[\\]\\)])?(?:\\*\\*)?[\\.\\:\\s\\-]+(?=[A-Z0-9"'\\u2018\\u201c])`, 'i')
+      : new RegExp(`(?:[\\.\\!\\?]\\s+|[\\n\\r]+\\s*|\\b(?:Paragraph|Section)\\s+|\\[|\\s{2,})(?:\\*\\*)?(?:Paragraph\\s+|Section\\s+)?(?:[\\[\\(])?${letter}(?:[\\]\\)])?(?:\\*\\*)?[\\.\\:\\s\\-]+(?=[A-Z0-9"'\\u2018\\u201c])`, 'i');
+
+    let m = sub.match(p1);
+
+    // Fallback: standalone \b${letter}\b
+    if (!m) {
+      const p2 = (i === 0)
+        ? new RegExp(`(?:^|[\\n\\r]+\\s*|\\b(?:Paragraph|Section)\\s+)\\b${letter}\\b[\\.\\:\\s\\-]+(?=[A-Z0-9"'\\u2018\\u201c])`, 'i')
+        : new RegExp(`(?:[\\.\\!\\?]\\s+|[\\n\\r]+\\s*|\\b(?:Paragraph|Section)\\s+)\\b${letter}\\b[\\.\\:\\s\\-]+(?=[A-Z0-9"'\\u2018\\u201c])`, 'i');
+      m = sub.match(p2);
+    }
+
+    if (!m) {
+      const p3 = new RegExp(`(?:^|[\\n\\r]+\\s*|\\.\\s+)\\s*${letter}\\s+(?=[A-Z][a-z])`);
+      m = sub.match(p3);
+    }
+
+    if (m && m.index !== undefined) {
+      const letterMatch = m[0].match(new RegExp(`(?:Paragraph\\s+|Section\\s+)?(?:[\\[\\(])?${letter}(?:[\\]\\)])?`, 'i'));
+      const letterOffset = letterMatch ? m[0].indexOf(letterMatch[0]) : 0;
+      const markerStart = lastSearchPos + m.index + letterOffset;
+      const markerEnd = lastSearchPos + m.index + m[0].length;
+
+      markers.push({
+        label: letter,
+        start: markerStart,
+        contentStart: markerEnd,
+      });
+
+      lastSearchPos = markerEnd + 15; // Minimum paragraph length
+    } else {
+      if (markers.length >= 3) {
+        break;
+      }
+    }
+  }
+
+  // If we found at least 3 sequential lettered markers starting with A:
+  if (markers.length >= 3 && markers[0].label === 'A') {
+    const paragraphs = [];
+
+    // Check if there was preamble text before paragraph A
+    if (markers[0].start > 0) {
+      const preamble = text.slice(0, markers[0].start).trim();
+      if (preamble && preamble.length > 20 && !preamble.toLowerCase().startsWith('reading passage')) {
+        paragraphs.push({
+          label: null,
+          content: preamble,
+        });
+      }
+    }
+
+    for (let i = 0; i < markers.length; i++) {
+      const curr = markers[i];
+      const next = markers[i + 1];
+      const contentEnd = next ? next.start : text.length;
+      const paraText = text.slice(curr.contentStart, contentEnd).trim();
+
+      paragraphs.push({
+        label: curr.label,
+        content: paraText,
+      });
+    }
+    return paragraphs;
+  }
+
+  // 2. Standard block splitting (double newlines or single newlines)
+  const rawBlocks = text.includes('\n\n')
+    ? text.split(/\n\s*\n/).map(s => s.trim()).filter(Boolean)
+    : text.includes('\n')
+    ? text.split(/\n/).map(s => s.trim()).filter(Boolean)
+    : [text];
+
+  return rawBlocks.map((block) => {
+    // Only assign label if explicitly present at start of paragraph e.g. "A. Content" or "[A] Content"
+    const prefixMatch = block.match(/^(?:\*\*)?(?:Paragraph\s+|Section\s+)?(?:[\[\(])?([A-Z])(?:[\]\)])?(?:\*\*)?[\.\:\s\-]+([\s\S]*)$/i);
+    return {
+      label: prefixMatch ? prefixMatch[1].toUpperCase() : null,
+      content: prefixMatch ? prefixMatch[2].trim() : block,
+    };
+  });
+}
+
 export function PassageViewer({ 
   passages = [], 
   activePassageId, 
   onSelectPassage,
-  pdfUrl,
-  pdfName
 }) {
-  const [activeHighlightColor, setActiveHighlightColor] = useState('yellow'); // 'yellow' | 'green' | 'pink'
-  const [fontSize, setFontSize] = useState('text-sm'); // 'text-xs' | 'text-sm' | 'text-base'
+  const [fontSize, setFontSize] = useState('text-[15px]'); // 'text-[13px]' | 'text-[14px]' | 'text-[15px]' | 'text-[16.5px]'
   const [highlightCount, setHighlightCount] = useState(0);
-  const [viewMode, setViewMode] = useState('text'); // default to formatted 'text'
   const passageContainerRef = useRef(null);
-
-  // Keep viewMode as text by default, student can toggle to PDF mode if desired
-  React.useEffect(() => {
-    // If no text content is available at all and pdf is available, fallback to pdf
-    const hasText = passages && passages.some(p => p.content && p.content.trim().length > 0);
-    if (!hasText && pdfUrl) {
-      setViewMode('pdf');
-    }
-  }, [pdfUrl, activePassageId]);
 
   const safePassages = passages && passages.length ? passages : [
     { id: 1, title: 'Passage 1', content: 'Reading text is loading...' },
@@ -83,122 +177,123 @@ export function PassageViewer({
     setHighlightCount(0);
   };
 
-  const passageContent = currentPassage.content || '';
-  const paragraphs = passageContent.includes('\n\n') 
-    ? passageContent.split('\n\n').filter(Boolean)
-    : passageContent.includes('\n')
-    ? passageContent.split('\n').filter(Boolean)
-    : [passageContent];
+  const passageContent = currentPassage.content || currentPassage.passage_text || currentPassage.text || '';
+  
+  // Universal paragraph resolution for ANY passage:
+  let parsedParagraphs = [];
+
+  // 1. If structured paragraphs array is provided with multiple items, use directly
+  if (Array.isArray(currentPassage.paragraphs) && currentPassage.paragraphs.length > 1) {
+    parsedParagraphs = currentPassage.paragraphs
+      .map(p => ({
+        label: p.label && String(p.label).trim() ? String(p.label).trim().toUpperCase() : null,
+        content: (p.text || p.content || '').trim(),
+      }))
+      .filter(p => p.content);
+  }
+
+  // 2. If no valid array or single concatenated item, run universal parser on full text
+  if (parsedParagraphs.length === 0) {
+    let rawText = passageContent;
+    if ((!rawText || rawText.length < 50) && Array.isArray(currentPassage.paragraphs) && currentPassage.paragraphs.length > 0) {
+      rawText = currentPassage.paragraphs
+        .map(p => (p.label ? `${p.label}. ` : '') + (p.text || p.content || ''))
+        .join('\n\n');
+    }
+    parsedParagraphs = parsePassageIntoParagraphs(rawText);
+  }
 
   return (
-    <div className="h-full flex flex-col bg-white border-r border-slate-200">
+    <div className="h-full flex flex-col bg-white">
       
-      {/* Passage Tab Bar & Tools Header */}
-      <div className="p-3 border-b border-slate-200 bg-slate-50/80 flex flex-wrap items-center justify-between gap-2">
+      {/* Ultra-Compact Passage Tab Bar & Tools Header (max-height: 42px) */}
+      <div className="h-11 px-3 border-b border-slate-200 bg-slate-50/90 flex items-center justify-between gap-2 shrink-0">
         
-        {/* Left: Passage Switcher */}
-        <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-sm">
+        {/* Left: Compact Passage Switcher */}
+        <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200 shadow-xs">
           {safePassages.map((p) => {
             const isActive = p.id === activePassageId;
             const qRange = p.id === 1 ? '1–13' : p.id === 2 ? '14–26' : '27–40';
             return (
               <button
                 key={p.id}
+                type="button"
                 onClick={() => onSelectPassage(p.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition cursor-pointer ${
                   isActive
-                    ? 'bg-brand-500 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                    ? 'bg-brand-500 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                Passage {p.id} <span className="opacity-80 font-normal">({qRange})</span>
+                Passage {p.id} <span className="opacity-75 font-normal text-[11px]">({qRange})</span>
               </button>
             );
           })}
         </div>
 
-        {/* Center: Dual Text / PDF View Switcher (if PDF available) */}
-        {pdfUrl && (
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-bold">
-            <button
-              onClick={() => setViewMode('text')}
-              className={`px-3 py-1 rounded-lg transition-all ${
-                viewMode === 'text' 
-                  ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/20' 
-                  : 'text-slate-600 hover:text-brand-600 hover:bg-white/60'
-              }`}
-            >
-              Text Mode
-            </button>
-            <button
-              onClick={() => setViewMode('pdf')}
-              className={`px-3 py-1 rounded-lg transition-all ${
-                viewMode === 'pdf' 
-                  ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/20' 
-                  : 'text-slate-600 hover:text-brand-600 hover:bg-white/60'
-              }`}
-            >
-              PDF Document Mode
-            </button>
-          </div>
-        )}
-
         {/* Right: Highlighting Toolbar & Font Sizer */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           
           {/* Highlighter Color Buttons */}
-          <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200">
+          <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200">
             <button
+              type="button"
               onClick={() => handleHighlightSelection('yellow')}
-              className="w-6 h-6 rounded-md bg-yellow-200 hover:bg-yellow-300 border border-yellow-400/50 flex items-center justify-center transition"
+              className="w-5 h-5 rounded bg-yellow-200 hover:bg-yellow-300 border border-yellow-400/50 flex items-center justify-center transition cursor-pointer"
               title="Highlight Yellow"
             >
-              <Highlighter className="w-3.5 h-3.5 text-yellow-800" />
+              <Highlighter className="w-3 h-3 text-yellow-800" />
             </button>
             <button
+              type="button"
               onClick={() => handleHighlightSelection('green')}
-              className="w-6 h-6 rounded-md bg-green-200 hover:bg-green-300 border border-green-400/50 flex items-center justify-center transition"
+              className="w-5 h-5 rounded bg-green-200 hover:bg-green-300 border border-green-400/50 flex items-center justify-center transition cursor-pointer"
               title="Highlight Mint Green"
             >
-              <Highlighter className="w-3.5 h-3.5 text-green-800" />
+              <Highlighter className="w-3 h-3 text-green-800" />
             </button>
             <button
+              type="button"
               onClick={() => handleHighlightSelection('pink')}
-              className="w-6 h-6 rounded-md bg-pink-200 hover:bg-pink-300 border border-pink-400/50 flex items-center justify-center transition"
+              className="w-5 h-5 rounded bg-pink-200 hover:bg-pink-300 border border-pink-400/50 flex items-center justify-center transition cursor-pointer"
               title="Highlight Pink"
             >
-              <Highlighter className="w-3.5 h-3.5 text-pink-800" />
+              <Highlighter className="w-3 h-3 text-pink-800" />
             </button>
             {highlightCount > 0 && (
               <button
+                type="button"
                 onClick={handleClearHighlights}
-                className="p-1 text-slate-400 hover:text-rose-500 rounded transition"
+                className="p-0.5 text-slate-400 hover:text-rose-500 rounded transition cursor-pointer"
                 title="Clear All Highlights"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Trash2 className="w-3 h-3" />
               </button>
             )}
           </div>
 
           {/* Font Size Adjuster */}
-          <div className="flex items-center bg-white p-1 rounded-xl border border-slate-200 text-slate-600">
+          <div className="flex items-center bg-white p-0.5 rounded-lg border border-slate-200 text-slate-600 font-mono text-[11px] font-bold">
             <button
-              onClick={() => setFontSize('text-xs')}
-              className={`px-2 py-0.5 text-xs font-bold rounded ${fontSize === 'text-xs' ? 'bg-slate-100 text-brand-600' : ''}`}
+              type="button"
+              onClick={() => setFontSize('text-[13px]')}
+              className={`px-1.5 py-0.5 rounded cursor-pointer ${fontSize === 'text-[13px]' ? 'bg-slate-100 text-brand-600 font-extrabold' : 'hover:text-slate-900'}`}
               title="Small Text"
             >
               A-
             </button>
             <button
-              onClick={() => setFontSize('text-sm')}
-              className={`px-2 py-0.5 text-xs font-bold rounded ${fontSize === 'text-sm' ? 'bg-slate-100 text-brand-600' : ''}`}
-              title="Medium Text"
+              type="button"
+              onClick={() => setFontSize('text-[14px]')}
+              className={`px-1.5 py-0.5 rounded cursor-pointer ${fontSize === 'text-[14px]' ? 'bg-slate-100 text-brand-600 font-extrabold' : 'hover:text-slate-900'}`}
+              title="Standard Text"
             >
               A
             </button>
             <button
-              onClick={() => setFontSize('text-base')}
-              className={`px-2 py-0.5 text-xs font-bold rounded ${fontSize === 'text-base' ? 'bg-slate-100 text-brand-600' : ''}`}
+              type="button"
+              onClick={() => setFontSize('text-[15.5px]')}
+              className={`px-1.5 py-0.5 rounded cursor-pointer ${fontSize === 'text-[15.5px]' ? 'bg-slate-100 text-brand-600 font-extrabold' : 'hover:text-slate-900'}`}
               title="Large Text"
             >
               A+
@@ -209,61 +304,49 @@ export function PassageViewer({
 
       </div>
 
-      {/* Main Area: Either Embedded PDF or Formatted Extracted Passage */}
-      {viewMode === 'pdf' && pdfUrl ? (
-        <div className="flex-1 w-full h-full bg-white overflow-hidden">
-          <iframe
-            src={pdfUrl}
-            title={pdfName || "Reading PDF Booklet"}
-            className="w-full h-full border-0"
-          />
+      {/* Main Extracted Formatted Passage Body (Independent Vertical Scroll) */}
+      <div 
+        ref={passageContainerRef}
+        className="flex-1 p-5 sm:p-6 overflow-y-auto select-text font-serif text-slate-900"
+      >
+        {/* Compact Title & Header */}
+        <div className="border-b border-slate-200 pb-3 mb-4 font-sans">
+          <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
+            <span className="font-bold text-brand-600 uppercase tracking-wider">
+              Reading Passage {activePassageId}
+            </span>
+            <span className="flex items-center gap-1 font-mono text-slate-400 text-[11px]">
+              <Clock className="w-3 h-3" />
+              {currentPassage.reading_time || '20 mins'}
+            </span>
+          </div>
+          <h2 className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight">
+            {currentPassage.title}
+          </h2>
+          {currentPassage.subtitle && (
+            <p className="text-xs text-slate-500 italic mt-0.5">
+              {currentPassage.subtitle}
+            </p>
+          )}
         </div>
-      ) : (
-        <div 
-          ref={passageContainerRef}
-          className="flex-1 p-6 sm:p-8 overflow-y-auto space-y-4 select-text leading-relaxed font-serif text-slate-800"
-        >
-          {/* Title & Header */}
-          <div className="border-b border-slate-200 pb-4 space-y-1 font-sans">
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span className="font-semibold text-brand-600 uppercase tracking-wider">
-                IELTS Academic Reading
-              </span>
-              <span className="flex items-center gap-1 font-mono text-slate-400">
-                <Clock className="w-3.5 h-3.5" />
-                {currentPassage.reading_time || '20 mins'}
-              </span>
-            </div>
-            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight font-sans">
-              {currentPassage.title}
-            </h2>
-            {currentPassage.subtitle && (
-              <p className="text-xs text-slate-500 font-sans italic">
-                {currentPassage.subtitle}
-              </p>
-            )}
-          </div>
 
-          {/* Paragraphs */}
-          <div className={`space-y-4 ${fontSize}`}>
-            {paragraphs.map((paragraph, index) => (
-              <div key={index} className="flex items-start gap-3">
-                <span className="font-mono text-[11px] font-bold text-slate-400 pt-0.5 select-none w-4 shrink-0">
-                  P{index + 1}
-                </span>
-                <p className="flex-1 text-justify whitespace-pre-line">
-                  {paragraph}
-                </p>
-              </div>
-            ))}
-          </div>
-
-          {/* Bottom helper tip */}
-          <div className="mt-8 p-3 rounded-xl bg-slate-50 border border-slate-200 text-center font-sans text-xs text-slate-400">
-            Tip: Select any text on this page and click a color highlighter in the toolbar above to mark important clues.
-          </div>
+        {/* Distinct Paragraphs with Bold Indicators and Clear Vertical Separation */}
+        <div>
+          {parsedParagraphs.map((para, pIdx) => (
+            <p
+              key={para.label || pIdx}
+              className={`mb-5 leading-relaxed text-slate-800 text-justify ${fontSize || 'text-[15px]'}`}
+            >
+              {para.label && (
+                <strong className="font-extrabold text-slate-900 text-base mr-2 select-none">
+                  {para.label}
+                </strong>
+              )}
+              {para.content}
+            </p>
+          ))}
         </div>
-      )}
+      </div>
 
     </div>
   );

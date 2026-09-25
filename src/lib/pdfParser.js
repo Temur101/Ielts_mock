@@ -20,7 +20,6 @@ export async function extractRawTextFromPdf(fileOrBuffer) {
   }
 
   try {
-    // Ensure worker is configured
     if (pdfjsLib.GlobalWorkerOptions && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
     }
@@ -38,53 +37,47 @@ export async function extractRawTextFromPdf(fileOrBuffer) {
       const page = await pdf.getPage(pageNum);
       const textContent = await page.getTextContent();
       
-      let lastY = null;
-      let pageLines = [];
+      // Собираем все текстовые фрагменты с их координатами
+      const items = [];
+      for (const item of textContent.items) {
+        if (!('str' in item) || !item.str.trim()) continue;
+        items.push({
+          str: item.str,
+          x: item.transform ? Math.round(item.transform[4]) : 0,
+          y: item.transform ? Math.round(item.transform[5]) : 0,
+        });
+      }
+
+      // Сортируем строго: сверху вниз (Y убывает), затем слева направо (X возрастает)
+      items.sort((a, b) => {
+        const yDiff = b.y - a.y;
+        if (Math.abs(yDiff) > 5) return yDiff;
+        return a.x - b.x;
+      });
+
+      // Группируем элементы в строки
+      const lines = [];
+      let currentLineY = null;
       let currentLine = "";
 
-      for (const item of textContent.items) {
-        if (!('str' in item)) continue;
-        const str = item.str;
-        if (!str && !item.hasEOL) continue;
-
-        const currentY = item.transform ? Math.round(item.transform[5]) : null;
-
-        // If vertical position changed significantly (> 4px), start a new line
-        if (lastY !== null && currentY !== null && Math.abs(currentY - lastY) > 4) {
-          if (currentLine.trim()) pageLines.push(currentLine.trim());
-          currentLine = str;
+      for (const item of items) {
+        if (currentLineY === null || Math.abs(item.y - currentLineY) > 5) {
+          if (currentLine.trim()) lines.push(currentLine.trim());
+          currentLine = item.str;
+          currentLineY = item.y;
         } else {
-          currentLine += (currentLine ? " " : "") + str;
-        }
-
-        if (item.hasEOL) {
-          if (currentLine.trim()) pageLines.push(currentLine.trim());
-          currentLine = "";
-          lastY = null;
-        } else {
-          lastY = currentY;
+          currentLine += (currentLine ? " " : "") + item.str;
         }
       }
+      if (currentLine.trim()) lines.push(currentLine.trim());
 
-      if (currentLine.trim()) {
-        pageLines.push(currentLine.trim());
-      }
-
-      const pageText = pageLines.join("\n");
-      fullText += `\n\n--- PAGE ${pageNum} ---\n\n` + pageText;
+      fullText += `\n\n--- PAGE ${pageNum} ---\n\n` + lines.join("\n");
     }
 
-    // Sanity check: Ensure we didn't get empty text
-    const clean = fullText.trim();
-    if (!clean || clean.length < 20) {
-      console.warn("PDF had minimal or no text layer. It may be a scanned image.");
-      return "[Scanned or image-only PDF detected. Please use the PDF Document Mode to view.]";
-    }
-
-    return fullText;
+    return fullText.trim();
   } catch (err) {
-    console.error("pdfjs-dist text extraction failed:", err);
-    throw new Error("Could not parse text from this PDF. Please check if the file is encrypted or corrupted.");
+    console.error("pdfjs text extraction failed:", err);
+    throw new Error("Could not parse text from this PDF.");
   }
 }
 
@@ -145,7 +138,8 @@ export function extractDetailedQuestionsFromText(text, answerKeys = {}, sectionI
     // e.g. "1. The Roman Colosseum...", "1) Text", "1 Text", "Question 1: Text", "Q1: Text"
     // Also bracketed form: "(1) ________ Sanderson", "Name: (1) ________"
     const qMatch = line.match(/^(?:(?:Question|Item|Q)\s*)?(\d{1,2})[\.\)\:\s\-]+(.+)$/i);
-    const bracketMatch = line.match(/(?:([^\(\)\[\]]{1,40})\s*[\:\-]?\s*)?[\(\[]\s*(\d{1,2})\s*[\)\]][\s\-_–—\.]*(.*)/i);
+    const bracketMatch = line.match(/(?:([^\(\)\[\]\n]{1,60})\s*[\:\-]?\s*)?[\(\[]\s*(\d{1,2})\s*[\)\]][\s\-_–—\.]*(.*)/i);
+    const inlineFormMatch = line.match(/(.+?)\s+[\(\[]?\b(\d{1,2})\b[\)\]]?\s*_{2,}(.*)/i);
 
     let detectedNum = null;
     let detectedText = "";
@@ -164,6 +158,14 @@ export function extractDetailedQuestionsFromText(text, answerKeys = {}, sectionI
       if (num >= 1 && num <= 40 && !prefix.toLowerCase().includes('page') && !prefix.toLowerCase().includes('score')) {
         detectedNum = num;
         detectedText = prefix ? `${prefix}: ________ ${suffix}`.trim() : `(Blank) ${suffix}`.trim();
+      }
+    } else if (inlineFormMatch) {
+      const num = parseInt(inlineFormMatch[2], 10);
+      const prefix = inlineFormMatch[1]?.trim() || '';
+      const suffix = inlineFormMatch[3]?.trim() || '';
+      if (num >= 1 && num <= 40) {
+        detectedNum = num;
+        detectedText = `${prefix}: ________ ${suffix}`.trim();
       }
     }
 
@@ -322,6 +324,8 @@ export function extractDetailedQuestionsFromText(text, answerKeys = {}, sectionI
       explanation: `Extracted from PDF for Question ${qNum}.`
     });
   }
+
+  questions.sort((a, b) => Number(a.questionNumber || 0) - Number(b.questionNumber || 0));
 
   return questions;
 }

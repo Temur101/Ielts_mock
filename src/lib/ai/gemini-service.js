@@ -225,6 +225,7 @@ export const READING_EXAM_SCHEMA = {
               type: 'object',
               properties: {
                 q_num: { type: 'integer' },
+                questionNumber: { type: 'integer' },
                 type: { 
                   type: 'string', 
                   enum: [
@@ -239,6 +240,7 @@ export const READING_EXAM_SCHEMA = {
                     'TABLE_COMPLETION',
                     'SUMMARY_COMPLETION',
                     'SUMMARY_MATCHING',
+                    'FLOW_CHART',
                     'FLOW_CHART_COMPLETION',
                     'DIAGRAM_LABEL',
                     'SHORT_ANSWER',
@@ -314,17 +316,23 @@ export const LISTENING_EXAM_SCHEMA = {
               type: 'object',
               properties: {
                 q_num: { type: 'integer' },
+                questionNumber: { type: 'integer' },
                 type: { 
                   type: 'string', 
                   enum: [
                     'FORM_COMPLETION',
                     'NOTES_COMPLETION',
                     'TABLE_COMPLETION',
+                    'FLOW_CHART',
                     'FLOW_CHART_MATCHING',
                     'FLOW_CHART_COMPLETION',
                     'SUMMARY_COMPLETION',
                     'MULTIPLE_CHOICE',
                     'MATCHING',
+                    'MATCHING_FEATURES',
+                    'MATCHING_HEADINGS',
+                    'TRUE_FALSE_NOT_GIVEN',
+                    'YES_NO_NOT_GIVEN',
                     'MAP_LABELLING',
                     'DIAGRAM_LABEL',
                     'SHORT_ANSWER',
@@ -484,7 +492,7 @@ export const FALLBACK_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const SHARED_GENERATION_CONFIG = Object.freeze({
   temperature: 0.1,
   responseMimeType: 'application/json',
-  maxOutputTokens: 8192,
+  maxOutputTokens: 16000,
 });
 
 /**
@@ -495,7 +503,7 @@ export function buildUnifiedConfig(schema, overrides = {}) {
   return {
     ...SHARED_GENERATION_CONFIG,
     ...(schema ? { responseSchema: schema } : {}),
-    maxOutputTokens: 8192,
+    maxOutputTokens: 16000,
     ...overrides,
   };
 }
@@ -506,60 +514,75 @@ export function buildUnifiedConfig(schema, overrides = {}) {
  */
 export const READING_PARSER_CONFIG = Object.freeze({
   name: 'Reading Examination Parser',
-  systemInstruction: `You are an elite, certified Cambridge IELTS Academic Reading parser.
+  systemInstruction: `You are a certified Cambridge IELTS Academic Reading parser.
 Your duty is to transcribe authentic IELTS Reading exam booklets into strict JSON matching the schema with 100% fidelity.
 
 CRITICAL LAWS:
-1. STRICT 1-TO-1 PASSAGE ISOLATION & EXACT 40 QUESTION COUNT:
-   - Extract exactly 3 passages.
-   - Total question count across Passages 1–3 MUST strictly equal 40 questions:
-     * Passage 1 MUST contain Questions 1–13 (13 questions).
-     * Passage 2 MUST contain Questions 14–26 (13 questions).
-     * Passage 3 MUST contain 14 questions (Questions 27–40 in total):
-       - Questions 27–31: Summary Completion with options box (A–J) (type: "SUMMARY_MATCHING" or "NOTES_COMPLETION")
-       - Questions 32–35: 4-Option Multiple Choice (A, B, C, D) (type: "MULTIPLE_CHOICE")
-       - Questions 36–40: True / False / Not Given (type: "TRUE_FALSE_NOT_GIVEN")
-     DO NOT truncate or omit Questions 32–40! Every question from 1 to 40 MUST be extracted.
-   - Each passage (1, 2, 3) must strictly correspond to its own respective article in the booklet with its own authentic title, subtitle, and body text.
-   - Absolutely NO text or content may be duplicated, swapped, or shared between passages.
-2. DISCRETE PARAGRAPH EXTRACTION:
-   - If an article has lettered paragraphs (A, B, C...), you MUST populate the "paragraphs" array with discrete objects: { "label": "A", "text": "..." }.
-   - If unlettered, split into natural paragraphs with label: "".
-   - Preserve the complete uninterrupted reading text in "text".
-3. PRECISE TASK CLASSIFICATION (100% CAMBRIDGE COVERAGE):
-   - You MUST accurately detect and assign the exact task type for every question from the schema enum.
-4. COMPLETE NARRATIVE PRESERVATION:
-   - For all notes, summaries, tables, or sentences with gaps: provide "summary_template" or "notes_template" representing the complete text structure with {{q_num}} placeholders at every gap.
-   - NEVER omit non-question sentences, subheadings, or context lines.
-5. OFFICIAL ANSWER KEYS:
-   - Extract exact answers for all 40 questions strictly from the official 'ANSWER KEY' table at the end of the booklet.`,
+1. GROUND TRUTH (ANSWER KEY):
+   First locate the official 'ANSWER KEY' table at the end of the PDF. The total count of answers in the Answer Key defines the exact question checklist. If the Answer Key contains 40 answers (1 to 40), you MUST output exactly 40 question objects (q_num 1 to 40). NO QUESTIONS MAY BE SKIPPED.
+
+2. PASSAGE EXTRACTION:
+   - Extract all reading passages present in the booklet (typically 3 passages) into the "passages" array.
+   - For each passage, preserve its authentic title, subtitle, and complete uninterrupted body text.
+   - If paragraphs are lettered (A, B, C...), populate the "paragraphs" array with { "label": "A", "text": "..." }. If unlettered, split into natural paragraphs with label: "".
+
+3. AUTONOMOUS TASK CLASSIFICATION (100% CAMBRIDGE COVERAGE):
+   Carefully inspect the instruction text and visual layout of each question group. Assign the EXACT specific type to the "type" field of each question:
+   - "MATCHING_HEADINGS": Matching sections/paragraphs to a List of Headings. The options MUST be Roman numerals (i, ii, iii...). Populate "reference_box" with the complete list of headings [{ "key": "i", "label": "Heading text" }, ...].
+   - "MATCHING_FEATURES": Matching statements to a box of people, researchers, dates, countries, or categories. Populate "reference_box" with the letter-label pairs [{ "key": "A", "label": "Person Name" }, ...].
+   - "MATCHING_INFORMATION": "Which paragraph contains the following information?". Answers are paragraph letters (A, B, C...).
+   - "MATCHING_SENTENCE_ENDINGS": Matching sentence beginnings with endings from a box.
+   - "TRUE_FALSE_NOT_GIVEN": Verifying statements against factual information.
+   - "YES_NO_NOT_GIVEN": Verifying statements against the writer's opinions or claims.
+   - "SUMMARY_COMPLETION": Summary paragraph with gaps. In "summary_template", provide the complete narrative with sequential {{q_num}} placeholders at gap positions.
+   - "SUMMARY_MATCHING": Summary completion with a box of words/phrases. Populate "reference_box" with [{ "key": "A", "label": "word" }, ...] and provide "summary_template" with {{q_num}} gaps.
+   - "TABLE_COMPLETION": Structured table with columns and rows. In "notes_template", preserve the table structure with {{q_num}} placeholders.
+   - "FLOW_CHART": Step-by-step sequential process with arrows or stages.
+   - "DIAGRAM_LABEL": Labelling a diagram.
+   - "MULTIPLE_CHOICE": Standard choice. Each option in "options" MUST contain the letter AND the full descriptive text (e.g. "A Full sentence text"), NEVER single letters alone!
+   - "SHORT_ANSWER": Answering open questions with words from the text.
+
+4. CONTEXT & PROMPT PRESERVATION:
+   - The "prompt" field of each question MUST contain the actual sentence or context line containing the gap (e.g. 'Works were full of {{10}}'). NEVER set "prompt" to generic instructions like 'Complete the table' or 'Complete the notes'!
+   - In "reference_box", always extract both the key (e.g. "A" or "i") and the verbatim label/word from the booklet. Never output placeholder labels like "Option A".
+
+5. ANSWER KEYS:
+   Extract exact answers for every question strictly from the official 'ANSWER KEY' table at the end of the booklet.`,
   schema: READING_EXAM_SCHEMA,
-  config: buildUnifiedConfig(READING_EXAM_SCHEMA, { maxOutputTokens: 8192 }),
+  config: buildUnifiedConfig(READING_EXAM_SCHEMA, { maxOutputTokens: 32768 }),
 });
 
 export const LISTENING_PARSER_CONFIG = Object.freeze({
   name: 'Listening Examination Parser',
-  systemInstruction: `You are an elite, certified Cambridge IELTS Listening parser.
+  systemInstruction: `You are a certified Cambridge IELTS Listening parser.
 Your duty is to transcribe authentic IELTS Listening exam booklets and answer keys into strict JSON matching the schema with 100% fidelity.
 
 CRITICAL LAWS:
-1. STRICT 1-TO-1 PART ISOLATION:
-   - Extract exactly 4 parts corresponding strictly to Parts 1, 2, 3, and 4 in the booklet.
-   - Retain authentic part titles, instructions, and target audio indexes.
-   - No content may be duplicated, swapped, or shared across parts.
-2. PRECISE TASK CLASSIFICATION (100% CAMBRIDGE COVERAGE):
-   - You MUST accurately classify every question item into its exact Cambridge type from the schema enum.
-3. COMPLETE CONTEXT & NOTES HIERARCHY (NO OMITTED LINES):
-   - For any task involving notes, forms, tables, or summaries: generate "notes_template" on the part object.
-   - Preserve ALL structural section headings, subheadings, and non-question informative sentences.
-   - Place {{q_num}} token at every answer blank.
-   - NEVER drop lines that lack inputs.
-4. OPTIONS & REFERENCE BOXES:
-   - For MATCHING, MAP_LABELLING, and option boxes: extract all letter-label pairs into "reference_box".
-5. OFFICIAL ANSWER KEYS:
-   - Extract exact answers strictly from the official 'ANSWER KEY' table at the end of the booklet.`,
+1. GROUND TRUTH (ANSWER KEY):
+   First locate the official 'ANSWER KEY' table at the end of the booklet. Every question number present in the Answer Key (1 to 40) MUST have a corresponding question object in the JSON with q_num 1 to 40.
+
+2. PART STRUCTURE:
+   Extract exactly 4 parts corresponding to Parts 1, 2, 3, and 4 in the booklet. Preserve authentic part titles and instructions.
+
+3. AUTONOMOUS TASK CLASSIFICATION:
+   Inspect the instructions and formatting of each group to assign the exact "type":
+   - "FORM_COMPLETION": Application, rental, booking, or registration forms with field labels and gap inputs.
+   - "NOTES_COMPLETION": Lecture/discussion notes, subheadings, and bullet points with gaps.
+   - "TABLE_COMPLETION": Multi-column tables with headers, rows, and gaps. In "notes_template", preserve the structured table layout with {{q_num}} placeholders so the UI can render rows and columns intact.
+   - "FLOW_CHART": Step-by-step sequential processes, cycles, or flow diagrams with arrows.
+   - "MATCHING": Matching items to a box of options/categories.
+   - "MULTIPLE_CHOICE": Standard single questions with options A, B, C. If the instruction states "Choose TWO letters" or "Choose THREE letters", mark each question in that set as multi-select.
+   - "MAP_LABELLING" / "DIAGRAM_LABEL": Labelling plans, maps, or technical diagrams.
+
+4. COMPLETE PROMPT & CONTEXT PRESERVATION:
+   - For form, note, and table completion, each question's "prompt" MUST retain the field label or sentence line with the gap (e.g. 'Address: {{1}} Road' or 'Date started: {{22}}'). DO NOT skip Question 1 if it appears on the very first line of a form!
+   - In "notes_template" on the part or group, transcribe the full page structure with all section subheadings, lecture notes, bullet points, and {{q_num}} placeholders so the UI can reconstruct the complete original layout.
+   - For option boxes, extract all letter-label pairs into "reference_box".
+
+5. ANSWER KEYS:
+   Extract exact answers strictly from the official 'ANSWER KEY' table at the end of the booklet.`,
   schema: LISTENING_EXAM_SCHEMA,
-  config: buildUnifiedConfig(LISTENING_EXAM_SCHEMA, { maxOutputTokens: 8192 }),
+  config: buildUnifiedConfig(LISTENING_EXAM_SCHEMA, { maxOutputTokens: 32768 }),
 });
 
 export const WRITING_PARSER_CONFIG = Object.freeze({
@@ -575,14 +598,14 @@ CRITICAL RULES:
 3. STRICT JSON:
    - Output valid, complete JSON strictly adhering to WRITING_EXAM_SCHEMA.`,
   schema: WRITING_EXAM_SCHEMA,
-  config: buildUnifiedConfig(WRITING_EXAM_SCHEMA, { maxOutputTokens: 8192 }),
+  config: buildUnifiedConfig(WRITING_EXAM_SCHEMA, { maxOutputTokens: 16000 }),
 });
 
 export const WRITING_EVALUATION_CONFIG = Object.freeze({
   name: 'Writing Strict Examiner',
   systemInstruction: 'You are a Senior Cambridge-Certified IELTS Writing Examiner. You grade essays with strict, uncompromising adherence to the official IDP/British Council assessment criteria.',
   schema: WRITING_EVALUATION_SCHEMA,
-  config: buildUnifiedConfig(WRITING_EVALUATION_SCHEMA, { temperature: 0.15, maxOutputTokens: 8192 }),
+  config: buildUnifiedConfig(WRITING_EVALUATION_SCHEMA, { temperature: 0.15, maxOutputTokens: 16000 }),
 });
 
 /**
@@ -865,7 +888,7 @@ export async function executeModelWithRetry({
   let delay = initialDelayMs;
   const finalConfig = {
     ...config,
-    maxOutputTokens: 8192,
+    maxOutputTokens: config?.maxOutputTokens || 32768,
   };
 
   while (true) {
@@ -949,7 +972,7 @@ export async function callGeminiGenerate({ apiKey, contents, config = {}, system
 
       const unifiedConfig = {
         ...SHARED_GENERATION_CONFIG,
-        maxOutputTokens: 8192,
+        maxOutputTokens: 32768,
         ...config,
         ...(systemInstruction ? { systemInstruction } : {}),
       };
@@ -1168,6 +1191,89 @@ export async function withUploadedGeminiPdf({ apiKey, fileBuffer, fileName = 'do
   throw lastErr;
 }
 
+export async function withUploadedGeminiPdfs({ apiKey, files, fn }) {
+  const allKeys = apiKey ? [apiKey] : getGeminiApiKeys();
+  if (allKeys.length === 0) {
+    throw new Error('GEMINI_API_KEY is required. Please set GEMINI_API_KEY in your environment.');
+  }
+
+  const normalizeBuffer = (fileBuffer) => {
+    if (Buffer.isBuffer(fileBuffer)) return fileBuffer;
+    if (typeof fileBuffer === 'string') {
+      const cleanBase64 = fileBuffer.includes('base64,') ? fileBuffer.split('base64,')[1] : fileBuffer;
+      return Buffer.from(cleanBase64, 'base64');
+    }
+    if (fileBuffer instanceof Uint8Array || fileBuffer instanceof ArrayBuffer) {
+      return Buffer.from(fileBuffer);
+    }
+    throw new Error('Invalid file buffer provided for PDF upload.');
+  };
+
+  const startIdx = apiKey ? 0 : (activeKeyIndex % allKeys.length);
+  const orderedKeys = [...allKeys.slice(startIdx), ...allKeys.slice(0, startIdx)];
+
+  let lastErr = null;
+
+  for (let kIdx = 0; kIdx < orderedKeys.length; kIdx++) {
+    const activeKey = orderedKeys[kIdx];
+    const ai = new GoogleGenAI({ apiKey: activeKey });
+    const hasAlternativeKey = kIdx < orderedKeys.length - 1;
+
+    const uploadedFiles = [];
+    const tempFilePaths = [];
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const { buffer: rawBuffer, fileName } = files[i];
+        const buffer = normalizeBuffer(rawBuffer);
+
+        const tempDir = os.tmpdir();
+        const safeName = `gemini_upload_${Date.now()}_${kIdx}_${i}_${path.basename(fileName || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+        const tempFilePath = path.join(tempDir, safeName);
+        fs.writeFileSync(tempFilePath, buffer);
+        tempFilePaths.push(tempFilePath);
+
+        console.log(`[Files API] Uploading (${i + 1}/${files.length}) ${fileName} (${buffer.length} bytes)...`);
+        const uploadedFile = await ai.files.upload({
+          file: tempFilePath,
+          config: { mimeType: 'application/pdf' },
+        });
+        uploadedFiles.push(uploadedFile);
+      }
+
+      const fileDataParts = uploadedFiles.map((uf) => ({
+        fileData: {
+          fileUri: uf.uri,
+          mimeType: uf.mimeType || 'application/pdf',
+        },
+      }));
+
+      const result = await fn({ ai, uploadedFiles, fileDataParts, apiKey: activeKey });
+      if (!apiKey) activeKeyIndex = allKeys.indexOf(activeKey);
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const statusCode = getErrorStatusCode(err);
+      const isRateLimit = statusCode === 429 || isRateLimitError(err);
+      if (isRateLimit && hasAlternativeKey) {
+        console.warn(`[Files API] Rate limit on key slot #${kIdx + 1}. Rotating...`);
+        rotateGeminiApiKey();
+        continue;
+      }
+      throw err;
+    } finally {
+      for (const p of tempFilePaths) {
+        try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
+      }
+      for (const uf of uploadedFiles) {
+        try { await ai.files.delete({ name: uf.name }); } catch {}
+      }
+    }
+  }
+
+  throw lastErr;
+}
+
 // =========================================================================
 // 1. STREAMLINED 3-PDF PARSER PIPELINE (BACKEND)
 // =========================================================================
@@ -1181,19 +1287,12 @@ export async function parseReadingPdf({ fileBuffer, fileName = 'Reading_Booklet.
     throw new Error('Missing Reading PDF binary buffer.');
   }
 
-  const prompt = `Extract the full Cambridge IELTS Reading exam from the attached PDF document.
+  const prompt = `Extract the complete Cambridge IELTS Reading exam from the attached PDF document.
 Follow all rules defined in systemInstruction:
-1. Extract all 3 reading passages with independent texts and titles into "passages". Ensure lettered paragraphs are decomposed into the "paragraphs" array.
-2. Group all 40 questions under their respective passages with full instructions, types, options, and reference boxes:
-   - Passage 1 MUST contain Questions 1–13 (13 questions).
-   - Passage 2 MUST contain Questions 14–26 (13 questions).
-   - Passage 3 MUST contain 14 questions (Questions 27–40 in total):
-     * Questions 27–31: Summary Completion with options box (A–J)
-     * Questions 32–35: 4-Option Multiple Choice (A, B, C, D)
-     * Questions 36–40: True / False / Not Given
-   - The total question count across Passages 1–3 MUST strictly equal 40. DO NOT omit Questions 32–40!
-3. For notes/summary groups, populate "summary_template" with {{q_num}} tokens preserving all non-question context lines.
-4. Extract all 40 answers from the official Answer Key.`;
+1. Extract all reading passages present in the booklet with their authentic titles and uninterrupted texts into "passages". Decompose lettered paragraphs into the "paragraphs" array.
+2. Group all questions under their respective passages exactly as structured in the booklet, assigning the exact Cambridge question types, options, and reference boxes.
+3. For notes and summary tasks, provide a single "summary_template" or "notes_template" at the group/section level containing sequential gap markers ({{q_num}}). Individual question prompts must contain the concise sentence line with the gap.
+4. Extract all answers strictly from the official 'ANSWER KEY' table at the end of the booklet.`;
 
   return await withUploadedGeminiPdf({
     apiKey,
@@ -1212,7 +1311,7 @@ Follow all rules defined in systemInstruction:
           ],
           config: {
             ...READING_PARSER_CONFIG.config,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 32768,
             temperature,
             systemInstruction: READING_PARSER_CONFIG.systemInstruction,
           },
@@ -1243,7 +1342,7 @@ Follow all rules defined in systemInstruction:
         );
         try {
           const retryResult = await executeReadingCall(
-            'CRITICAL: Passage 3 MUST contain 14 questions (Questions 27–31 Summary with options A-J, Questions 32–35 Multiple Choice A-D, Questions 36–40 True/False/Not Given). The total question count across Passages 1–3 MUST strictly equal 40. Ensure valid RFC 8259 JSON output.',
+            'CRITICAL: Ensure all passages and all 40 questions are fully extracted with valid RFC 8259 JSON output matching READING_EXAM_SCHEMA without skipping questions or omitting options.',
             0.05
           );
           response = retryResult.response;
@@ -1283,158 +1382,103 @@ Follow all rules defined in systemInstruction:
 
       rawPassages.forEach((p, idx) => {
         const partNum = Number(p.part || idx + 1);
-        const qRange = partNum === 1 ? 'Questions 1–13' : partNum === 2 ? 'Questions 14–26' : 'Questions 27–40';
-        const passageRefBox = Array.isArray(p.reference_box) && p.reference_box.length > 0 ? p.reference_box : null;
-        const paragraphs = Array.isArray(p.paragraphs) ? p.paragraphs : [];
+        const passageQNums = (p.questions || []).map(q => Number(q.q_num || q.questionNumber)).filter(n => !isNaN(n) && n > 0);
+        const qRange = passageQNums.length > 0
+          ? 'Questions ' + Math.min(...passageQNums) + '–' + Math.max(...passageQNums)
+          : (p.question_range || p.questionRange || '');
+        const qWithRef = Array.isArray(p.questions)
+          ? p.questions.find(q => Array.isArray(q.reference_box) && q.reference_box.some(r => r && r.label && !/^option\s+[A-Z]$/i.test(r.label)))
+          : null;
+        const passageRefBox = qWithRef?.reference_box || p?.reference_box || p?.referenceBox || parsed?.reference_box || null;
+        
+        // Propagate summary_template across questions if present on passage or any question
+        const sharedSummaryTemplate = p.summary_template || (p.questions || []).find(q => q.summary_template)?.summary_template || '';
+        if (sharedSummaryTemplate) {
+          p.summary_template = sharedSummaryTemplate;
+          (p.questions || []).forEach(q => {
+            if (/SUMMARY/i.test(q.type || '')) {
+              q.summary_template = sharedSummaryTemplate;
+            }
+          });
+        }
+        const rawContent = (
+          p.content ||
+          p.passage_text ||
+          p.passageText ||
+          p.text ||
+          (Array.isArray(p.paragraphs) && p.paragraphs.length > 0 
+            ? p.paragraphs.map(pr => (pr.label ? `${pr.label}. ` : '') + (pr.text || pr.content || '')).join('\n\n') 
+            : '')
+        ).trim();
+
+        const paragraphs = Array.isArray(p.paragraphs) && p.paragraphs.length > 0
+          ? p.paragraphs.map(pr => ({
+              label: pr.label && String(pr.label).trim() ? String(pr.label).trim().toUpperCase() : '',
+              text: (pr.text || pr.content || '').trim(),
+              content: (pr.text || pr.content || '').trim(),
+            }))
+          : (rawContent
+              ? rawContent.split(/\n\s*\n/).map(s => {
+                  const m = s.match(/^(?:Paragraph\s+)?([A-Z])[\.\:\s\-]+([\s\S]*)$/i);
+                  return {
+                    label: m ? m[1].toUpperCase() : '',
+                    text: m ? m[2].trim() : s.trim(),
+                    content: m ? m[2].trim() : s.trim(),
+                  };
+                }).filter(pr => pr.text)
+              : []);
+
+        const pageContentHtml = p.page_content_html || p.pageContentHtml || '';
 
         const pItem = {
           id: partNum,
           part: partNum,
           title: p.title || `Passage ${partNum}`,
           subtitle: p.subtitle || '',
-          content: p.text || '',
-          passage_text: p.text || '',
+          content: rawContent,
+          passage_text: rawContent,
+          passageText: rawContent,
+          text: rawContent,
           paragraphs: paragraphs,
+          page_content_html: pageContentHtml,
           notes_template: p.notes_template || '',
           pdf_name: fileName,
           question_range: qRange,
           reference_box: passageRefBox,
           referenceBox: passageRefBox,
+          questions: Array.isArray(p.questions) ? p.questions : [],
         };
         formattedPassages.push(pItem);
 
         partsMap[`part${partNum}`] = {
           title: p.title || `Passage ${partNum}`,
           subtitle: p.subtitle || '',
-          passageText: p.text || '',
+          content: rawContent,
+          passageText: rawContent,
+          passage_text: rawContent,
+          text: rawContent,
           paragraphs: paragraphs,
+          page_content_html: pageContentHtml,
           notes_template: p.notes_template || '',
           questionRange: qRange,
           reference_box: passageRefBox,
           referenceBox: passageRefBox,
         };
 
-        // Ensure Passage 1 strictly contains all 13 questions (Questions 1–13)
-        if (partNum === 1) {
-          if (!Array.isArray(p.questions)) p.questions = [];
-          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
-          for (let qn = 1; qn <= 13; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: qn <= 6 ? 'TRUE_FALSE_NOT_GIVEN' : 'NOTES_COMPLETION',
-                instruction: qn <= 6 
-                  ? 'Do the following statements agree with the information given in Reading Passage 1? Choose TRUE, FALSE or NOT GIVEN.'
-                  : 'Complete the notes below. Choose ONE WORD ONLY from the passage for each answer.',
-                prompt: `Question ${qn}`,
-              });
-            }
-          }
-          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
-        }
-
-        // Ensure Passage 2 strictly contains all 13 questions (Questions 14–26)
-        if (partNum === 2) {
-          if (!Array.isArray(p.questions)) p.questions = [];
-          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
-          for (let qn = 14; qn <= 26; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: qn <= 19 ? 'MATCHING' : 'SUMMARY_COMPLETION',
-                instruction: qn <= 19
-                  ? 'Which paragraph contains the following information?'
-                  : 'Complete the summary below. Choose ONE WORD ONLY from the passage for each answer.',
-                prompt: `Question ${qn}`,
-              });
-            }
-          }
-          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
-        }
-
-        // Ensure Passage 3 strictly contains all 14 questions (Questions 27–40)
-        if (partNum === 3) {
-          if (!Array.isArray(p.questions)) {
-            p.questions = [];
-          }
-          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
-
-          // Questions 27–31: Summary Completion with options A–J
-          const summaryRefBox = [
-            { key: 'A', label: 'Option A' },
-            { key: 'B', label: 'Option B' },
-            { key: 'C', label: 'Option C' },
-            { key: 'D', label: 'Option D' },
-            { key: 'E', label: 'Option E' },
-            { key: 'F', label: 'Option F' },
-            { key: 'G', label: 'Option G' },
-            { key: 'H', label: 'Option H' },
-            { key: 'I', label: 'Option I' },
-            { key: 'J', label: 'Option J' },
-          ];
-          for (let qn = 27; qn <= 31; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: 'SUMMARY_MATCHING',
-                instruction: 'Complete the summary using the list of words, A–J, below.',
-                prompt: `Question ${qn}`,
-                options: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'],
-                reference_box: summaryRefBox,
-              });
-            } else {
-              const exQ = p.questions.find(item => Number(item.q_num) === qn);
-              if (exQ && exQ.type === 'SUMMARY_MATCHING') {
-                if (!exQ.options || exQ.options.length === 0) {
-                  exQ.options = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-                }
-                if (!exQ.reference_box || exQ.reference_box.length === 0) {
-                  exQ.reference_box = summaryRefBox;
-                }
-              }
-            }
-          }
-
-          // Questions 32–35: 4-Option Multiple Choice (A, B, C, D)
-          for (let qn = 32; qn <= 35; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: 'MULTIPLE_CHOICE',
-                instruction: 'Choose the correct letter, A, B, C or D.',
-                prompt: `Question ${qn}`,
-                options: ['A', 'B', 'C', 'D'],
-              });
-            }
-          }
-
-          // Questions 36–40: True / False / Not Given
-          for (let qn = 36; qn <= 40; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: 'TRUE_FALSE_NOT_GIVEN',
-                instruction: 'Do the following statements agree with the information given in Reading Passage 3? Choose TRUE, FALSE or NOT GIVEN.',
-                prompt: `Question ${qn}`,
-                options: ['TRUE', 'FALSE', 'NOT GIVEN'],
-              });
-            }
-          }
-          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
-        }
-
         if (Array.isArray(p.questions)) {
+          p.questions.sort((a, b) => Number(a.q_num || a.questionNumber || 0) - Number(b.q_num || b.questionNumber || 0));
           p.questions.forEach((q) => {
-            const qNum = Number(q.q_num);
+            const qNum = Number(q.q_num || q.questionNumber);
             if (qNum) {
               const ansStr = String(q.correct_answer ?? '').trim();
               if (ansStr) {
                 unifiedKeys[String(qNum)] = ansStr;
               }
 
+              const isMatchingOrSummaryMatching = q.type === 'MATCHING' || q.type === 'SUMMARY_MATCHING' || String(q.type || '').includes('MATCHING');
               const qRefBox = (Array.isArray(q.reference_box) && q.reference_box.length > 0)
                 ? q.reference_box
-                : passageRefBox;
+                : (isMatchingOrSummaryMatching ? passageRefBox : null);
 
               flattenedQuestions.push({
                 id: `q-${qNum}`,
@@ -1468,16 +1512,277 @@ Follow all rules defined in systemInstruction:
       parsed.answerKeys = unifiedKeys;
       parsed.sections = formattedPassages.map((p) => ({
         part: p.id,
+        id: p.id,
         title: p.title,
+        content: p.content,
         passage_text: p.content,
+        passageText: p.content,
+        text: p.content,
+        page_content_html: p.page_content_html,
         paragraphs: p.paragraphs,
         question_range: p.question_range,
-        answer_keys: Object.entries(unifiedKeys)
-          .filter(([k]) => {
-            const n = Number(k);
-            return p.id === 1 ? n <= 13 : p.id === 2 ? n >= 14 && n <= 26 : n >= 27;
-          })
-          .map(([k, v]) => ({ questionNumber: Number(k), answer: v })),
+        answer_keys: (() => {
+          const passageQNums = new Set((p.questions || []).map(q => Number(q.q_num || q.questionNumber)));
+          return Object.entries(unifiedKeys)
+            .filter(([k]) => passageQNums.has(Number(k)))
+            .map(([k, v]) => ({ questionNumber: Number(k), answer: v }));
+        })(),
+      }));
+
+      return parsed;
+    },
+  });
+}
+
+export async function parseReadingPdfs({ files, apiKey = null, onProgress = null }) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error('Missing Reading PDF file(s).');
+  }
+
+  const fileList = files.map((f, i) => ({
+    buffer: f.buffer || f.fileBuffer,
+    fileName: f.fileName || `Reading_${i + 1}.pdf`,
+  }));
+
+  const multiSourceInstruction = fileList.length > 1
+    ? `\n\nYou have been given ${fileList.length} REFERENCE IELTS Reading booklets, attached as separate PDF files, each with its own official answer key. Their filenames are: ${fileList.map(f => f.fileName).join(', ')}.\nUse ALL of them together as your source material, following the MULTI-DOCUMENT INPUT HANDLING rules in your system instructions: select 3 whole passages from across these files (prefer different files per passage), covering the widest possible variety of Cambridge question types across the 40 questions, and pull every answer strictly from the correct source file's own answer key.`
+    : '';
+
+  const prompt = `Extract the complete Cambridge IELTS Reading exam from the attached PDF document(s).${multiSourceInstruction}
+Follow all rules defined in systemInstruction:
+1. Extract all reading passages present in the document(s) with their authentic titles and uninterrupted texts into "passages", preserving paragraph structures.
+2. Group all questions under their respective passages exactly as structured in the source document(s), assigning exact Cambridge question types, options, and reference boxes.
+3. For notes and summary tasks, provide a single "summary_template" or "notes_template" with sequential gap markers ({{q_num}}).
+4. Extract all answers strictly from the official 'ANSWER KEY' table of the respective source file.`;
+
+  return await withUploadedGeminiPdfs({
+    apiKey,
+    files: fileList,
+    fn: async ({ fileDataParts, apiKey: resolvedApiKey }) => {
+      const executeReadingCall = async (extraPrompt = '', temperature = 0.1) => {
+        const fullPrompt = extraPrompt ? `${prompt}\n\n${extraPrompt}` : prompt;
+        return await callGeminiGenerate({
+          apiKey: resolvedApiKey || apiKey,
+          contents: [
+            {
+              role: 'user',
+              parts: [...fileDataParts, { text: fullPrompt }],
+            },
+          ],
+          config: {
+            ...READING_PARSER_CONFIG.config,
+            maxOutputTokens: 32768,
+            temperature,
+            systemInstruction: READING_PARSER_CONFIG.systemInstruction,
+          },
+          onProgress,
+        });
+      };
+
+      let { response, modelUsed } = await executeReadingCall();
+      let parsed = null;
+      let parseError = null;
+      try {
+        parsed = robustJsonRepair(response.text || '{}');
+      } catch (err) {
+        parseError = err;
+      }
+
+      const totalParsedQuestions = Array.isArray(parsed?.passages)
+        ? parsed.passages.reduce((acc, p) => acc + (Array.isArray(p.questions) ? p.questions.length : 0), 0)
+        : 0;
+      const isMissingQuestions = totalParsedQuestions < 40;
+
+      if (!parsed || parseError || !Array.isArray(parsed.passages) || parsed.passages.length === 0 || isMissingQuestions) {
+        console.warn(`[Reading Parser Multi] Incomplete (${totalParsedQuestions}/40). Retrying once with reinforced prompt...`);
+        try {
+          const retryResult = await executeReadingCall(
+            'CRITICAL: Ensure all passages and all 40 questions are fully extracted with valid RFC 8259 JSON output matching READING_EXAM_SCHEMA without skipping questions or omitting options.',
+            0.05
+          );
+          response = retryResult.response;
+          modelUsed = retryResult.modelUsed;
+          parsed = robustJsonRepair(response.text || '{}');
+          parseError = null;
+          console.log('[Reading Parser Multi] Retry succeeded.');
+        } catch (retryErr) {
+          console.error('[Reading Parser Multi] Retry also failed:', retryErr.message);
+          if (!parsed) throw (parseError || retryErr);
+        }
+      }
+
+      parsed.file_name = fileList.map((f) => f.fileName).join(', ');
+      parsed.model_used = modelUsed;
+      const fileName = parsed.file_name;
+
+      // Extract unified answer keys and flattened questions from structured passages
+      const unifiedKeys = {};
+      const flattenedQuestions = [];
+      const formattedPassages = [];
+      const partsMap = {};
+
+      const rawPassages = Array.isArray(parsed.passages) ? parsed.passages : [];
+      // Guarantee all 3 passages exist
+      for (let partIdx = 1; partIdx <= 3; partIdx++) {
+        if (!rawPassages.some(p => Number(p.part || p.id) === partIdx)) {
+          rawPassages.push({
+            part: partIdx,
+            title: `Reading Passage ${partIdx}`,
+            text: `Passage ${partIdx} content from ${fileName}`,
+            paragraphs: [],
+            questions: [],
+          });
+        }
+      }
+      rawPassages.sort((a, b) => Number(a.part || a.id) - Number(b.part || b.id));
+
+      rawPassages.forEach((p, idx) => {
+        const partNum = Number(p.part || idx + 1);
+        const passageQNums = (p.questions || []).map(q => Number(q.q_num || q.questionNumber)).filter(n => !isNaN(n) && n > 0);
+        const qRange = passageQNums.length > 0
+          ? 'Questions ' + Math.min(...passageQNums) + '–' + Math.max(...passageQNums)
+          : (p.question_range || p.questionRange || '');
+        const qWithRef = Array.isArray(p.questions)
+          ? p.questions.find(q => Array.isArray(q.reference_box) && q.reference_box.some(r => r && r.label && !/^option\s+[A-Z]$/i.test(r.label)))
+          : null;
+        const passageRefBox = qWithRef?.reference_box || p?.reference_box || p?.referenceBox || parsed?.reference_box || null;
+        
+        // Propagate summary_template across questions if present on passage or any question
+        const sharedSummaryTemplate = p.summary_template || (p.questions || []).find(q => q.summary_template)?.summary_template || '';
+        if (sharedSummaryTemplate) {
+          p.summary_template = sharedSummaryTemplate;
+          (p.questions || []).forEach(q => {
+            if (/SUMMARY/i.test(q.type || '')) {
+              q.summary_template = sharedSummaryTemplate;
+            }
+          });
+        }
+        const rawContent = (
+          p.content ||
+          p.passage_text ||
+          p.passageText ||
+          p.text ||
+          (Array.isArray(p.paragraphs) && p.paragraphs.length > 0 
+            ? p.paragraphs.map(pr => (pr.label ? `${pr.label}. ` : '') + (pr.text || pr.content || '')).join('\n\n') 
+            : '')
+        ).trim();
+
+        const paragraphs = Array.isArray(p.paragraphs) && p.paragraphs.length > 0
+          ? p.paragraphs.map(pr => ({
+              label: pr.label && String(pr.label).trim() ? String(pr.label).trim().toUpperCase() : '',
+              text: (pr.text || pr.content || '').trim(),
+              content: (pr.text || pr.content || '').trim(),
+            }))
+          : (rawContent
+              ? rawContent.split(/\n\s*\n/).map(s => {
+                  const m = s.match(/^(?:Paragraph\s+)?([A-Z])[\.\:\s\-]+([\s\S]*)$/i);
+                  return {
+                    label: m ? m[1].toUpperCase() : '',
+                    text: m ? m[2].trim() : s.trim(),
+                    content: m ? m[2].trim() : s.trim(),
+                  };
+                }).filter(pr => pr.text)
+              : []);
+
+        const pageContentHtml = p.page_content_html || p.pageContentHtml || '';
+
+        const pItem = {
+          id: partNum,
+          part: partNum,
+          title: p.title || `Passage ${partNum}`,
+          subtitle: p.subtitle || '',
+          content: rawContent,
+          passage_text: rawContent,
+          passageText: rawContent,
+          text: rawContent,
+          paragraphs: paragraphs,
+          page_content_html: pageContentHtml,
+          notes_template: p.notes_template || '',
+          pdf_name: fileName,
+          question_range: qRange,
+          reference_box: passageRefBox,
+          referenceBox: passageRefBox,
+          questions: Array.isArray(p.questions) ? p.questions : [],
+        };
+        formattedPassages.push(pItem);
+
+        partsMap[`part${partNum}`] = {
+          title: p.title || `Passage ${partNum}`,
+          subtitle: p.subtitle || '',
+          content: rawContent,
+          passageText: rawContent,
+          passage_text: rawContent,
+          text: rawContent,
+          paragraphs: paragraphs,
+          page_content_html: pageContentHtml,
+          notes_template: p.notes_template || '',
+          questionRange: qRange,
+          reference_box: passageRefBox,
+          referenceBox: passageRefBox,
+        };
+
+        if (Array.isArray(p.questions)) {
+          p.questions.sort((a, b) => Number(a.q_num || a.questionNumber || 0) - Number(b.q_num || b.questionNumber || 0));
+          p.questions.forEach((q) => {
+            const qNum = Number(q.q_num || q.questionNumber);
+            if (qNum) {
+              const ansStr = String(q.correct_answer ?? '').trim();
+              if (ansStr) {
+                unifiedKeys[String(qNum)] = ansStr;
+              }
+
+              const isMatchingOrSummaryMatching = q.type === 'MATCHING' || q.type === 'SUMMARY_MATCHING' || String(q.type || '').includes('MATCHING');
+              const qRefBox = (Array.isArray(q.reference_box) && q.reference_box.length > 0)
+                ? q.reference_box
+                : (isMatchingOrSummaryMatching ? passageRefBox : null);
+
+              flattenedQuestions.push({
+                id: `q-${qNum}`,
+                questionNumber: qNum,
+                passageId: partNum,
+                type: q.type || 'FILL_BLANK',
+                instruction: q.instruction || '',
+                title: q.title || '',
+                subheading: q.subheading || '',
+                context_bullets: Array.isArray(q.context_bullets) ? q.context_bullets : [],
+                prompt: q.prompt || `Question ${qNum}`,
+                text: q.prompt || `Question ${qNum}`,
+                options: Array.isArray(q.options) ? q.options : [],
+                reference_box: qRefBox,
+                referenceBox: qRefBox,
+                summary_template: q.summary_template || q.notes_template || '',
+                notes_template: q.notes_template || q.summary_template || '',
+                acceptedAnswers: ansStr ? [ansStr] : [],
+              });
+            }
+          });
+        }
+      });
+
+      flattenedQuestions.sort((a, b) => a.questionNumber - b.questionNumber);
+
+      parsed.passages = formattedPassages;
+      parsed.parts = partsMap;
+      parsed.questions = flattenedQuestions;
+      parsed.answer_keys = unifiedKeys;
+      parsed.answerKeys = unifiedKeys;
+      parsed.sections = formattedPassages.map((p) => ({
+        part: p.id,
+        id: p.id,
+        title: p.title,
+        content: p.content,
+        passage_text: p.content,
+        passageText: p.content,
+        text: p.content,
+        page_content_html: p.page_content_html,
+        paragraphs: p.paragraphs,
+        question_range: p.question_range,
+        answer_keys: (() => {
+          const passageQNums = new Set((p.questions || []).map(q => Number(q.q_num || q.questionNumber)));
+          return Object.entries(unifiedKeys)
+            .filter(([k]) => passageQNums.has(Number(k)))
+            .map(([k, v]) => ({ questionNumber: Number(k), answer: v }));
+        })(),
       }));
 
       return parsed;
@@ -1497,7 +1802,9 @@ export async function parseListeningPdf({ fileBuffer, fileName = 'Listening_Book
   const prompt = `Extract the complete Cambridge IELTS Listening exam from the attached PDF document.
 Follow all rules defined in systemInstruction:
 1. Extract all 4 parts with their titles, instructions, and questions into "parts".
-2. For notes and form completion tasks, build a complete "notes_template" with inline {{q_num}} tokens, retaining every heading and non-question informative sentence.
+2. For notes and form completion tasks (especially Part 1 and Part 4):
+   - Build a comprehensive "notes_template" on the part object retaining the FULL page verbatim: include all main titles, section subheadings (e.g. "Yoga", "Ballet", "Soccer", "Aerobics", "Background", "Benefits", "Procedures"), all non-question lecture sentences, and all bullet points. Format each gap strictly as {{q_num}} (e.g. {{1}}, {{2}}... {{31}}, {{32}}).
+   - On every individual question item, assign its "subheading" and populate "context_bullets" with any surrounding informative bullet points.
 3. Classify all questions accurately according to Cambridge types, with options and reference_box.
 4. Extract all 40 answers from the official Answer Key.`;
 
@@ -1518,7 +1825,7 @@ Follow all rules defined in systemInstruction:
           ],
           config: {
             ...LISTENING_PARSER_CONFIG.config,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 32768,
             temperature,
             systemInstruction: LISTENING_PARSER_CONFIG.systemInstruction,
           },
@@ -1580,77 +1887,14 @@ Follow all rules defined in systemInstruction:
 
       rawParts.forEach((p, idx) => {
         const partNum = Number(p.part || p.partId || idx + 1);
-        const qRange = partNum === 1 ? 'Questions 1–10' : partNum === 2 ? 'Questions 11–20' : partNum === 3 ? 'Questions 21–30' : 'Questions 31–40';
+        const partQNums = (p.questions || []).map(q => Number(q.q_num || q.questionNumber)).filter(n => !isNaN(n) && n > 0);
+        const qRange = partQNums.length > 0
+          ? 'Questions ' + Math.min(...partQNums) + '–' + Math.max(...partQNums)
+          : (p.question_range || p.questionRange || '');
         const partRefBox = Array.isArray(p.reference_box) ? p.reference_box : null;
 
-        // Ensure Part 1 has Questions 1–10
-        if (partNum === 1) {
-          if (!Array.isArray(p.questions)) p.questions = [];
-          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
-          for (let qn = 1; qn <= 10; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: 'NOTES_COMPLETION',
-                instruction: 'Complete the notes below. Write ONE WORD AND/OR A NUMBER for each answer.',
-                prompt: `Question ${qn}`,
-              });
-            }
-          }
-          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
-        }
-
-        // Ensure Part 2 has Questions 11–20
-        if (partNum === 2) {
-          if (!Array.isArray(p.questions)) p.questions = [];
-          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
-          for (let qn = 11; qn <= 20; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: 'MULTIPLE_CHOICE',
-                instruction: 'Choose the correct letter, A, B, or C.',
-                prompt: `Question ${qn}`,
-                options: ['A', 'B', 'C'],
-              });
-            }
-          }
-          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
-        }
-
-        // Ensure Part 3 has Questions 21–30
-        if (partNum === 3) {
-          if (!Array.isArray(p.questions)) p.questions = [];
-          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
-          for (let qn = 21; qn <= 30; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: 'MULTIPLE_CHOICE',
-                instruction: 'Choose the correct letter, A, B, C or D.',
-                prompt: `Question ${qn}`,
-                options: ['A', 'B', 'C', 'D'],
-              });
-            }
-          }
-          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
-        }
-
-        // Ensure Part 4 has Questions 31–40
-        if (partNum === 4) {
-          if (!Array.isArray(p.questions)) p.questions = [];
-          const existingNums = new Set(p.questions.map(q => Number(q.q_num)));
-          for (let qn = 31; qn <= 40; qn++) {
-            if (!existingNums.has(qn)) {
-              p.questions.push({
-                q_num: qn,
-                type: 'NOTES_COMPLETION',
-                instruction: 'Complete the notes below. Write ONE WORD ONLY for each answer.',
-                prompt: `Question ${qn}`,
-              });
-            }
-          }
-          p.questions.sort((a, b) => Number(a.q_num) - Number(b.q_num));
+        if (Array.isArray(p.questions)) {
+          p.questions.sort((a, b) => Number(a.q_num || a.questionNumber || 0) - Number(b.q_num || b.questionNumber || 0));
         }
 
         formattedParts.push({
@@ -1663,11 +1907,12 @@ Follow all rules defined in systemInstruction:
           question_range: qRange,
           reference_box: partRefBox,
           referenceBox: partRefBox,
+          questions: Array.isArray(p.questions) ? p.questions : [],
         });
 
         if (Array.isArray(p.questions)) {
           p.questions.forEach((q) => {
-            const qNum = Number(q.q_num);
+            const qNum = Number(q.q_num || q.questionNumber);
             if (qNum) {
               const ansStr = String(q.correct_answer ?? '').trim();
               if (ansStr) {
@@ -1688,8 +1933,8 @@ Follow all rules defined in systemInstruction:
                 subheading: q.subheading || '',
                 context_bullets: Array.isArray(q.context_bullets) ? q.context_bullets : [],
                 flow_step: q.flow_step || '',
-                summary_template: q.summary_template || q.notes_template || '',
-                notes_template: q.notes_template || q.summary_template || '',
+                summary_template: q.summary_template || q.notes_template || p.notes_template || '',
+                notes_template: q.notes_template || q.summary_template || p.notes_template || '',
                 prompt: q.prompt || `Question ${qNum}`,
                 text: q.prompt || `Question ${qNum}`,
                 options: Array.isArray(q.options) ? q.options : [],
@@ -1710,14 +1955,193 @@ Follow all rules defined in systemInstruction:
       parsed.answerKeys = unifiedKeys;
       parsed.sections = formattedParts.map((p) => ({
         part: p.partId,
+        id: p.partId,
         title: p.title,
+        notes_template: p.notes_template || '',
+        page_content_html: p.page_content_html || '',
         question_range: p.question_range,
-        answer_keys: Object.entries(unifiedKeys)
-          .filter(([k]) => {
-            const n = Number(k);
-            return p.partId === 1 ? n <= 10 : p.partId === 2 ? n >= 11 && n <= 20 : p.partId === 3 ? n >= 21 && n <= 30 : n >= 31;
-          })
-          .map(([k, v]) => ({ questionNumber: Number(k), answer: v })),
+        answer_keys: (() => {
+          const partQNums = new Set((p.questions || []).map(q => Number(q.q_num || q.questionNumber)));
+          return Object.entries(unifiedKeys)
+            .filter(([k]) => partQNums.has(Number(k)))
+            .map(([k, v]) => ({ questionNumber: Number(k), answer: v }));
+        })(),
+      }));
+
+      return parsed;
+    },
+  });
+}
+
+export async function parseListeningPdfs({ files, apiKey = null, onProgress = null }) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error('Missing Listening PDF file(s).');
+  }
+
+  const fileList = files.map((f, i) => ({
+    buffer: f.buffer || f.fileBuffer,
+    fileName: f.fileName || `Listening_${i + 1}.pdf`,
+  }));
+
+  const multiSourceInstruction = fileList.length > 1
+    ? `\n\nYou have been given ${fileList.length} REFERENCE IELTS Listening booklets, attached as separate PDF files, each with its own official answer key. Their filenames are: ${fileList.map(f => f.fileName).join(', ')}.\nUse ALL of them together as your source material, following the MULTI-DOCUMENT INPUT HANDLING rules in your system instructions: select 4 whole parts from across these files (prefer different files per part), covering the widest possible variety of Cambridge question types across the 40 questions, and pull every answer strictly from the correct source file's own answer key.`
+    : '';
+
+  const prompt = `Extract the complete Cambridge IELTS Listening exam from the attached PDF document(s).${multiSourceInstruction}
+Follow all rules defined in systemInstruction:
+1. Extract all 4 parts with their titles, instructions, and questions into "parts".
+2. For notes and form completion tasks (especially Part 1 and Part 4):
+   - Build a comprehensive "notes_template" on the part object retaining the FULL page verbatim: include all main titles, section subheadings, all non-question lecture sentences, and all bullet points. Format each gap strictly as {{q_num}}.
+   - On every individual question item, assign its "subheading" and populate "context_bullets" with any surrounding informative bullet points.
+3. Classify all questions accurately according to Cambridge types, with options and reference_box.
+4. Extract all 40 answers from the official Answer Key of the specific source file each part came from.`;
+
+  return await withUploadedGeminiPdfs({
+    apiKey,
+    files: fileList,
+    fn: async ({ fileDataParts, apiKey: resolvedApiKey }) => {
+      const executeListeningCall = async (extraPrompt = '', temperature = 0.1) => {
+        const fullPrompt = extraPrompt ? `${prompt}\n\n${extraPrompt}` : prompt;
+        return await callGeminiGenerate({
+          apiKey: resolvedApiKey || apiKey,
+          contents: [{ role: 'user', parts: [...fileDataParts, { text: fullPrompt }] }],
+          config: {
+            ...LISTENING_PARSER_CONFIG.config,
+            maxOutputTokens: 32768,
+            temperature,
+            systemInstruction: LISTENING_PARSER_CONFIG.systemInstruction,
+          },
+          onProgress,
+        });
+      };
+
+      let { response, modelUsed } = await executeListeningCall();
+      let parsed = null;
+      let parseError = null;
+      try {
+        parsed = robustJsonRepair(response.text || '{}');
+      } catch (err) {
+        parseError = err;
+      }
+
+      if (!parsed || parseError || !Array.isArray(parsed.parts) || parsed.parts.length === 0) {
+        console.warn('[Listening Parser Multi] Invalid parts. Retrying once...');
+        try {
+          const retryResult = await executeListeningCall(
+            'CRITICAL: Ensure valid RFC 8259 JSON output without syntax errors or unescaped quotes.',
+            0.05
+          );
+          response = retryResult.response;
+          modelUsed = retryResult.modelUsed;
+          parsed = robustJsonRepair(response.text || '{}');
+          parseError = null;
+        } catch (retryErr) {
+          if (!parsed) throw (parseError || retryErr);
+        }
+      }
+
+      parsed.file_name = fileList.map((f) => f.fileName).join(', ');
+      parsed.model_used = modelUsed;
+
+      const unifiedKeys = {};
+      const flattenedQuestions = [];
+      const formattedParts = [];
+
+      const rawParts = Array.isArray(parsed.parts) ? parsed.parts : [];
+      for (let partIdx = 1; partIdx <= 4; partIdx++) {
+        if (!rawParts.some(p => Number(p.part || p.partId || p.id) === partIdx)) {
+          rawParts.push({
+            part: partIdx,
+            partId: partIdx,
+            title: `Part ${partIdx}`,
+            instruction: '',
+            questions: [],
+          });
+        }
+      }
+      rawParts.sort((a, b) => Number(a.part || a.partId || a.id) - Number(b.part || b.partId || b.id));
+
+      rawParts.forEach((p, idx) => {
+        const partNum = Number(p.part || p.partId || idx + 1);
+        const partQNums = (p.questions || []).map(q => Number(q.q_num || q.questionNumber)).filter(n => !isNaN(n) && n > 0);
+        const qRange = partQNums.length > 0
+          ? 'Questions ' + Math.min(...partQNums) + '–' + Math.max(...partQNums)
+          : (p.question_range || p.questionRange || '');
+        const partRefBox = Array.isArray(p.reference_box) ? p.reference_box : null;
+
+        if (Array.isArray(p.questions)) {
+          p.questions.sort((a, b) => Number(a.q_num || a.questionNumber || 0) - Number(b.q_num || b.questionNumber || 0));
+        }
+
+        formattedParts.push({
+          partId: partNum,
+          part: partNum,
+          title: p.title || `Part ${partNum}`,
+          audio_track_index: Number(p.audio_track_index || partNum),
+          instruction: p.instruction || '',
+          notes_template: p.notes_template || '',
+          question_range: qRange,
+          reference_box: partRefBox,
+          referenceBox: partRefBox,
+          questions: Array.isArray(p.questions) ? p.questions : [],
+        });
+
+        if (Array.isArray(p.questions)) {
+          p.questions.forEach((q) => {
+            const qNum = Number(q.q_num || q.questionNumber);
+            if (qNum) {
+              const ansStr = String(q.correct_answer ?? '').trim();
+              if (ansStr) {
+                unifiedKeys[String(qNum)] = ansStr;
+              }
+
+              const qRefBox = (Array.isArray(q.reference_box) && q.reference_box.length > 0)
+                ? q.reference_box
+                : partRefBox;
+
+              flattenedQuestions.push({
+                id: `lq-${qNum}`,
+                questionNumber: qNum,
+                partId: partNum,
+                type: q.type || (qRefBox ? 'MATCHING' : 'FILL_BLANK'),
+                instruction: q.instruction || p.instruction || '',
+                title: q.title || '',
+                subheading: q.subheading || '',
+                context_bullets: Array.isArray(q.context_bullets) ? q.context_bullets : [],
+                flow_step: q.flow_step || '',
+                summary_template: q.summary_template || q.notes_template || p.notes_template || '',
+                notes_template: q.notes_template || q.summary_template || p.notes_template || '',
+                prompt: q.prompt || `Question ${qNum}`,
+                text: q.prompt || `Question ${qNum}`,
+                options: Array.isArray(q.options) ? q.options : [],
+                reference_box: qRefBox,
+                referenceBox: qRefBox,
+                acceptedAnswers: ansStr ? [ansStr] : [],
+              });
+            }
+          });
+        }
+      });
+
+      flattenedQuestions.sort((a, b) => a.questionNumber - b.questionNumber);
+
+      parsed.parts = formattedParts;
+      parsed.questions = flattenedQuestions;
+      parsed.answer_keys = unifiedKeys;
+      parsed.answerKeys = unifiedKeys;
+      parsed.sections = formattedParts.map((p) => ({
+        part: p.partId,
+        id: p.partId,
+        title: p.title,
+        notes_template: p.notes_template || '',
+        page_content_html: p.page_content_html || '',
+        question_range: p.question_range,
+        answer_keys: (() => {
+          const partQNums = new Set((p.questions || []).map(q => Number(q.q_num || q.questionNumber)));
+          return Object.entries(unifiedKeys)
+            .filter(([k]) => partQNums.has(Number(k)))
+            .map(([k, v]) => ({ questionNumber: Number(k), answer: v }));
+        })(),
       }));
 
       return parsed;
@@ -1754,7 +2178,7 @@ Extract only concise assignment prompts without transcribing charts, tables, num
           ],
           config: {
             ...WRITING_PARSER_CONFIG.config,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 16000,
             temperature,
             systemInstruction: WRITING_PARSER_CONFIG.systemInstruction,
           },
@@ -1945,15 +2369,19 @@ export async function parseThreePartExamPdf({
   let readingPayload = null;
   if (results.reading) {
     const r = results.reading;
-    const passages = r.passages || [1, 2, 3].map((pId) => ({
-      id: pId,
-      part: pId,
-      title: `Passage ${pId}`,
-      content: '',
-      passage_text: '',
-      pdf_name: readingFileName,
-      question_range: pId === 1 ? 'Questions 1–13' : pId === 2 ? 'Questions 14–26' : 'Questions 27–40',
-    }));
+    const passages = r.passages || [1, 2, 3].map((pId) => {
+      const qNums = (r.questions || []).filter(q => Number(q.passageId || q.part) === pId).map(q => Number(q.questionNumber || q.q_num)).filter(n => !isNaN(n) && n > 0);
+      const qRange = qNums.length > 0 ? 'Questions ' + Math.min(...qNums) + '–' + Math.max(...qNums) : '';
+      return {
+        id: pId,
+        part: pId,
+        title: `Passage ${pId}`,
+        content: '',
+        passage_text: '',
+        pdf_name: readingFileName,
+        question_range: qRange,
+      };
+    });
 
     readingPayload = {
       ...r,
@@ -1981,10 +2409,12 @@ export async function parseThreePartExamPdf({
       const audio = audioTracks?.[pKey] || audioTracks?.[`audio${pId}`] || audioTracks?.[`audioTrack${pId}`] || {};
       const audioUrl = typeof audio === 'string' ? audio : audio?.url || '';
       const audioName = typeof audio === 'string' ? '' : audio?.name || '';
+      const qNums = (l.questions || []).filter(q => Number(q.partId || q.part) === pId).map(q => Number(q.questionNumber || q.q_num)).filter(n => !isNaN(n) && n > 0);
+      const dynRange = qNums.length > 0 ? 'Questions ' + Math.min(...qNums) + '–' + Math.max(...qNums) : '';
       return {
         partId: pId,
         title: found.title || `Part ${pId}`,
-        question_range: found.question_range || (pId === 1 ? 'Questions 1–10' : pId === 2 ? 'Questions 11–20' : pId === 3 ? 'Questions 21–30' : 'Questions 31–40'),
+        question_range: found.question_range || dynRange,
         audio_url: audioUrl,
         audio_name: audioName,
       };
@@ -2406,7 +2836,7 @@ Return a STRICT, valid JSON object with NO markdown ticks, following this exact 
     contents: [{ text: prompt }],
     config: {
       ...WRITING_EVALUATION_CONFIG.config,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 16000,
     },
   });
 
@@ -2428,7 +2858,7 @@ Return a STRICT, valid JSON object with NO markdown ticks, following this exact 
         config: {
           ...WRITING_EVALUATION_CONFIG.config,
           temperature: 0.05,
-          maxOutputTokens: 8192,
+          maxOutputTokens: 16000,
         },
       });
       response = retryResult.response;

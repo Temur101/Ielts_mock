@@ -11,7 +11,27 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { Button } from '../common/Button';
-import { fetchExamByPin } from '../../lib/supabase';
+import { fetchExamByPin, generateUUID } from '../../lib/supabase';
+
+// Strict UUID v4 generator compatible with PostgreSQL uuid type
+const generateValidUUID = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  if (typeof generateUUID === 'function') {
+    try {
+      const id = generateUUID();
+      if (id && typeof id === 'string') return id;
+    } catch (e) {
+      console.warn('generateUUID fallback error:', e);
+    }
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
 
 export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, examStatus = 'lobby', shortCircuitPin = '' }) {
   // Check URL query parameter ?pin=...
@@ -41,6 +61,7 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
 
     try {
       const cleanPin = pinCode.trim().toUpperCase();
+      const activeLocalPin = (defaultPin || shortCircuitPin || '').trim().toUpperCase();
       const { data: dbExam } = await fetchExamByPin(cleanPin);
 
       if (dbExam) {
@@ -49,34 +70,65 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
           return;
         }
 
-        if (dbExam.is_lobby_open === false && dbExam.status !== 'active') {
+        const isLobbyAccessible = (dbExam.is_lobby_open !== false || dbExam.status === 'active') ||
+                                  (activeLocalPin && cleanPin === activeLocalPin && (isLobbyOpen || examStatus === 'active'));
+
+        if (!isLobbyAccessible) {
           setError('The classroom lobby has not been opened yet by the instructor. Please wait for your instructor to start.');
           return;
         }
 
+        const studentUUID = generateValidUUID();
         const finalCandidateNo = candidateNo.trim() || `CAND-${Math.floor(1000 + Math.random() * 9000)}`;
-        onJoin({
+        const studentData = {
+          id: studentUUID,
           name: name.trim(),
           candidate_no: finalCandidateNo,
+          candidate_number: finalCandidateNo,
           pin_code: cleanPin,
           dbExam: dbExam,
-        });
+        };
+
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('ielts_student', JSON.stringify(studentData));
+            localStorage.setItem('current_student', JSON.stringify(studentData));
+          }
+        } catch (storageErr) {
+          console.warn('Failed to save student session to localStorage:', storageErr);
+        }
+
+        onJoin(studentData);
       } else {
         // If Supabase not reachable or offline, fallback to match current local exam PIN
-        const activeLocalPin = (defaultPin || '').trim().toUpperCase();
         if (activeLocalPin && cleanPin === activeLocalPin) {
-          if (isLobbyOpen === false && examStatus !== 'active') {
+          const isLobbyAccessible = (isLobbyOpen || examStatus === 'active');
+          if (!isLobbyAccessible) {
             setError('The classroom lobby has not been opened yet by the instructor. Please wait for your instructor to start.');
             return;
           }
 
+          const studentUUID = generateValidUUID();
           const finalCandidateNo = candidateNo.trim() || `CAND-${Math.floor(1000 + Math.random() * 9000)}`;
-          onJoin({
+          const studentData = {
+            id: studentUUID,
             name: name.trim(),
             candidate_no: finalCandidateNo,
+            candidate_number: finalCandidateNo,
             pin_code: cleanPin,
             dbExam: null,
-          });
+          };
+
+          try {
+            if (typeof localStorage !== 'undefined') {
+              localStorage.setItem('ielts_student', JSON.stringify(studentData));
+              localStorage.setItem('current_student', JSON.stringify(studentData));
+            }
+          } catch (storageErr) {
+            console.warn('Failed to save student session to localStorage:', storageErr);
+          }
+
+          onJoin(studentData);
         } else {
           setError('Invalid PIN Code. Please check the code provided by your instructor.');
         }

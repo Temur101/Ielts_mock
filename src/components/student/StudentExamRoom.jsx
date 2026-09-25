@@ -218,8 +218,10 @@ export function StudentExamRoom({
   const handleSubmitFinalExam = () => {
     setShowSectionLockedModal(false);
 
-    const readingResult = gradeSectionExam(exam.reading?.questions || exam.questions || [], readingAnswers, 'reading');
-    const listeningResult = gradeSectionExam(exam.listening?.questions || [], listeningAnswers, 'listening');
+    const readingQs = exam.reading?.questions || exam.reading_questions || exam.parsed_questions || exam.questions || [];
+    const listeningQs = exam.listening?.questions || exam.listening_questions || exam.questions || [];
+    const readingResult = gradeSectionExam(readingQs, readingAnswers, 'reading');
+    const listeningResult = gradeSectionExam(listeningQs, listeningAnswers, 'listening');
 
     const fullAnswers = {
       reading: readingAnswers,
@@ -393,13 +395,32 @@ export function StudentExamRoom({
             const pKey = `part${pId}`;
             const pData = exam.reading_parts?.[pKey];
             const existing = (exam.reading_passages || exam.reading?.passages || [])[pId - 1];
+            const content = 
+              pData?.content || 
+              pData?.passage_text || 
+              pData?.passageText || 
+              pData?.text || 
+              existing?.content || 
+              existing?.passage_text || 
+              existing?.passageText || 
+              existing?.text || 
+              '';
+
             return {
               id: pId,
               title: pData?.title || existing?.title || `Passage ${pId}`,
-              content: pData?.passage_text || existing?.content || '',
+              content: content,
+              passage_text: content,
+              passageText: content,
+              text: content,
+              page_content_html: pData?.page_content_html || existing?.page_content_html || '',
               paragraphs: pData?.paragraphs || existing?.paragraphs || [],
               pdf_url: pData?.pdf_url || existing?.pdf_url || '',
               pdf_name: pData?.pdf_name || existing?.pdf_name || '',
+              range: pData?.range || existing?.range || pData?.question_range || existing?.question_range || '',
+              question_range: pData?.question_range || existing?.question_range || pData?.range || existing?.range || '',
+              startQ: pData?.startQ ?? existing?.startQ ?? null,
+              endQ: pData?.endQ ?? existing?.endQ ?? null,
             };
           });
 

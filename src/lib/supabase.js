@@ -64,7 +64,10 @@ export function getSupabaseStatus() {
 
 // Runtime cache of columns rejected by the remote database schema
 const missingColumnsCache = {
-  exams: new Set(),
+  exams: new Set([
+    'listening_map_image_url',
+    'listening_map_image_name',
+  ]),
   students: new Set([
     'current_stage',
     'reading_status',
@@ -248,6 +251,52 @@ export async function fetchExamByPin(pinCode) {
 }
 
 /**
+ * Safely updates an exam record by ID or PIN, or inserts if no existing record is found.
+ * Avoids HTTP 409 Conflict on primary key or unique pin_code constraints.
+ */
+async function safeSaveExamRecord(supabase, examPayload, targetExamId) {
+  const effectiveId = isValidUUID(targetExamId) ? targetExamId : (isValidUUID(examPayload.id) ? examPayload.id : null);
+
+  // 1. Try updating by primary key ID
+  if (effectiveId) {
+    const { data: updatedById, error: errById } = await supabase
+      .from("exams")
+      .update(examPayload)
+      .eq("id", effectiveId)
+      .select()
+      .maybeSingle();
+
+    if (errById) return { data: null, error: errById };
+    if (updatedById) return { data: updatedById, error: null };
+  }
+
+  // 2. If not updated by ID and PIN code is provided, try updating by pin_code
+  if (examPayload.pin_code) {
+    const { id: _unusedId, ...payloadWithoutId } = examPayload;
+    const { data: updatedByPin, error: errByPin } = await supabase
+      .from("exams")
+      .update(payloadWithoutId)
+      .eq("pin_code", examPayload.pin_code.trim().toUpperCase())
+      .select()
+      .maybeSingle();
+
+    if (errByPin) return { data: null, error: errByPin };
+    if (updatedByPin) return { data: updatedByPin, error: null };
+  }
+
+  // 3. No existing record updated, perform insert
+  const insertPayload = {
+    ...(effectiveId ? { id: effectiveId } : {}),
+    ...examPayload,
+  };
+  return await supabase
+    .from("exams")
+    .insert(insertPayload)
+    .select()
+    .maybeSingle();
+}
+
+/**
  * Updates exam status in Supabase (e.g. 'active', 'finished')
  */
 export async function updateExamStatus(examId, status, startedAt = null) {
@@ -260,6 +309,28 @@ export async function updateExamStatus(examId, status, startedAt = null) {
     if (status === 'finished') payload.ended_at = new Date().toISOString();
 
     return await resilientSupabaseOperation('exams', payload, async (cleanPayload) => {
+      if (isValidUUID(examId)) {
+        const { data: updatedById, error: errById } = await supabase
+          .from("exams")
+          .update(cleanPayload)
+          .eq("id", examId)
+          .select()
+          .maybeSingle();
+
+        if (errById) return { data: null, error: errById };
+        if (updatedById) return { data: updatedById, error: null };
+      }
+
+      const pin = cleanPayload.pin_code || (!isValidUUID(examId) ? examId : null);
+      if (pin) {
+        return await supabase
+          .from("exams")
+          .update(cleanPayload)
+          .eq("pin_code", pin.trim().toUpperCase())
+          .select()
+          .maybeSingle();
+      }
+
       return await supabase
         .from("exams")
         .update(cleanPayload)
@@ -296,6 +367,33 @@ export async function updateExamStage(examId, currentStage, meta = {}) {
     }
 
     return await resilientSupabaseOperation('exams', payload, async (cleanPayload) => {
+      // 1. If valid UUID, try updating by id
+      if (isValidUUID(examId)) {
+        const { data: updatedById, error: errById } = await supabase
+          .from("exams")
+          .update(cleanPayload)
+          .eq("id", examId)
+          .select()
+          .maybeSingle();
+
+        if (errById) return { data: null, error: errById };
+        if (updatedById) return { data: updatedById, error: null };
+      }
+
+      // 2. Try updating by pin_code if available
+      const pin = cleanPayload.pin_code || meta.pin_code || (!isValidUUID(examId) ? examId : null);
+      if (pin) {
+        const { data: updatedByPin, error: errByPin } = await supabase
+          .from("exams")
+          .update(cleanPayload)
+          .eq("pin_code", pin.trim().toUpperCase())
+          .select()
+          .maybeSingle();
+
+        if (errByPin) return { data: null, error: errByPin };
+        if (updatedByPin) return { data: updatedByPin, error: null };
+      }
+
       return await supabase
         .from("exams")
         .update(cleanPayload)
@@ -307,7 +405,52 @@ export async function updateExamStage(examId, currentStage, meta = {}) {
 }
 
 /**
- * Updates full Exam Assets (Reading PDF, Listening Audio & PDF, Writing PDF, Passages, Questions) in Supabase
+ * Explicitly updates the classroom lobby open state in Supabase
+ */
+export async function updateExamLobbyState(examId, isLobbyOpen, pinCode = null) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { error: new Error("No client") };
+
+  try {
+    const payload = {
+      is_lobby_open: Boolean(isLobbyOpen),
+      updated_at: new Date().toISOString(),
+    };
+
+    return await resilientSupabaseOperation('exams', payload, async (cleanPayload) => {
+      if (isValidUUID(examId)) {
+        const { data: updatedById, error: errById } = await supabase
+          .from("exams")
+          .update(cleanPayload)
+          .eq("id", examId)
+          .select()
+          .maybeSingle();
+
+        if (errById) return { data: null, error: errById };
+        if (updatedById) return { data: updatedById, error: null };
+      }
+
+      const pin = pinCode || (!isValidUUID(examId) ? examId : null);
+      if (pin) {
+        return await supabase
+          .from("exams")
+          .update(cleanPayload)
+          .eq("pin_code", pin.trim().toUpperCase())
+          .select()
+          .maybeSingle();
+      }
+
+      return { data: null, error: null };
+    });
+  } catch (err) {
+    return { error: err };
+  }
+}
+
+/**
+ * Updates full Exam Assets (Reading PDF, Listening Audio & PDF, Writing PDF, Passages, Questions) in Supabase.
+ * Excludes listening_map_image_url and listening_map_image_name from direct exams table columns (HTTP 400 fix).
+ * Stores map strictly in exam_sections listening JSONB.
  */
 export async function updateExamAssets(examId, assetUpdates = {}) {
   const supabase = getSupabaseClient();
@@ -316,18 +459,56 @@ export async function updateExamAssets(examId, assetUpdates = {}) {
   const targetExamId = isValidUUID(examId) ? examId : generateUUID();
 
   try {
+    // 1. Extract map image fields so they are NEVER sent directly to 'exams' table (fixes HTTP 400)
+    const {
+      listening_map_image_url,
+      listening_map_image_name,
+      ...safeExamUpdates
+    } = assetUpdates;
+
+    const mapUrl = listening_map_image_url || assetUpdates.listening?.map_image_url || null;
+    const mapName = listening_map_image_name || assetUpdates.listening?.map_image_name || null;
+
+    // 2. Persist map strictly inside JSONB structure of listening section in exam_sections
+    if ((mapUrl || mapName) && isExamSectionsTableAvailable) {
+      try {
+        const { data: existingSec } = await supabase
+          .from('exam_sections')
+          .select('*')
+          .eq('exam_id', targetExamId)
+          .eq('section_type', 'listening')
+          .maybeSingle();
+
+        if (existingSec) {
+          const currentData = existingSec.data || {};
+          const updatedData = {
+            ...currentData,
+            ...(mapUrl ? { map_image_url: mapUrl } : {}),
+            ...(mapName ? { map_image_name: mapName } : {}),
+          };
+          await supabase
+            .from('exam_sections')
+            .update({ data: updatedData, updated_at: new Date().toISOString() })
+            .eq('id', existingSec.id);
+        }
+      } catch (mapErr) {
+        console.warn("[updateExamAssets] Error updating listening map in exam_sections:", mapErr?.message || mapErr);
+      }
+    }
+
+    // 3. Prepare exams table payload (without non-existent map columns)
     const payload = {
       id: targetExamId,
       updated_at: new Date().toISOString(),
-      ...assetUpdates
+      ...safeExamUpdates
     };
+    delete payload.listening_map_image_url;
+    delete payload.listening_map_image_name;
 
     return await resilientSupabaseOperation('exams', payload, async (cleanPayload) => {
-      return await supabase
-        .from("exams")
-        .upsert(cleanPayload)
-        .select()
-        .maybeSingle();
+      delete cleanPayload.listening_map_image_url;
+      delete cleanPayload.listening_map_image_name;
+      return await safeSaveExamRecord(supabase, cleanPayload, targetExamId);
     });
   } catch (err) {
     console.warn("updateExamAssets error:", err);
@@ -349,6 +530,18 @@ export async function updateExamPinCode(examId, newPin) {
     };
 
     return await resilientSupabaseOperation('exams', payload, async (cleanPayload) => {
+      if (isValidUUID(examId)) {
+        const { data: updatedById, error: errById } = await supabase
+          .from("exams")
+          .update(cleanPayload)
+          .eq("id", examId)
+          .select()
+          .maybeSingle();
+
+        if (errById) return { data: null, error: errById };
+        if (updatedById) return { data: updatedById, error: null };
+      }
+
       return await supabase
         .from("exams")
         .update(cleanPayload)
@@ -481,13 +674,15 @@ export function subscribeToExamRealtime(pinCode, callbacks = {}) {
 
 /**
  * Persists real parsed exam payloads to both `exams` and `exam_sections` tables
- * Resilient against missing schema columns or non-existent sections table
+ * Resilient against missing schema columns or non-existent sections table.
+ * Strips listening map columns from exams table (HTTP 400 fix) and stores in listening section JSONB.
+ * Uses delete-then-insert for sections to completely prevent HTTP 409 Conflict.
  */
 export async function persistExamAndSections(examId, parsedPayload = {}) {
   const supabase = getSupabaseClient();
   if (!supabase) return { error: new Error("No Supabase client available") };
 
-  const targetExamId = isValidUUID(examId) ? examId : generateUUID();
+  let targetExamId = isValidUUID(examId) ? examId : generateUUID();
   const results = { exam: null, sections: [], examId: targetExamId };
 
   // 1. Prepare Exams table update payload
@@ -499,6 +694,10 @@ export async function persistExamAndSections(examId, parsedPayload = {}) {
   if (parsedPayload.title) examPayload.title = parsedPayload.title;
   if (parsedPayload.pin_code) examPayload.pin_code = parsedPayload.pin_code;
   if (parsedPayload.duration_mins) examPayload.duration_mins = parsedPayload.duration_mins;
+  if (parsedPayload.is_lobby_open !== undefined) examPayload.is_lobby_open = parsedPayload.is_lobby_open;
+  if (parsedPayload.status) examPayload.status = parsedPayload.status;
+  if (parsedPayload.current_stage) examPayload.current_stage = parsedPayload.current_stage;
+  if (parsedPayload.anti_cheat_strictness) examPayload.anti_cheat_strictness = parsedPayload.anti_cheat_strictness;
 
   // Reading Section fields
   if (parsedPayload.reading) {
@@ -509,11 +708,13 @@ export async function persistExamAndSections(examId, parsedPayload = {}) {
     if (parsedPayload.reading.pdf_name) examPayload.reading_pdf_name = parsedPayload.reading.pdf_name;
   }
 
-  // Listening Section fields
+  // Listening Section fields - STRICTLY EXCLUDE listening_map_image_url & listening_map_image_name from examPayload
   if (parsedPayload.listening) {
     examPayload.listening_questions = parsedPayload.listening.questions || [];
     examPayload.listening_parts = parsedPayload.listening.parts || [];
     if (parsedPayload.listening.audio_parts) examPayload.listening_audio_parts = parsedPayload.listening.audio_parts;
+    if (parsedPayload.listening.audio_names) examPayload.listening_audio_names = parsedPayload.listening.audio_names;
+    if (parsedPayload.listening.audio_durations) examPayload.listening_audio_durations = parsedPayload.listening.audio_durations;
     if (parsedPayload.listening.pdf_url) examPayload.listening_pdf_url = parsedPayload.listening.pdf_url;
     if (parsedPayload.listening.pdf_name) examPayload.listening_pdf_name = parsedPayload.listening.pdf_name;
   }
@@ -535,21 +736,27 @@ export async function persistExamAndSections(examId, parsedPayload = {}) {
   if (parsedPayload.task_1_prompt) examPayload.task_1_prompt = parsedPayload.task_1_prompt;
   if (parsedPayload.task_2_prompt) examPayload.task_2_prompt = parsedPayload.task_2_prompt;
 
-  // Update/Upsert exams table via resilient operation
+  // Ensure map columns are NEVER added to exams table payload
+  delete examPayload.listening_map_image_url;
+  delete examPayload.listening_map_image_name;
+
+  // Update or insert exams table safely without HTTP 409 Conflict
   try {
     const resExam = await resilientSupabaseOperation('exams', examPayload, async (cleanPayload) => {
-      return await supabase
-        .from("exams")
-        .upsert(cleanPayload)
-        .select()
-        .maybeSingle();
+      delete cleanPayload.listening_map_image_url;
+      delete cleanPayload.listening_map_image_name;
+      return await safeSaveExamRecord(supabase, cleanPayload, targetExamId);
     });
 
     if (resExam?.data) {
       results.exam = resExam.data;
+      if (resExam.data.id && resExam.data.id !== targetExamId) {
+        targetExamId = resExam.data.id;
+        results.examId = resExam.data.id;
+      }
     }
   } catch (err) {
-    console.warn("[persistExamAndSections] Notice: exams table upsert partial/failed:", err?.message || err);
+    console.warn("[persistExamAndSections] Notice: exams table save partial/failed:", err?.message || err);
   }
 
   // 2. Persist to exam_sections table if available in remote database
@@ -568,11 +775,17 @@ export async function persistExamAndSections(examId, parsedPayload = {}) {
     }
 
     if (parsedPayload.listening) {
+      // Map image stored strictly inside JSONB structure of listening section
+      const listeningData = {
+        ...parsedPayload.listening,
+        ...(parsedPayload.listening_map_image_url ? { map_image_url: parsedPayload.listening_map_image_url } : {}),
+        ...(parsedPayload.listening_map_image_name ? { map_image_name: parsedPayload.listening_map_image_name } : {}),
+      };
       sectionsToUpsert.push({
         exam_id: targetExamId,
         section_type: 'listening',
         title: 'IELTS Listening',
-        data: parsedPayload.listening,
+        data: listeningData,
         answer_keys: parsedPayload.listening.answerKeys || parsedPayload.listening.answer_keys || {},
         prompts: { parts: parsedPayload.listening.parts || [] },
         updated_at: new Date().toISOString(),
@@ -594,22 +807,41 @@ export async function persistExamAndSections(examId, parsedPayload = {}) {
       });
     }
 
-    for (const sec of sectionsToUpsert) {
-      if (!isExamSectionsTableAvailable) break;
+    if (sectionsToUpsert.length > 0) {
+      // Safe transactional replacement:
+      // 1) Delete old sections for this exam to prevent 409 conflict
       try {
-        const resSec = await resilientSupabaseOperation('exam_sections', sec, async (cleanSec) => {
-          return await supabase
-            .from("exam_sections")
-            .upsert(cleanSec, { onConflict: 'exam_id,section_type' })
-            .select()
-            .maybeSingle();
-        });
+        const delRes = await supabase
+          .from('exam_sections')
+          .delete()
+          .eq('exam_id', targetExamId);
 
-        if (resSec?.data) {
-          results.sections.push(resSec.data);
+        if (delRes?.error && isTableMissingError(delRes.error)) {
+          isExamSectionsTableAvailable = false;
         }
-      } catch (secErr) {
-        console.warn(`[persistExamAndSections] exam_sections upsert (${sec.section_type}) skipped:`, secErr?.message);
+      } catch (delErr) {
+        console.warn(`[persistExamAndSections] exam_sections delete cleanup notice:`, delErr?.message || delErr);
+      }
+
+      // 2) Insert new sections cleanly (eliminates 409 conflict completely)
+      if (isExamSectionsTableAvailable) {
+        for (const sec of sectionsToUpsert) {
+          try {
+            const resSec = await resilientSupabaseOperation('exam_sections', sec, async (cleanSec) => {
+              return await supabase
+                .from("exam_sections")
+                .insert(cleanSec)
+                .select()
+                .maybeSingle();
+            });
+
+            if (resSec?.data) {
+              results.sections.push(resSec.data);
+            }
+          } catch (secErr) {
+            console.warn(`[persistExamAndSections] exam_sections insert (${sec.section_type}) skipped:`, secErr?.message);
+          }
+        }
       }
     }
   }

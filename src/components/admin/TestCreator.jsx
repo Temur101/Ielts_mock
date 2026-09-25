@@ -23,7 +23,8 @@ import {
   Zap,
   Loader2,
   CheckCircle,
-  XCircle
+  XCircle,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Button } from '../common/Button';
 import { getSupabaseClient, updateExamAssets, persistExamAndSections, isValidUUID, generateUUID } from '../../lib/supabase';
@@ -33,14 +34,66 @@ import {
   deleteFromIndexedDB, 
   purgeAllExamData 
 } from '../../lib/persistentStorage';
-import { DEFAULT_IELTS_EXAM } from '../../lib/mockData';
 import { apiParseExamPdf, apiParseExamSection } from '../../lib/ai/gemini-client';
+
+export const createEmptyExam = (examId, pinCode = 'IELTS-904') => ({
+  id: examId,
+  title: 'IELTS Academic Master Assessment',
+  pin_code: pinCode,
+  duration_mins: 60,
+  anti_cheat_strictness: 'strict',
+  task_1_prompt: '',
+  task_2_prompt: '',
+  reading_parts: {},
+  reading_passages: [],
+  reading_questions: [],
+  reading_pdf_url: '',
+  reading_pdf_name: '',
+  reading: { passages: [], sections: [], questions: [], pdf_url: '', pdf_name: '' },
+  writing_tasks: {},
+  writing: { sections: [] },
+  writing_pdf_url: '',
+  writing_pdf_name: '',
+  listening_audio_parts: { part1: '', part2: '', part3: '', part4: '' },
+  listening_audio_names: { part1: '', part2: '', part3: '', part4: '' },
+  listening_audio_durations: { part1: '06:45', part2: '07:15', part3: '07:50', part4: '08:30' },
+  listening_pdf_url: '',
+  listening_pdf_name: '',
+  listening_map_image_url: '',
+  listening_map_image_name: '',
+  listening_parts: [],
+  listening_questions: [],
+  listening: { parts: [], sections: [], questions: [], pdf_url: '', pdf_name: '', map_image_url: '', map_image_name: '' },
+});
+
+const is503Error = (err) => {
+  if (!err) return false;
+  const status = err.status || err.statusCode || err.response?.status;
+  const msg = String(err.message || err.error || '').toLowerCase();
+  return (
+    status === 503 ||
+    msg.includes('503') ||
+    msg.includes('unavailable') ||
+    msg.includes('high demand') ||
+    msg.includes('overloaded')
+  );
+};
 
 const isRateLimitError = (err) => {
   if (!err) return false;
   const status = err.status || err.statusCode || err.response?.status;
   const msg = String(err.message || err.error || '').toLowerCase();
-  return status === 429 || msg.includes('429') || msg.includes('quota') || msg.includes('resource_exhausted');
+  return (
+    status === 429 ||
+    status === 503 ||
+    msg.includes('429') ||
+    msg.includes('503') ||
+    msg.includes('quota') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('unavailable') ||
+    msg.includes('high demand') ||
+    msg.includes('overloaded')
+  );
 };
 
 export function TestCreator({ exam, onUpdateExam }) {
@@ -79,39 +132,43 @@ export function TestCreator({ exam, onUpdateExam }) {
     part1: {
       partId: 1,
       title: 'Part 1: Social Dialogue',
-      name: (exam.listening_audio_parts?.part1 || exam.listening?.parts?.[0]?.audio_url) ? (exam.listening_audio_names?.part1 || exam.listening?.parts?.[0]?.audio_name || 'IELTS_Listening_Part1.mp3') : '',
+      name: exam.listening_audio_names?.part1 || exam.listening?.parts?.[0]?.audio_name || '',
       url: exam.listening_audio_parts?.part1 || exam.listening?.parts?.[0]?.audio_url || '',
       duration: exam.listening_audio_durations?.part1 || exam.listening?.parts?.[0]?.duration || '06:45',
     },
     part2: {
       partId: 2,
       title: 'Part 2: Community Recreation Guide',
-      name: (exam.listening_audio_parts?.part2 || exam.listening?.parts?.[1]?.audio_url) ? (exam.listening_audio_names?.part2 || exam.listening?.parts?.[1]?.audio_name || 'IELTS_Listening_Part2.mp3') : '',
+      name: exam.listening_audio_names?.part2 || exam.listening?.parts?.[1]?.audio_name || '',
       url: exam.listening_audio_parts?.part2 || exam.listening?.parts?.[1]?.audio_url || '',
       duration: exam.listening_audio_durations?.part2 || exam.listening?.parts?.[1]?.duration || '07:15',
     },
     part3: {
       partId: 3,
       title: 'Part 3: Academic Tutorial',
-      name: (exam.listening_audio_parts?.part3 || exam.listening?.parts?.[2]?.audio_url) ? (exam.listening_audio_names?.part3 || exam.listening?.parts?.[2]?.audio_name || 'IELTS_Listening_Part3.mp3') : '',
+      name: exam.listening_audio_names?.part3 || exam.listening?.parts?.[2]?.audio_name || '',
       url: exam.listening_audio_parts?.part3 || exam.listening?.parts?.[2]?.audio_url || '',
       duration: exam.listening_audio_durations?.part3 || exam.listening?.parts?.[2]?.duration || '07:50',
     },
     part4: {
       partId: 4,
       title: 'Part 4: University Lecture',
-      name: (exam.listening_audio_parts?.part4 || exam.listening?.parts?.[3]?.audio_url) ? (exam.listening_audio_names?.part4 || exam.listening?.parts?.[3]?.audio_name || 'IELTS_Listening_Part4.mp3') : '',
+      name: exam.listening_audio_names?.part4 || exam.listening?.parts?.[3]?.audio_name || '',
       url: exam.listening_audio_parts?.part4 || exam.listening?.parts?.[3]?.audio_url || '',
       duration: exam.listening_audio_durations?.part4 || exam.listening?.parts?.[3]?.duration || '08:30',
     },
   });
 
   const hasListeningPdf = Boolean(exam.listening_pdf_url || exam.listening?.pdf_url);
-  const [listeningPdf, setListeningPdf] = useState({
-    name: hasListeningPdf ? (exam.listening_pdf_name || exam.listening?.pdf_name || 'IELTS_Listening_Booklet.pdf') : '',
-    url: exam.listening_pdf_url || exam.listening?.pdf_url || '',
-    file: null,
-  });
+  const [listeningPdfs, setListeningPdfs] = useState(
+    hasListeningPdf
+      ? [{
+          name: exam.listening_pdf_name || exam.listening?.pdf_name || '',
+          url: exam.listening_pdf_url || exam.listening?.pdf_url || '',
+          file: null,
+        }]
+      : []
+  );
 
   const listeningAudioFileRefs = {
     part1: useRef(null),
@@ -121,15 +178,47 @@ export function TestCreator({ exam, onUpdateExam }) {
   };
   const listeningPdfRef = useRef(null);
 
+  const [listeningMapImage, setListeningMapImage] = useState({
+    name: exam.listening_map_image_name || exam.listening?.map_image_name || '',
+    url: exam.listening_map_image_url || exam.listening?.map_image_url || '',
+    file: null,
+  });
+  const listeningMapImageRef = useRef(null);
+
+  const allListeningQuestions = [
+    ...(exam.listening_questions || []),
+    ...(exam.listening?.questions || []),
+    ...(exam.listening_parts?.flatMap(p => p.questions || []) || []),
+  ];
+  const hasMapQuestion = allListeningQuestions.some(q => {
+    if (!q) return false;
+    const type = String(q.type || '').toUpperCase();
+    if (
+      type === 'MAP_DIAGRAM_LABELING' ||
+      type === 'MAP_LABELLING' ||
+      type === 'MAP_LABELING' ||
+      type === 'DIAGRAM_LABEL' ||
+      type === 'DIAGRAM_LABELING'
+    ) {
+      return true;
+    }
+    const combined = `${q.instruction || ''} ${q.prompt || ''} ${q.text || ''}`;
+    return /\b(?:label\s+the\s+map|diagram|map)\b/i.test(combined);
+  });
+
   // =========================================================================
   // 2. READING SECTION (1 CONSOLIDATED PDF DROPZONE)
   // =========================================================================
   const hasReadingPdf = Boolean(exam.reading_pdf_url || exam.reading?.pdf_url || exam.reading_parts?.part1?.passage_pdf_url);
-  const [readingPdf, setReadingPdf] = useState({
-    name: hasReadingPdf ? (exam.reading_pdf_name || exam.reading?.pdf_name || exam.reading_parts?.part1?.passage_pdf_name || 'IELTS_Academic_Reading_Full_Booklet.pdf') : '',
-    url: exam.reading_pdf_url || exam.reading?.pdf_url || exam.reading_parts?.part1?.passage_pdf_url || '',
-    file: null,
-  });
+  const [readingPdfs, setReadingPdfs] = useState(
+    hasReadingPdf
+      ? [{
+          name: exam.reading_pdf_name || exam.reading?.pdf_name || exam.reading_parts?.part1?.passage_pdf_name || '',
+          url: exam.reading_pdf_url || exam.reading?.pdf_url || exam.reading_parts?.part1?.passage_pdf_url || '',
+          file: null,
+        }]
+      : []
+  );
   const readingPdfRef = useRef(null);
 
   // =========================================================================
@@ -137,7 +226,7 @@ export function TestCreator({ exam, onUpdateExam }) {
   // =========================================================================
   const hasWritingPdf = Boolean(exam.writing_pdf_url || exam.writing?.pdf_url || exam.writing_tasks?.task1?.pdf_url);
   const [writingPdf, setWritingPdf] = useState({
-    name: hasWritingPdf ? (exam.writing_pdf_name || exam.writing?.pdf_name || exam.writing_tasks?.task1?.pdf_name || 'IELTS_Academic_Writing_Tasks_Booklet.pdf') : '',
+    name: hasWritingPdf ? (exam.writing_pdf_name || exam.writing?.pdf_name || exam.writing_tasks?.task1?.pdf_name || '') : '',
     url: exam.writing_pdf_url || exam.writing?.pdf_url || exam.writing_tasks?.task1?.pdf_url || '',
     file: null,
   });
@@ -290,105 +379,133 @@ export function TestCreator({ exam, onUpdateExam }) {
     }
   };
 
-  // Listening PDF Booklet Upload
+  // Listening PDF Booklet Upload (Multi or Single File)
   const handleListeningPdfUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-      alert('Please upload ONLY PDF files (.pdf) for the Listening booklet.');
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const invalid = files.find(f => !f.name.toLowerCase().endsWith('.pdf') && f.type !== 'application/pdf');
+    if (invalid) {
+      alert('Please upload ONLY PDF files (.pdf) for the Listening booklets.');
       return;
     }
-
     try {
-      const url = await uploadAssetToStorage(file);
-      setListeningPdf({
-        name: file.name,
-        url,
-        file,
-      });
+      const uploaded = await Promise.all(files.map(async (file) => {
+        const url = await uploadAssetToStorage(file);
+        return { name: file.name, url, file };
+      }));
+      setListeningPdfs(prev => [...prev, ...uploaded]);
     } catch (err) {
       console.error('Listening booklet upload failed:', err);
       alert('Failed to upload PDF: ' + err.message);
     }
   };
 
-  const handleRemoveListeningPdf = async () => {
-    setListeningPdf({
-      name: '',
-      url: '',
-      file: null,
-    });
-    if (listeningPdfRef.current) {
-      listeningPdfRef.current.value = '';
-    }
+  const handleRemoveListeningPdf = (index) => {
+    setListeningPdfs(prev => prev.filter((_, i) => i !== index));
+  };
 
+  const handleRemoveAllListeningPdfs = async () => {
+    setListeningPdfs([]);
+    if (listeningPdfRef.current) listeningPdfRef.current.value = '';
     try {
       await deleteFromIndexedDB('listening_pdf');
       try { localStorage.removeItem('ielts_listening_pdf'); } catch (e) {}
-
       const updatedExam = {
         ...exam,
         listening_pdf_url: '',
         listening_pdf_name: '',
-        listening: {
-          ...(exam.listening || {}),
-          pdf_url: '',
-          pdf_name: '',
-        },
+        listening: { ...(exam.listening || {}), pdf_url: '', pdf_name: '' },
       };
-
       await savePersistentExam(updatedExam);
       if (onUpdateExam) onUpdateExam(updatedExam);
     } catch (err) {
-      console.warn("Failed to update persistent storage on listening PDF remove:", err);
+      console.warn("Failed to update persistent storage on listening PDFs remove:", err);
     }
   };
 
-  // Reading PDF Upload (Single Consolidated File)
-  const handleReadingPdfUpload = async (e) => {
+  // Listening Map / Diagram Image Upload
+  const handleListeningMapImageUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-      alert('Please upload ONLY PDF files (.pdf) for the Reading Booklet.');
+    const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+    const validExts = ['.png', '.jpg', '.jpeg', '.webp'];
+    const hasValidExt = validExts.some(ext => file.name.toLowerCase().endsWith(ext));
+    if (!validTypes.includes(file.type) && !hasValidExt) {
+      alert('Please upload ONLY PNG, JPG, or WEBP images for the Listening map/diagram.');
       return;
     }
-
     try {
       const url = await uploadAssetToStorage(file);
-      setReadingPdf({
+      setListeningMapImage({
         name: file.name,
         url,
         file,
       });
+    } catch (err) {
+      console.error('Listening map image upload failed:', err);
+      alert('Failed to upload image: ' + err.message);
+    }
+  };
+
+  const handleRemoveListeningMapImage = async () => {
+    setListeningMapImage({ name: '', url: '', file: null });
+    if (listeningMapImageRef.current) listeningMapImageRef.current.value = '';
+    try {
+      await deleteFromIndexedDB('listening_map_image');
+      try { localStorage.removeItem('ielts_listening_map_image'); } catch (e) {}
+      const updatedExam = {
+        ...exam,
+        listening_map_image_url: '',
+        listening_map_image_name: '',
+        listening: {
+          ...(exam.listening || {}),
+          map_image_url: '',
+          map_image_name: '',
+        },
+      };
+      await savePersistentExam(updatedExam);
+      if (onUpdateExam) onUpdateExam(updatedExam);
+    } catch (err) {
+      console.warn("Failed to update persistent storage on listening map image remove:", err);
+    }
+  };
+
+  // Reading PDF Upload (Multi or Single File)
+  const handleReadingPdfUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const invalid = files.find(f => !f.name.toLowerCase().endsWith('.pdf') && f.type !== 'application/pdf');
+    if (invalid) {
+      alert('Please upload ONLY PDF files (.pdf) for the Reading booklets.');
+      return;
+    }
+    try {
+      const uploaded = await Promise.all(files.map(async (file) => {
+        const url = await uploadAssetToStorage(file);
+        return { name: file.name, url, file };
+      }));
+      setReadingPdfs(prev => [...prev, ...uploaded]);
     } catch (err) {
       console.error('Reading booklet upload failed:', err);
       alert('Failed to upload Reading PDF: ' + err.message);
     }
   };
 
-  const handleRemoveReadingPdf = async () => {
-    setReadingPdf({
-      name: '',
-      url: '',
-      file: null,
-    });
-    if (readingPdfRef.current) {
-      readingPdfRef.current.value = '';
-    }
+  const handleRemoveReadingPdf = (index) => {
+    setReadingPdfs(prev => prev.filter((_, i) => i !== index));
+  };
 
+  const handleRemoveAllReadingPdfs = async () => {
+    setReadingPdfs([]);
+    if (readingPdfRef.current) readingPdfRef.current.value = '';
     try {
       await deleteFromIndexedDB('reading_pdf');
       try { localStorage.removeItem('ielts_reading_pdf'); } catch (e) {}
-
       const updatedExam = {
         ...exam,
         reading_pdf_url: '',
         reading_pdf_name: '',
-        reading: {
-          ...(exam.reading || {}),
-          pdf_url: '',
-          pdf_name: '',
-        },
+        reading: { ...(exam.reading || {}), pdf_url: '', pdf_name: '' },
         reading_parts: {
           ...(exam.reading_parts || {}),
           part1: { ...(exam.reading_parts?.part1 || {}), passage_pdf_url: '', passage_pdf_name: '', pdf_url: '', pdf_name: '' },
@@ -396,11 +513,10 @@ export function TestCreator({ exam, onUpdateExam }) {
           part3: { ...(exam.reading_parts?.part3 || {}), passage_pdf_url: '', passage_pdf_name: '', pdf_url: '', pdf_name: '' },
         },
       };
-
       await savePersistentExam(updatedExam);
       if (onUpdateExam) onUpdateExam(updatedExam);
     } catch (err) {
-      console.warn("Failed to update persistent storage on reading PDF remove:", err);
+      console.warn('Failed to update persistent storage on reading PDFs remove:', err);
     }
   };
 
@@ -496,13 +612,35 @@ export function TestCreator({ exam, onUpdateExam }) {
       let attempt = 0;
       while (true) {
         try {
+          const filesToParse =
+            sectionType === 'reading'
+              ? (readingPdfs && readingPdfs.some((p) => p.file) ? readingPdfs.filter((p) => p.file) : [fileObj])
+              : sectionType === 'listening'
+              ? (listeningPdfs && listeningPdfs.some((p) => p.file) ? listeningPdfs.filter((p) => p.file) : [fileObj])
+              : [fileObj];
+
           return await apiParseExamSection({
             sectionType,
             file: fileObj.file,
+            files: filesToParse,
             fileName: fileObj.name,
           });
         } catch (err) {
+          const is503 = is503Error(err);
           const isRateLimit = isRateLimitError(err);
+
+          if (is503 && attempt < 3) {
+            attempt++;
+            for (let s = 4; s > 0; s--) {
+              setAiParsingState((prev) => ({
+                ...prev,
+                cooldownNotice: `Google model busy. Retrying in ${s}s (attempt ${attempt}/3)...`,
+              }));
+              await sleep(1000);
+            }
+            setAiParsingState((prev) => ({ ...prev, cooldownNotice: null }));
+            continue;
+          }
 
           if (isRateLimit && attempt < 3) {
             attempt++;
@@ -527,6 +665,9 @@ export function TestCreator({ exam, onUpdateExam }) {
       let writingParsed = null;
       let extractedTask1Prompt = exam.task_1_prompt || exam.writing_tasks?.task1?.prompt || '';
       let extractedTask2Prompt = exam.task_2_prompt || exam.writing_tasks?.task2?.prompt || '';
+
+      const readingPdf = readingPdfs.find((p) => p.file) || readingPdfs[0] || { name: '', url: '', file: null };
+      const listeningPdf = listeningPdfs.find((p) => p.file) || listeningPdfs[0] || { name: '', url: '', file: null };
 
       // 1. Sequential Step: Reading PDF
       if (readingPdf.file) {
@@ -601,72 +742,173 @@ export function TestCreator({ exam, onUpdateExam }) {
         step: 'syncing',
       }));
 
+      const resolvePassageField = (idx, partKey, field) => {
+        const fromPassage = readingParsed?.passages?.[idx];
+        const fromSection = readingParsed?.sections?.[idx];
+        const fromPart = readingParsed?.parts?.[partKey];
+        const fromExam = (exam.reading_passages || exam.reading?.passages || [])[idx] || exam.reading_parts?.[partKey];
+
+        if (field === 'title') {
+          return fromPassage?.title || fromSection?.title || fromPart?.title || fromExam?.title || `Passage ${idx + 1}`;
+        }
+        if (field === 'content') {
+          return (
+            fromPassage?.content ||
+            fromPassage?.passage_text ||
+            fromPassage?.passageText ||
+            fromPassage?.text ||
+            fromSection?.content ||
+            fromSection?.passage_text ||
+            fromSection?.passageText ||
+            fromSection?.text ||
+            fromPart?.content ||
+            fromPart?.passage_text ||
+            fromPart?.passageText ||
+            fromPart?.text ||
+            fromExam?.content ||
+            fromExam?.passage_text ||
+            fromExam?.passageText ||
+            fromExam?.text ||
+            ''
+          );
+        }
+        if (field === 'page_content_html') {
+          return (
+            fromPassage?.page_content_html ||
+            fromPassage?.pageContentHtml ||
+            fromSection?.page_content_html ||
+            fromSection?.pageContentHtml ||
+            fromPart?.page_content_html ||
+            fromExam?.page_content_html ||
+            ''
+          );
+        }
+        if (field === 'paragraphs') {
+          return fromPassage?.paragraphs || fromSection?.paragraphs || fromPart?.paragraphs || fromExam?.paragraphs || [];
+        }
+        if (field === 'reference_box') {
+          return (
+            fromPassage?.reference_box ||
+            fromPassage?.referenceBox ||
+            fromSection?.reference_box ||
+            fromSection?.referenceBox ||
+            fromPart?.reference_box ||
+            fromPart?.referenceBox ||
+            fromExam?.reference_box ||
+            fromExam?.referenceBox ||
+            readingParsed?.reference_box ||
+            readingParsed?.referenceBox ||
+            null
+          );
+        }
+        return '';
+      };
+
+      // Dynamic boundary resolver for reading passages
+      const getPassageQuestionBounds = (idx, pId) => {
+        const partKey = `part${pId}`;
+        const passageQuestions = readingParsed?.passages?.[idx]?.questions;
+        const pQuestions = (Array.isArray(passageQuestions) && passageQuestions.length > 0)
+          ? passageQuestions
+          : (readingParsed?.questions || []).filter(q => Number(q.passageId || q.passage_id || q.partId) === pId);
+
+        const pQNums = pQuestions
+          .map(q => Number(q.q_num || q.questionNumber))
+          .filter(n => !isNaN(n) && n > 0);
+
+        const startQ = pQNums.length > 0 ? Math.min(...pQNums) : null;
+        const endQ = pQNums.length > 0 ? Math.max(...pQNums) : null;
+        const questions_count = pQNums.length;
+        const fallbackRange = readingParsed?.parts?.[partKey]?.questionRange || readingParsed?.parts?.[partKey]?.range || '';
+        const range = (startQ !== null && endQ !== null)
+          ? `Questions ${startQ}–${endQ}`
+          : fallbackRange;
+
+        return { startQ, endQ, questions_count, range };
+      };
+
       // Build structured Reading parts and passages (preserve existing if no new reading file parsed)
+      const p1Bounds = getPassageQuestionBounds(0, 1);
+      const p2Bounds = getPassageQuestionBounds(1, 2);
+      const p3Bounds = getPassageQuestionBounds(2, 3);
+
       const readingParts = readingParsed ? {
         part1: {
           partId: 1,
-          title: readingParsed.parts?.part1?.title || 'Reading Part 1',
-          range: readingParsed.parts?.part1?.questionRange || 'Questions 1–13',
-          startQ: 1,
-          endQ: 13,
+          title: resolvePassageField(0, 'part1', 'title'),
+          range: p1Bounds.range,
+          startQ: p1Bounds.startQ,
+          endQ: p1Bounds.endQ,
           passage_pdf_name: readingPdf.name,
           passage_pdf_url: readingPdf.url,
-          passage_text: readingParsed.parts?.part1?.passageText || exam.reading_parts?.part1?.passage_text || '',
-          questions_count: 13,
+          passage_text: resolvePassageField(0, 'part1', 'content'),
+          content: resolvePassageField(0, 'part1', 'content'),
+          paragraphs: resolvePassageField(0, 'part1', 'paragraphs'),
+          page_content_html: resolvePassageField(0, 'part1', 'page_content_html'),
+          reference_box: resolvePassageField(0, 'part1', 'reference_box'),
+          referenceBox: resolvePassageField(0, 'part1', 'reference_box'),
+          questions_count: p1Bounds.questions_count,
           answer_keys: readingParsed.answerKeys || {},
         },
         part2: {
           partId: 2,
-          title: readingParsed.parts?.part2?.title || 'Reading Part 2',
-          range: readingParsed.parts?.part2?.questionRange || 'Questions 14–26',
-          startQ: 14,
-          endQ: 26,
+          title: resolvePassageField(1, 'part2', 'title'),
+          range: p2Bounds.range,
+          startQ: p2Bounds.startQ,
+          endQ: p2Bounds.endQ,
           passage_pdf_name: readingPdf.name,
           passage_pdf_url: readingPdf.url,
-          passage_text: readingParsed.parts?.part2?.passageText || exam.reading_parts?.part2?.passage_text || '',
-          questions_count: 13,
+          passage_text: resolvePassageField(1, 'part2', 'content'),
+          content: resolvePassageField(1, 'part2', 'content'),
+          paragraphs: resolvePassageField(1, 'part2', 'paragraphs'),
+          page_content_html: resolvePassageField(1, 'part2', 'page_content_html'),
+          reference_box: resolvePassageField(1, 'part2', 'reference_box'),
+          referenceBox: resolvePassageField(1, 'part2', 'reference_box'),
+          questions_count: p2Bounds.questions_count,
           answer_keys: readingParsed.answerKeys || {},
         },
         part3: {
           partId: 3,
-          title: readingParsed.parts?.part3?.title || 'Reading Part 3',
-          range: readingParsed.parts?.part3?.questionRange || 'Questions 27–40',
-          startQ: 27,
-          endQ: 40,
+          title: resolvePassageField(2, 'part3', 'title'),
+          range: p3Bounds.range,
+          startQ: p3Bounds.startQ,
+          endQ: p3Bounds.endQ,
           passage_pdf_name: readingPdf.name,
           passage_pdf_url: readingPdf.url,
-          passage_text: readingParsed.parts?.part3?.passageText || exam.reading_parts?.part3?.passage_text || '',
-          questions_count: 14,
+          passage_text: resolvePassageField(2, 'part3', 'content'),
+          content: resolvePassageField(2, 'part3', 'content'),
+          paragraphs: resolvePassageField(2, 'part3', 'paragraphs'),
+          page_content_html: resolvePassageField(2, 'part3', 'page_content_html'),
+          reference_box: resolvePassageField(2, 'part3', 'reference_box'),
+          referenceBox: resolvePassageField(2, 'part3', 'reference_box'),
+          questions_count: p3Bounds.questions_count,
           answer_keys: readingParsed.answerKeys || {},
         },
       } : (exam.reading_parts || {});
 
-      const readingPassagesPayload = readingParsed ? [
-        {
-          id: 1,
-          title: readingParsed.sections?.[0]?.title || readingParsed.parts?.part1?.title || 'Passage 1',
-          content: readingParsed.sections?.[0]?.passage_text || readingParts.part1?.passage_text || '',
-          page_content_html: readingParsed.sections?.[0]?.page_content_html || readingParts.part1?.page_content_html || '',
-          pdf_name: readingPdf.name,
-          pdf_url: readingPdf.url,
-        },
-        {
-          id: 2,
-          title: readingParsed.sections?.[1]?.title || readingParsed.parts?.part2?.title || 'Passage 2',
-          content: readingParsed.sections?.[1]?.passage_text || readingParts.part2?.passage_text || '',
-          page_content_html: readingParsed.sections?.[1]?.page_content_html || readingParts.part2?.page_content_html || '',
-          pdf_name: readingPdf.name,
-          pdf_url: readingPdf.url,
-        },
-        {
-          id: 3,
-          title: readingParsed.sections?.[2]?.title || readingParsed.parts?.part3?.title || 'Passage 3',
-          content: readingParsed.sections?.[2]?.passage_text || readingParts.part3?.passage_text || '',
-          page_content_html: readingParsed.sections?.[2]?.page_content_html || readingParts.part3?.page_content_html || '',
-          pdf_name: readingPdf.name,
-          pdf_url: readingPdf.url,
-        },
-      ] : (exam.reading_passages || exam.reading?.passages || []);
+      const readingPassagesPayload = [1, 2, 3].map(pId => {
+        const idx = pId - 1;
+        const partKey = `part${pId}`;
+        const p = readingParsed?.passages?.[idx] || readingParsed?.sections?.[idx];
+        const passageRefBox = p?.reference_box || p?.referenceBox || readingParsed?.reference_box || resolvePassageField(idx, partKey, 'reference_box') || null;
+        const content = resolvePassageField(idx, partKey, 'content');
+        const bounds = getPassageQuestionBounds(idx, pId);
+        return {
+          id: pId,
+          title: resolvePassageField(idx, partKey, 'title'),
+          content: content,
+          passage_text: content,
+          passageText: content,
+          text: content,
+          page_content_html: resolvePassageField(idx, partKey, 'page_content_html'),
+          paragraphs: resolvePassageField(idx, partKey, 'paragraphs'),
+          question_range: bounds.range,
+          reference_box: passageRefBox,
+          referenceBox: passageRefBox,
+          pdf_name: readingPdf.name || exam.reading_pdf_name || '',
+          pdf_url: readingPdf.url || exam.reading_pdf_url || '',
+        };
+      });
 
       const readingQuestions = readingParsed?.questions || exam.reading_questions || exam.reading?.questions || [];
 
@@ -758,16 +1000,16 @@ export function TestCreator({ exam, onUpdateExam }) {
 
       const listeningQuestions = listeningParsed?.questions || exam.listening_questions || exam.listening?.questions || [];
 
-      const targetExamId = isValidUUID(exam?.id) 
-        ? exam.id 
-        : (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : generateUUID());
+      const targetExamId = (exam?.id && isValidUUID(exam.id))
+        ? exam.id
+        : (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : generateUUID());
 
       // Consolidated Exam object with dynamic task prompts and visual sections
       const updatedExam = {
         ...exam,
         id: targetExamId,
         title,
-        pin_code: pinCode,
+        pin_code: pinCode || (exam?.id && !isValidUUID(exam.id) ? exam.id : 'IELTS-904'),
         duration_mins: Number(duration),
         anti_cheat_strictness: strictness,
         task_1_prompt: extractedTask1Prompt,
@@ -800,6 +1042,8 @@ export function TestCreator({ exam, onUpdateExam }) {
         listening_audio_durations: listeningAudioDurations,
         listening_pdf_url: listeningPdf.url,
         listening_pdf_name: listeningPdf.name,
+        listening_map_image_url: listeningMapImage.url,
+        listening_map_image_name: listeningMapImage.name,
         listening_parts: listeningPartsPayload,
         listening_questions: listeningQuestions,
         listening: {
@@ -809,6 +1053,8 @@ export function TestCreator({ exam, onUpdateExam }) {
           questions: listeningQuestions,
           pdf_url: listeningPdf.url,
           pdf_name: listeningPdf.name,
+          map_image_url: listeningMapImage.url,
+          map_image_name: listeningMapImage.name,
         },
       };
 
@@ -842,6 +1088,8 @@ export function TestCreator({ exam, onUpdateExam }) {
             audio_parts: listeningAudioParts,
             pdf_url: listeningPdf.url,
             pdf_name: listeningPdf.name,
+            map_image_url: listeningMapImage.url,
+            map_image_name: listeningMapImage.name,
             answerKeys: listeningParsed?.answerKeys || {},
           },
           writing: {
@@ -874,6 +1122,8 @@ export function TestCreator({ exam, onUpdateExam }) {
           listening_audio_durations: listeningAudioDurations,
           listening_pdf_url: listeningPdf.url,
           listening_pdf_name: listeningPdf.name,
+          listening_map_image_url: listeningMapImage.url,
+          listening_map_image_name: listeningMapImage.name,
           listening_parts: listeningPartsPayload,
           listening_questions: listeningQuestions,
         });
@@ -901,8 +1151,9 @@ export function TestCreator({ exam, onUpdateExam }) {
       return;
     }
     await purgeAllExamData();
-    setListeningPdf({ name: '', url: '', file: null });
-    setReadingPdf({ name: '', url: '', file: null });
+    setListeningPdfs([]);
+    setListeningMapImage({ name: '', url: '', file: null });
+    setReadingPdfs([]);
     setWritingPdf({ name: '', url: '', file: null });
     setListeningAudios({
       part1: { partId: 1, title: 'Part 1: Social Dialogue', name: '', url: '', duration: '06:45' },
@@ -910,7 +1161,23 @@ export function TestCreator({ exam, onUpdateExam }) {
       part3: { partId: 3, title: 'Part 3: Academic Tutorial', name: '', url: '', duration: '07:50' },
       part4: { partId: 4, title: 'Part 4: University Lecture', name: '', url: '', duration: '08:30' },
     });
-    onUpdateExam(DEFAULT_IELTS_EXAM);
+
+    try { localStorage.removeItem('ielts_listening_pdf'); } catch (e) {}
+    try { localStorage.removeItem('ielts_listening_map_image'); } catch (e) {}
+    try { localStorage.removeItem('ielts_reading_pdf'); } catch (e) {}
+    try { localStorage.removeItem('ielts_writing_pdf'); } catch (e) {}
+
+    const newExamId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+      ? crypto.randomUUID()
+      : (typeof generateUUID === 'function' ? generateUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+          const r = (Math.random() * 16) | 0;
+          const v = c === 'x' ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+        }));
+
+    const cleanExam = createEmptyExam(newExamId, pinCode || exam.pin_code || 'IELTS-904');
+    await savePersistentExam(cleanExam);
+    onUpdateExam(cleanExam);
     window.location.reload();
   };
 
@@ -1183,75 +1450,237 @@ export function TestCreator({ exam, onUpdateExam }) {
             Listening Questions Booklet (Full 40 Questions PDF)
           </div>
 
-          <div className={`p-5 rounded-2xl border-2 transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 ${
-            listeningPdf.url 
+          <div className={`p-5 rounded-2xl border-2 transition-all flex flex-col gap-4 ${
+            listeningPdfs.length > 0 
               ? 'border-brand-500/80 bg-orange-50/20 shadow-sm' 
               : 'border-dashed border-slate-200 hover:border-brand-400 bg-slate-50/50'
           }`}>
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-orange-100 text-brand-600 flex items-center justify-center shrink-0">
-                <FileText className="w-5 h-5" />
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-orange-100 text-brand-600 flex items-center justify-center shrink-0">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-extrabold text-slate-900">
+                    {listeningPdfs.length > 1 ? `${listeningPdfs.length} files attached` : (listeningPdfs[0]?.name || "Questions Booklet PDF")}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {listeningPdfs.length > 0 ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-600 font-bold">
+                        <Check className="w-3 h-3" /> Questions Booklet Ready & Synced to Student View
+                      </span>
+                    ) : (
+                      "Single comprehensive PDF containing question prompts and visual diagrams for all 4 listening parts."
+                    )}
+                  </div>
+                </div>
               </div>
-              <div>
-                <div className="text-xs font-extrabold text-slate-900">
-                  {listeningPdf.name || "Questions Booklet PDF"}
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  {listeningPdf.url ? (
-                    <span className="inline-flex items-center gap-1 text-emerald-600 font-bold">
-                      <Check className="w-3 h-3" /> Questions Booklet Ready & Synced to Student View
-                    </span>
-                  ) : (
-                    "Single comprehensive PDF containing question prompts and visual diagrams for all 4 listening parts."
-                  )}
-                </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <input
+                  ref={listeningPdfRef}
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  multiple
+                  onChange={handleListeningPdfUpload}
+                  className="hidden"
+                />
+                <Button
+                  variant={listeningPdfs.length > 0 ? "outline" : "primary"}
+                  size="sm"
+                  onClick={() => listeningPdfRef.current?.click()}
+                  className={`flex-1 sm:flex-initial text-xs font-bold px-4 py-2 ${
+                    listeningPdfs.length > 0 
+                      ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
+                      : 'bg-brand-500 hover:bg-brand-600 text-white'
+                  }`}
+                >
+                  <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
+                  {listeningPdfs.length > 0 ? 'Upload / Add PDFs' : 'Upload Booklet PDF'}
+                </Button>
+                {listeningPdfs.length === 1 && (
+                  <>
+                    <a
+                      href={listeningPdfs[0]?.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-2 rounded-xl text-slate-500 hover:text-brand-600 border border-slate-200 hover:bg-orange-50 transition"
+                      title="Open Booklet in New Tab"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveListeningPdf(0)}
+                      className="p-2 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 border border-slate-200 transition"
+                      title="Remove Booklet"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <input
-                ref={listeningPdfRef}
-                type="file"
-                accept=".pdf,application/pdf"
-                onChange={handleListeningPdfUpload}
-                className="hidden"
-              />
-              <Button
-                variant={listeningPdf.url ? "outline" : "primary"}
-                size="sm"
-                onClick={() => listeningPdfRef.current?.click()}
-                className={`flex-1 sm:flex-initial text-xs font-bold px-4 py-2 ${
-                  listeningPdf.url 
-                    ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
-                    : 'bg-brand-500 hover:bg-brand-600 text-white'
-                }`}
-              >
-                <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
-                {listeningPdf.url ? 'Replace Booklet' : 'Upload Booklet PDF'}
-              </Button>
-              {listeningPdf.url && (
-                <>
-                  <a
-                    href={listeningPdf.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="p-2 rounded-xl text-slate-500 hover:text-brand-600 border border-slate-200 hover:bg-orange-50 transition"
-                    title="Open Booklet in New Tab"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                  <button
-                    type="button"
-                    onClick={handleRemoveListeningPdf}
-                    className="p-2 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 border border-slate-200 transition"
-                    title="Remove Booklet"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </>
-              )}
-            </div>
+            {/* Attached Listening Files List */}
+            {listeningPdfs.length > 0 && (
+              <div className="pt-3 border-t border-slate-200/70 space-y-2">
+                <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  Attached Listening PDFs ({listeningPdfs.length})
+                </div>
+                <div className="flex flex-col gap-2">
+                  {listeningPdfs.map((f, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs shadow-xs"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileText className="w-3.5 h-3.5 text-brand-500 shrink-0" />
+                        <span className="font-semibold text-slate-800 truncate" title={f.name}>
+                          {f.name}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {f.url && (
+                          <a
+                            href={f.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-brand-600 hover:bg-orange-50 transition"
+                            title="Preview PDF"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveListeningPdf(i)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition"
+                          title="Remove file"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {listeningPdfs.length > 1 && (
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      onClick={handleRemoveAllListeningPdfs}
+                      className="text-xs font-bold text-red-600 hover:text-red-700 hover:underline inline-flex items-center gap-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Remove all
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+        </div>
+
+        {/* Bottom Area 2: Listening Map / Diagram Image (Optional) */}
+        <div className="pt-4 border-t border-slate-100">
+          <div className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+            <ImageIcon className="w-3.5 h-3.5 text-brand-500" />
+            Listening Map / Diagram Image (Optional)
+          </div>
+
+          <div className={`p-5 rounded-2xl border-2 transition-all flex flex-col gap-4 ${
+            listeningMapImage.url 
+              ? 'border-brand-500/80 bg-orange-50/20 shadow-sm' 
+              : 'border-dashed border-slate-200 hover:border-brand-400 bg-slate-50/50'
+          }`}>
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-orange-100 text-brand-600 flex items-center justify-center shrink-0">
+                  <ImageIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-extrabold text-slate-900">
+                    {listeningMapImage.name || (listeningMapImage.url ? "Map / Diagram Image Attached" : "Map / Diagram Image")}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {listeningMapImage.url ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-600 font-bold">
+                        <Check className="w-3 h-3" /> Map Image Ready & Synced to Student View
+                      </span>
+                    ) : (
+                      "Attach a map, plan or diagram image (PNG, JPG, WEBP) if Section 2 or 3 includes map labelling."
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <input
+                  ref={listeningMapImageRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,image/webp,.png,.jpg,.jpeg,.webp"
+                  onChange={handleListeningMapImageUpload}
+                  className="hidden"
+                />
+                <Button
+                  variant={listeningMapImage.url ? "outline" : "primary"}
+                  size="sm"
+                  onClick={() => listeningMapImageRef.current?.click()}
+                  className={`flex-1 sm:flex-initial text-xs font-bold px-4 py-2 ${
+                    listeningMapImage.url 
+                      ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
+                      : 'bg-brand-500 hover:bg-brand-600 text-white'
+                  }`}
+                >
+                  <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
+                  {listeningMapImage.url ? 'Replace Image' : 'Upload Image'}
+                </Button>
+                {listeningMapImage.url && (
+                  <>
+                    <a
+                      href={listeningMapImage.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-2 rounded-xl text-slate-500 hover:text-brand-600 border border-slate-200 hover:bg-orange-50 transition"
+                      title="Preview Image in New Tab"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={handleRemoveListeningMapImage}
+                      className="p-2 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 border border-slate-200 transition"
+                      title="Remove Image"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Preview image if present */}
+            {listeningMapImage.url && (
+              <div className="pt-3 border-t border-slate-200/70">
+                <div className="max-w-xs sm:max-w-sm rounded-xl overflow-hidden border border-slate-200 bg-white p-1">
+                  <img
+                    src={listeningMapImage.url}
+                    alt="Listening Map / Diagram Preview"
+                    className="w-full h-auto max-h-48 object-contain rounded-lg"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Dynamic Smart Alert */}
+          {hasMapQuestion && !listeningMapImage.url && (
+            <div className="mt-3 p-3.5 rounded-xl bg-amber-50 border border-amber-300 flex items-start gap-2.5 text-amber-900 text-xs font-medium shadow-xs">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold">⚠️ В секции Listening обнаружено задание с картой/схемой!</span> Прикрепите скриншот схемы выше и сохраните тест, чтобы кандидаты видели изображение во время аудирования.
+              </div>
+            </div>
+          )}
         </div>
 
       </div>
@@ -1287,7 +1716,7 @@ export function TestCreator({ exam, onUpdateExam }) {
 
         {/* Single Consolidated Reading Dropzone Card */}
         <div className={`p-6 rounded-2xl border-2 transition-all ${
-          readingPdf.url 
+          readingPdfs.length > 0 
             ? 'border-brand-500/80 bg-orange-50/20 shadow-sm' 
             : 'border-dashed border-slate-200 hover:border-brand-400 bg-slate-50/50'
         }`}>
@@ -1298,8 +1727,8 @@ export function TestCreator({ exam, onUpdateExam }) {
               </div>
               <div>
                 <div className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                  <span>{readingPdf.name || "Reading Master Booklet (PDF)"}</span>
-                  {readingPdf.url && (
+                  <span>{readingPdfs.length > 1 ? `${readingPdfs.length} files attached` : (readingPdfs[0]?.name || "Reading Master Booklet (PDF)")}</span>
+                  {readingPdfs.length > 0 && (
                     <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
                       Ready
                     </span>
@@ -1328,27 +1757,28 @@ export function TestCreator({ exam, onUpdateExam }) {
                 ref={readingPdfRef}
                 type="file"
                 accept=".pdf,application/pdf"
+                multiple
                 onChange={handleReadingPdfUpload}
                 className="hidden"
               />
               <Button
-                variant={readingPdf.url ? "outline" : "primary"}
+                variant={readingPdfs.length > 0 ? "outline" : "primary"}
                 size="md"
                 onClick={() => readingPdfRef.current?.click()}
                 className={`text-xs font-bold px-4 py-2.5 ${
-                  readingPdf.url 
+                  readingPdfs.length > 0 
                     ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
                     : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm'
                 }`}
               >
                 <UploadCloud className="w-4 h-4 mr-1.5" />
-                {readingPdf.url ? 'Replace Reading PDF' : 'Upload Reading PDF'}
+                {readingPdfs.length > 0 ? 'Upload / Add PDFs' : 'Upload Reading PDF'}
               </Button>
 
-              {readingPdf.url && (
+              {readingPdfs.length === 1 && (
                 <>
                   <a
-                    href={readingPdf.url}
+                    href={readingPdfs[0]?.url}
                     target="_blank"
                     rel="noreferrer"
                     className="p-2.5 rounded-xl text-slate-500 hover:text-brand-600 border border-slate-200 hover:bg-orange-50 transition"
@@ -1358,7 +1788,7 @@ export function TestCreator({ exam, onUpdateExam }) {
                   </a>
                   <button
                     type="button"
-                    onClick={handleRemoveReadingPdf}
+                    onClick={() => handleRemoveReadingPdf(0)}
                     className="p-2.5 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 border border-slate-200 transition"
                     title="Remove Reading PDF"
                   >
@@ -1368,6 +1798,62 @@ export function TestCreator({ exam, onUpdateExam }) {
               )}
             </div>
           </div>
+
+          {/* Attached Reading Files List */}
+          {readingPdfs.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-slate-200/70 space-y-2">
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                Attached Reading PDFs ({readingPdfs.length})
+              </div>
+              <div className="flex flex-col gap-2">
+                {readingPdfs.map((f, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs shadow-xs"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FileText className="w-3.5 h-3.5 text-brand-500 shrink-0" />
+                      <span className="font-semibold text-slate-800 truncate" title={f.name}>
+                        {f.name}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {f.url && (
+                        <a
+                          href={f.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-brand-600 hover:bg-orange-50 transition"
+                          title="Preview PDF"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveReadingPdf(i)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition"
+                        title="Remove file"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {readingPdfs.length > 1 && (
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={handleRemoveAllReadingPdfs}
+                    className="text-xs font-bold text-red-600 hover:text-red-700 hover:underline inline-flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Remove all
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

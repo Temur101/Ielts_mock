@@ -1,132 +1,44 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   Flag,
   ListChecks,
   Check,
   Layers,
 } from 'lucide-react';
-import { IeltsBookletRenderer } from './IeltsBookletRenderer';
+import { IeltsBookletRenderer, FlowChartGapItem, MarkdownTable, MatchingHeadingsSelect } from './IeltsBookletRenderer';
 import { 
   normalizeTemplateGaps,
   cleanGapArtifacts,
   splitSentenceAtGap,
+  determineQuestionCategory,
+  groupQuestionsIntoSets,
+  extractKeyPrefix,
 } from '../../lib/questionUtils';
 
 // ---------------------------------------------------------------------------
 // GENERIC CAMBRIDGE IELTS QUESTION PROCESSORS
 // ---------------------------------------------------------------------------
 
-/** 
- * Dynamically detects question task category based on schema type, templates, and instruction hints.
- * Purely generic: completely independent of passage ID or static question numbering.
- */
-function detectCategory(q) {
-  if (!q) return 'FILL_BLANK';
-  const qNum = q.questionNumber || q.q_num;
-  const t = (q.type || '').toUpperCase();
-  const textStr = `${q.instruction || ''} ${q.prompt || ''} ${q.text || ''}`.toLowerCase();
-
-  // Informative context lines without question numbers in notes
-  if (t === 'CONTEXT' || !qNum) return 'NOTES';
-
-  // Explicit schema type checks
-  if (t === 'TRUE_FALSE_NOT_GIVEN' || t === 'YES_NO_NOT_GIVEN') return 'TFNG';
-  if (t === 'NOTES_COMPLETION' || t === 'TABLE_COMPLETION' || t === 'DIAGRAM_LABEL') return 'NOTES';
-  if (t === 'SUMMARY_MATCHING') return 'SUMMARY_WORDS';
-  if (t === 'SUMMARY_COMPLETION' || t === 'SUMMARY') {
-    const hasRef = Boolean(q.reference_box || q.referenceBox || (Array.isArray(q.options) && q.options.length > 4));
-    return hasRef ? 'SUMMARY_WORDS' : 'SUMMARY_TEXT';
-  }
-  if (t === 'MULTIPLE_CHOICE') return 'MC';
-  if (
-    t === 'MATCHING_HEADINGS' ||
-    t === 'MATCHING_INFO' ||
-    /which paragraph contains|choose the correct paragraph|which section contains/i.test(textStr) ||
-    (t === 'MATCHING' && (q.options || []).some(o => /^[A-I]$/i.test(String(o).trim())))
-  ) {
-    return 'PARA_MATCH';
-  }
-
-  if (t === 'MATCHING' || t === 'MATCHING_FEATURES') {
-    return 'RESEARCHER_MATCH';
-  }
-
-  // Text/instruction heuristic detection
-  if (/true[\s\/]+false/i.test(textStr) || /yes[\s\/]+no/i.test(textStr)) return 'TFNG';
-  if (/complete the summary/i.test(textStr)) {
-    if (q.reference_box || q.referenceBox || /list of (?:words|options|names)/i.test(textStr)) {
-      return 'SUMMARY_WORDS';
-    }
-    return 'SUMMARY_TEXT';
-  }
-  if (/complete the notes/i.test(textStr) || /complete the table/i.test(textStr) || q.notes_template) {
-    return 'NOTES';
-  }
-  if (/look at the following|match each|choose.*from the box/i.test(textStr) || q.reference_box || q.referenceBox) {
-    return 'RESEARCHER_MATCH';
-  }
-  if (Array.isArray(q.options) && q.options.length >= 2) {
-    return 'MC';
-  }
-
-  return 'FILL_BLANK';
-}
-
-/** Group consecutive questions into authentic exam task blocks */
-function groupQuestions(questions) {
-  if (!questions || questions.length === 0) return [];
-
-  // Strictly sort questions ascending by questionNumber to guarantee chronological sequence
-  const sorted = [...questions].sort(
-    (a, b) => Number(a.questionNumber || a.q_num || 0) - Number(b.questionNumber || b.q_num || 0)
-  );
-
-  const groups = [];
-  for (const q of sorted) {
-    const cat = detectCategory(q);
-    const inst = q.instruction || '';
-    const last = groups[groups.length - 1];
-    const sameGroup = last && last.category === cat;
-
-    if (sameGroup) {
-      last.questions.push(q);
-      if (!last.refBox) {
-        const rb = q.reference_box || q.referenceBox;
-        if (Array.isArray(rb) && rb.length > 0) last.refBox = rb;
-      }
-      if (!last.summaryTemplate && (q.summary_template || q.notes_template)) {
-        last.summaryTemplate = q.summary_template || q.notes_template;
-      }
-      if (!last.title && q.title) {
-        last.title = q.title;
-      }
-    } else {
-      const rb = q.reference_box || q.referenceBox || null;
-      groups.push({
-        category: cat,
-        instruction: inst,
-        title: q.title || '',
-        subheading: q.subheading || '',
-        refBox: Array.isArray(rb) && rb.length > 0 ? rb : null,
-        summaryTemplate: q.summary_template || q.notes_template || null,
-        questions: [q],
-      });
-    }
-  }
-  return groups;
-}
-
 /**
- * Official Cambridge IELTS Reading Numbering Partition Logic (40 Qs across 3 Passages)
+ * Dynamically resolves reading passage ID for a question based on explicit metadata or test array
  */
-export const resolveReadingPassage = (q) => {
-  if (q.passageId) return Number(q.passageId);
-  if (q.partId) return Number(q.partId);
+export const resolveReadingPassage = (q, allQuestions = [], fallbackPassageId = 1) => {
+  if (!q) return Number(fallbackPassageId || 1);
+  const p = q.passageId ?? q.passage_id ?? q.partId ?? q.part;
+  if (p !== undefined && p !== null && !isNaN(Number(p))) return Number(p);
   const qNum = Number(q.questionNumber || q.q_num || 0);
-  if (qNum >= 1 && qNum <= 13) return 1;
-  if (qNum >= 14 && qNum <= 26) return 2;
-  if (qNum >= 27 && qNum <= 40) return 3;
-  return 1;
+  if (Array.isArray(allQuestions) && allQuestions.length > 0 && qNum > 0) {
+    const match = allQuestions.find(item => {
+      const n = Number(item.questionNumber || item.q_num || 0);
+      const mp = item.passageId ?? item.passage_id ?? item.partId ?? item.part;
+      return n === qNum && mp !== undefined && mp !== null && !isNaN(Number(mp));
+    });
+    if (match) {
+      const mp = match.passageId ?? match.passage_id ?? match.partId ?? match.part;
+      return Number(mp);
+    }
+  }
+  return Number(fallbackPassageId || 1);
 };
 
 // ---------------------------------------------------------------------------
@@ -142,21 +54,49 @@ export function AnswerSheet({
   onToggleFlag,
   onJumpToPassage,
   bookletHtml = '',
+  passageContainerRef: externalPassageRef,
+  passage = null,
+  currentPassage = null,
+  passages = [],
+  exam = null,
+  ...props
 }) {
   const [viewMode, setViewMode] = useState('sheet');
   const questionRefs = useRef({});
+  const questionsContainerRef = useRef(null);
+  const internalPassageRef = useRef(null);
+  const passageContainerRef = externalPassageRef || internalPassageRef;
+
+  // Auto-reset vertical scroll to top when changing reading passage tabs
+  useEffect(() => {
+    if (passageContainerRef.current) {
+      passageContainerRef.current.scrollTop = 0;
+    } else {
+      const passageEls = document.querySelectorAll('.overflow-y-auto.select-text, [data-passage-container]');
+      passageEls.forEach(el => { el.scrollTop = 0; });
+    }
+    if (questionsContainerRef.current) {
+      questionsContainerRef.current.scrollTop = 0;
+    }
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }, [activePassageId]);
 
   // Dynamic Cambridge IELTS passage question filtering strictly sorted by questionNumber
   let filteredQuestions = questions
-    .filter(q => resolveReadingPassage(q) === Number(activePassageId))
+    .filter(q => resolveReadingPassage(q, questions, activePassageId) === Number(activePassageId))
+    .map(q => ({
+      ...q,
+      passageId: q.passageId ? Number(q.passageId) : resolveReadingPassage(q, questions, activePassageId),
+    }))
     .sort((a, b) => Number(a.questionNumber || a.q_num || 0) - Number(b.questionNumber || b.q_num || 0));
 
   // Fallback questions so student never sees an empty screen
   if (filteredQuestions.length === 0) {
-    const activeId = Number(activePassageId);
-    const startQ = activeId === 1 ? 1 : activeId === 2 ? 14 : 27;
-    const count = activeId === 3 ? 14 : 13;
-    filteredQuestions = Array.from({ length: count }, (_, i) => ({
+    const activeId = Number(activePassageId) || 1;
+    const prevQuestions = questions.filter(q => resolveReadingPassage(q, questions, activeId) < activeId);
+    const maxPrevQ = prevQuestions.reduce((max, q) => Math.max(max, Number(q.questionNumber || q.q_num || 0)), 0);
+    const startQ = maxPrevQ > 0 ? maxPrevQ + 1 : (activeId - 1) * 10 + 1;
+    filteredQuestions = Array.from({ length: 10 }, (_, i) => ({
       id: `q-${startQ + i}`,
       questionNumber: startQ + i,
       passageId: activeId,
@@ -167,18 +107,37 @@ export function AnswerSheet({
     }));
   }
 
+  // Resolve passage reference box for active passage
+  const activePassageRefBox = (() => {
+    if (passage?.reference_box || passage?.referenceBox) return passage.reference_box || passage.referenceBox;
+    if (currentPassage?.reference_box || currentPassage?.referenceBox) return currentPassage.reference_box || currentPassage.referenceBox;
+    if (Array.isArray(passages) && passages.length > 0) {
+      const found = passages.find(p => Number(p.id || p.passageId) === Number(activePassageId));
+      if (found?.reference_box || found?.referenceBox) return found.reference_box || found.referenceBox;
+    }
+    const examPassages = exam?.reading_passages || exam?.reading?.passages;
+    if (Array.isArray(examPassages) && examPassages.length > 0) {
+      const found = examPassages.find(p => Number(p.id || p.passageId) === Number(activePassageId));
+      if (found?.reference_box || found?.referenceBox) return found.reference_box || found.referenceBox;
+    }
+    // Фоллбек: ищем справочник внутри отфильтрованных вопросов пассажа
+    const qWithRef = filteredQuestions.find(q =>
+      (Array.isArray(q.reference_box) && q.reference_box.length > 0) ||
+      (Array.isArray(q.referenceBox) && q.referenceBox.length > 0)
+    );
+    return qWithRef ? (qWithRef.reference_box || qWithRef.referenceBox) : null;
+  })();
+
   const totalQuestions = questions.length;
   const answeredCount = Object.keys(answers).filter(k => answers[k] && answers[k].trim()).length;
 
   const scrollToQuestion = (qNum, passageId) => {
     let targetPassage = passageId;
     if (!targetPassage) {
-      const qObj = questions.find(q => (q.questionNumber || q.q_num) === qNum);
-      targetPassage = qObj ? resolveReadingPassage(qObj) : (
-        qNum <= 13 ? 1 : qNum <= 26 ? 2 : 3
-      );
+      const qObj = questions.find(q => Number(q.questionNumber || q.q_num) === Number(qNum));
+      targetPassage = qObj ? resolveReadingPassage(qObj, questions, activePassageId) : (activePassageId || 1);
     }
-    targetPassage = targetPassage || 1;
+    targetPassage = targetPassage || activePassageId || 1;
     if (targetPassage !== activePassageId && onJumpToPassage) {
       onJumpToPassage(targetPassage);
       setTimeout(() => {
@@ -199,30 +158,38 @@ export function AnswerSheet({
     const { category, instruction, questions: gqs } = group;
     const first = gqs[0];
     const last = gqs[gqs.length - 1];
+    const firstQNum = group.startQ || first?.questionNumber || first?.q_num;
+    const lastQNum = group.endQ || last?.questionNumber || last?.q_num;
     const rangeLabel =
-      gqs.length > 1
-        ? `Questions ${first.questionNumber}–${last.questionNumber}`
-        : `Question ${first.questionNumber}`;
+      gqs.length > 1 || (firstQNum && lastQNum && firstQNum !== lastQNum)
+        ? `Questions ${firstQNum}–${lastQNum}`
+        : `Question ${firstQNum || ''}`;
 
     let defaultInstruction = instruction;
     if (!defaultInstruction) {
-      if (category === 'TFNG') {
-        const isYNNG = first.type === 'YES_NO_NOT_GIVEN' || /yes[\s\/]+no/i.test(instruction || '') || /claims of the writer/i.test(instruction || '');
+      if (category === 'YNNG') {
+        defaultInstruction = `Do the following statements agree with the claims of the writer in Reading Passage ${activePassageId}?\nIn boxes ${firstQNum}–${lastQNum} on your answer sheet, choose YES, NO, or NOT GIVEN.`;
+      } else if (category === 'TFNG') {
+        const isYNNG = first?.type === 'YES_NO_NOT_GIVEN' || /yes[\s\/]+no/i.test(instruction || '') || /claims of the writer/i.test(instruction || '');
         defaultInstruction = isYNNG
-          ? `Do the following statements agree with the claims of the writer in Reading Passage ${activePassageId}?\nIn boxes ${first.questionNumber}–${last.questionNumber} on your answer sheet, choose YES, NO, or NOT GIVEN.`
-          : `Do the following statements agree with the information given in Reading Passage ${activePassageId}?\nIn boxes ${first.questionNumber}–${last.questionNumber} on your answer sheet, choose TRUE, FALSE, or NOT GIVEN.`;
-      } else if (category === 'NOTES') {
+          ? `Do the following statements agree with the claims of the writer in Reading Passage ${activePassageId}?\nIn boxes ${firstQNum}–${lastQNum} on your answer sheet, choose YES, NO, or NOT GIVEN.`
+          : `Do the following statements agree with the information given in Reading Passage ${activePassageId}?\nIn boxes ${firstQNum}–${lastQNum} on your answer sheet, choose TRUE, FALSE, or NOT GIVEN.`;
+      } else if (category === 'NOTES' || category === 'TABLE_COMPLETION' || category === 'FORM_COMPLETION') {
         defaultInstruction = 'Complete the notes below.\nChoose ONE WORD ONLY from the passage for each answer.';
-      } else if (category === 'PARA_MATCH') {
-        defaultInstruction = `Reading Passage ${activePassageId} has lettered paragraphs.\nWhich paragraph contains the following information?\nWrite the correct letter in boxes ${first.questionNumber}–${last.questionNumber} on your answer sheet.`;
-      } else if (category === 'RESEARCHER_MATCH') {
-        defaultInstruction = `Look at the following statements (Questions ${first.questionNumber}–${last.questionNumber}) and the list of options below.\nMatch each statement with the correct letter.`;
-      } else if (category === 'SUMMARY_TEXT') {
+      } else if (category === 'PARA_MATCH' || category === 'MATCHING_INFORMATION') {
+        defaultInstruction = `Reading Passage ${activePassageId} has lettered paragraphs.\nWhich paragraph contains the following information?\nWrite the correct letter in boxes ${firstQNum}–${lastQNum} on your answer sheet.`;
+      } else if (category === 'MATCHING_HEADINGS') {
+        defaultInstruction = `Reading Passage ${activePassageId} has several paragraphs/sections.\nChoose the correct heading for each paragraph/section from the list of headings below.\nWrite the correct number, i–x, in boxes ${firstQNum}–${lastQNum} on your answer sheet.`;
+      } else if (category === 'RESEARCHER_MATCH' || category === 'MATCHING_FEATURES' || category === 'MATCHING') {
+        defaultInstruction = `Look at the following statements (Questions ${firstQNum}–${lastQNum}) and the list of options below.\nMatch each statement with the correct letter.`;
+      } else if (category === 'SUMMARY_TEXT' || category === 'SUMMARY_COMPLETION') {
         defaultInstruction = 'Complete the summary below.\nChoose ONE WORD ONLY from the passage for each answer.';
-      } else if (category === 'SUMMARY_WORDS') {
-        defaultInstruction = `Complete the summary using the list of words below.\nWrite the correct letter in boxes ${first.questionNumber}–${last.questionNumber} on your answer sheet.`;
-      } else if (category === 'MC') {
-        defaultInstruction = `Choose the correct letter, A, B, C or D.\nWrite the correct letter in boxes ${first.questionNumber}–${last.questionNumber} on your answer sheet.`;
+      } else if (category === 'SUMMARY_WORDS' || category === 'SUMMARY_MATCHING') {
+        defaultInstruction = `Complete the summary using the list of words below.\nWrite the correct letter in boxes ${firstQNum}–${lastQNum} on your answer sheet.`;
+      } else if (category === 'MC' || category === 'MULTIPLE_CHOICE' || category === 'MULTIPLE_CHOICE_MULTI') {
+        defaultInstruction = `Choose the correct letter, A, B, C or D.\nWrite the correct letter in boxes ${firstQNum}–${lastQNum} on your answer sheet.`;
+      } else if (category === 'FLOW_CHART') {
+        defaultInstruction = 'Complete the flow-chart below.\nWrite the correct letter or words in the spaces provided.';
       }
     }
 
@@ -236,7 +203,7 @@ export function AnswerSheet({
             {defaultInstruction}
           </p>
         )}
-        {category === 'PARA_MATCH' && (
+        {(category === 'PARA_MATCH' || category === 'MATCHING_INFORMATION') && (
           <p className="text-[12px] text-slate-500 italic mt-1 font-medium">
             NB You may use any letter more than once.
           </p>
@@ -246,17 +213,17 @@ export function AnswerSheet({
   }
 
   // ---------------------------------------------------------------------------
-  // 1. TRUE / FALSE / NOT GIVEN
+  // 1. TRUE / FALSE / NOT GIVEN & YES / NO / NOT GIVEN
   // ---------------------------------------------------------------------------
 
-  function renderTFNGGroup(gqs) {
+  function renderTFNGGroup(gqs, category) {
     return (
       <div className="space-y-1">
         {gqs.map(q => {
           const qNum = q.questionNumber;
           const val = answers[qNum] || '';
           const isFlagged = flagged[qNum] || false;
-          const isYNNG = q.type === 'YES_NO_NOT_GIVEN' || /yes[\s\/]+no/i.test(q.instruction || '') || /claims of the writer/i.test(q.instruction || '');
+          const isYNNG = category === 'YNNG' || q.category === 'YNNG' || q.type === 'YES_NO_NOT_GIVEN' || /yes[\s\/]+no/i.test(q.instruction || '') || /claims of the writer/i.test(q.instruction || '');
           const opts = isYNNG ? ['YES', 'NO', 'NOT GIVEN'] : ['TRUE', 'FALSE', 'NOT GIVEN'];
 
           return (
@@ -315,17 +282,23 @@ export function AnswerSheet({
   // 2. STRUCTURED NOTES COMPLETION
   // ---------------------------------------------------------------------------
 
-  function renderNotesGroup(gqs, group) {
+  function renderNotesGroup(gqs, group, renderedTemplateSignatures) {
     const mainTitle = group.title || gqs[0]?.title || 'Notes Completion';
 
     // Check for inline template (notes_template or summary_template with {{N}})
-    const template =
+    const tplKey = (
       group.summaryTemplate ||
+      group.notes_template ||
       gqs.find(q => q.summary_template || q.notes_template)?.summary_template ||
-      gqs.find(q => q.notes_template)?.notes_template;
+      gqs.find(q => q.notes_template)?.notes_template ||
+      ''
+    ).trim();
 
-    if (template) {
-      const cleanTemplate = normalizeTemplateGaps(template, gqs);
+    const isFirstTime = Boolean(tplKey && (!renderedTemplateSignatures || !renderedTemplateSignatures.has(tplKey)));
+
+    if (isFirstTime) {
+      if (renderedTemplateSignatures) renderedTemplateSignatures.add(tplKey);
+      const cleanTemplate = normalizeTemplateGaps(tplKey, gqs);
       const lines = cleanTemplate.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
       return (
@@ -334,70 +307,106 @@ export function AnswerSheet({
             {mainTitle}
           </div>
           <div className="space-y-3 font-sans">
-            {lines.map((line, lIdx) => {
-              const isHeading = /^(?:#{1,4}\s+|\*\*(?:[^*]+)\*\*|[A-Z\s]{4,}:?$)/.test(line) && !line.includes('{{');
-              if (isHeading) {
-                const cleanH = line.replace(/^[#*\s]+|[#*\s]+$/g, '').replace(/:$/, '');
-                return (
-                  <div key={lIdx} className="text-[13.5px] font-bold text-slate-900 border-b border-slate-300/70 pb-1 mt-4 mb-2">
-                    {cleanH}
-                  </div>
-                );
+            {(() => {
+              const blocks = [];
+              let currentTableLines = [];
+
+              for (const line of lines) {
+                if (line.includes('|')) {
+                  currentTableLines.push(line);
+                } else {
+                  if (currentTableLines.length > 0) {
+                    blocks.push({ type: 'table', content: currentTableLines.join('\n') });
+                    currentTableLines = [];
+                  }
+                  blocks.push({ type: 'line', content: line });
+                }
+              }
+              if (currentTableLines.length > 0) {
+                blocks.push({ type: 'table', content: currentTableLines.join('\n') });
               }
 
-              const isBullet = /^[-*•]\s+/.test(line) || /^\d+\.\s+/.test(line);
-              const textContent = line.replace(/^[-*•]\s+/, '');
-              const tokens = textContent.split(/(\{\{\d+\}\})/g);
-
-              const content = tokens.map((token, tIdx) => {
-                const m = token.match(/^\{\{(\d+)\}\}$/);
-                if (m) {
-                  const qNum = Number(m[1]);
-                  const val = answers[qNum] || '';
-                  const isFlagged = flagged[qNum] || false;
+              return blocks.map((block, bIdx) => {
+                if (block.type === 'table') {
                   return (
-                    <span key={tIdx} className="inline-flex items-center align-baseline mx-1">
-                      <span className="w-5 h-5 rounded-full bg-brand-100 text-brand-800 text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono">
-                        {qNum}
-                      </span>
-                      <input
-                        type="text"
-                        ref={el => { if (el) questionRefs.current[qNum] = el; }}
-                        value={val}
-                        onChange={e => onAnswerChange(qNum, e.target.value)}
-                        placeholder="answer..."
-                        className="w-32 h-8 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-brand-500 transition-colors"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => onToggleFlag(qNum)}
-                        className={`p-1 rounded cursor-pointer transition ml-0.5 ${
-                          isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                        }`}
-                        title={isFlagged ? 'Remove flag' : 'Flag'}
-                      >
-                        <Flag className="w-3 h-3" />
-                      </button>
-                    </span>
+                    <MarkdownTable
+                      key={`tbl-${bIdx}`}
+                      tableContent={block.content}
+                      answers={answers}
+                      onAnswerChange={onAnswerChange}
+                      onToggleFlag={onToggleFlag}
+                      flagged={flagged}
+                      questionRefs={questionRefs}
+                      questions={gqs}
+                    />
                   );
                 }
-                return <span key={tIdx}>{cleanGapArtifacts(token)}</span>;
-              });
 
-              if (isBullet) {
+                const line = block.content;
+                const isHeading = /^(?:#{1,4}\s+|\*\*(?:[^*]+)\*\*|[A-Z\s]{4,}:?$)/.test(line) && !line.includes('{{');
+                if (isHeading) {
+                  const cleanH = line.replace(/^[#*\s]+|[#*\s]+$/g, '').replace(/:$/, '');
+                  return (
+                    <div key={bIdx} className="text-[13.5px] font-bold text-slate-900 border-b border-slate-300/70 pb-1 mt-4 mb-2">
+                      {cleanH}
+                    </div>
+                  );
+                }
+
+                const isBullet = /^[-*•]\s+/.test(line) || /^\d+\.\s+/.test(line);
+                const textContent = line.replace(/^[-*•]\s+/, '');
+                const tokens = textContent.split(/(\{\{\d+\}\})/g);
+
+                const content = tokens.map((token, tIdx) => {
+                  const m = token.match(/^\{\{(\d+)\}\}$/);
+                  if (m) {
+                    const qNum = Number(m[1]);
+                    const val = answers[qNum] || '';
+                    const isFlagged = flagged[qNum] || false;
+                    return (
+                      <span key={tIdx} className="inline-flex items-center align-baseline mx-1">
+                        <span className="w-5 h-5 rounded-full bg-brand-100 text-brand-800 text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono">
+                          {qNum}
+                        </span>
+                        <input
+                          type="text"
+                          ref={el => { if (el) questionRefs.current[qNum] = el; }}
+                          value={val}
+                          onChange={e => onAnswerChange(qNum, e.target.value)}
+                          placeholder="answer..."
+                          className="w-32 h-8 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-brand-500 transition-colors"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => onToggleFlag(qNum)}
+                          className={`p-1 rounded cursor-pointer transition ml-0.5 ${
+                            isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                          }`}
+                          title={isFlagged ? 'Remove flag' : 'Flag'}
+                        >
+                          <Flag className="w-3 h-3" />
+                        </button>
+                      </span>
+                    );
+                  }
+                  return <span key={tIdx}>{cleanGapArtifacts(token)}</span>;
+                });
+
+                if (isBullet) {
+                  return (
+                    <li key={bIdx} className="text-[13.5px] text-slate-800 list-disc ml-4 leading-loose">
+                      {content}
+                    </li>
+                  );
+                }
+
                 return (
-                  <li key={lIdx} className="text-[13.5px] text-slate-800 list-disc ml-4 leading-loose">
+                  <p key={bIdx} className="text-[13.5px] text-slate-800 leading-loose mb-2">
                     {content}
-                  </li>
+                  </p>
                 );
-              }
-
-              return (
-                <p key={lIdx} className="text-[13.5px] text-slate-800 leading-loose mb-2">
-                  {content}
-                </p>
-              );
-            })}
+              });
+            })()}
           </div>
         </div>
       );
@@ -518,9 +527,9 @@ export function AnswerSheet({
 
                               const { before, after } = splitSentenceAtGap(rawItemText);
                               return (
-                                <span className="inline-flex items-baseline gap-1.5 flex-wrap leading-relaxed">
-                                  {before && <span>{before}</span>}
-                                  <span className="inline-flex items-baseline mx-1">
+                                <span className="inline items-baseline leading-loose">
+                                  {before && <span>{before} </span>}
+                                  <span className="inline-flex items-baseline mx-1 align-baseline">
                                     <span className="w-5 h-5 rounded-full bg-brand-100 text-brand-800 text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono">
                                       {qNum}
                                     </span>
@@ -530,14 +539,14 @@ export function AnswerSheet({
                                       value={val}
                                       onChange={e => onAnswerChange(qNum, e.target.value)}
                                       placeholder="answer..."
-                                      className="w-32 h-8 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-brand-500 transition-colors"
+                                      className="w-32 h-8 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-brand-500 transition-colors inline-block"
                                     />
                                   </span>
-                                  {after && <span>{after}</span>}
+                                  {after && <span> {after}</span>}
                                   <button
                                     type="button"
                                     onClick={() => onToggleFlag(qNum)}
-                                    className={`p-1 rounded cursor-pointer transition ${
+                                    className={`p-1 rounded cursor-pointer transition ml-1 inline-flex align-middle ${
                                       isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
                                     }`}
                                     title={isFlagged ? 'Remove flag' : 'Flag'}
@@ -574,7 +583,7 @@ export function AnswerSheet({
       <div className="space-y-2">
         {gqs.map(q => {
           const qNum = q.questionNumber;
-          const val = answers[qNum] || '';
+          const val = (answers[qNum] || '').trim().toUpperCase();
           const isFlagged = flagged[qNum] || false;
 
           return (
@@ -585,7 +594,7 @@ export function AnswerSheet({
                 isFlagged ? 'bg-amber-50/50 px-2 rounded' : ''
               }`}
             >
-              <div className="flex items-start gap-2.5 flex-1">
+              <div className="flex items-start gap-2.5 flex-1 min-w-0">
                 <span className="text-[13px] font-bold text-slate-400 shrink-0 w-6 text-right pt-0.5 select-none font-mono">
                   {qNum}
                 </span>
@@ -627,41 +636,65 @@ export function AnswerSheet({
   }
 
   // ---------------------------------------------------------------------------
-  // 4. MATCHING RESEARCHERS / NAMES
+  // 3.5. MATCHING HEADINGS (List of Headings with Roman numerals i, ii, iii...)
   // ---------------------------------------------------------------------------
 
-  function renderResearcherMatchGroup(gqs, group) {
-    const researchers = group.refBox || gqs[0]?.reference_box || [];
+  function renderMatchingHeadingsGroup(gqs, group) {
+    let rawRef = group.refBox || group.referenceBox || activePassageRefBox;
+    if (!rawRef || (Array.isArray(rawRef) && rawRef.length === 0)) {
+      const qWithOptions = gqs.find(q => Array.isArray(q.options) && q.options.length >= 2);
+      if (qWithOptions) rawRef = qWithOptions.options;
+    }
+
+    const headings = (Array.isArray(rawRef) ? rawRef : []).map((item, idx) => {
+      if (typeof item === 'object' && item !== null) {
+        let k = String(item.key || item.letter || item.code || '').trim().toLowerCase();
+        let l = String(item.label || item.text || item.value || '').trim();
+        const pref = extractKeyPrefix(l);
+        if (pref) {
+          if (!k) k = pref.key.toLowerCase();
+          if (k === pref.key.toLowerCase()) l = pref.label;
+        }
+        return { key: k || String(idx + 1), label: l };
+      }
+      if (typeof item === 'string') {
+        const pref = extractKeyPrefix(item.trim());
+        if (pref) {
+          return { key: pref.key.toLowerCase(), label: pref.label };
+        }
+        const m = item.match(/^\s*([ivxlcdm]+)[\.\:\)\s\-]+(.*)$/i);
+        if (m) {
+          return { key: m[1].toLowerCase(), label: m[2].trim() };
+        }
+        return { key: String(idx + 1), label: item.trim() };
+      }
+      return { key: String(idx + 1), label: String(item || '') };
+    });
 
     return (
       <div className="space-y-4">
-        {/* List of Options / Researchers Reference Box */}
-        {researchers.length > 0 && (
-          <div className="border border-slate-300 p-4 bg-slate-50/60">
-            <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-600 mb-2.5 flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-slate-500" />
-              <span>{group.subheading || 'List of Options'}</span>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
-              {researchers.map(item => (
-                <div key={item.key} className="flex items-baseline gap-2 text-[13px]">
-                  <span className="font-mono font-bold text-slate-800 shrink-0">[{item.key}]</span>
-                  <span className="text-slate-700 font-medium">{item.label}</span>
-                </div>
-              ))}
-            </div>
+        {/* List of Headings Frame */}
+        <div className="border-2 border-slate-300 bg-slate-50 p-4 rounded-xl space-y-2.5">
+          <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-700 flex items-center gap-1.5 border-b border-slate-200 pb-1.5">
+            <Layers className="w-3.5 h-3.5 text-slate-500" />
+            <span>List of Headings</span>
           </div>
-        )}
+          <div className="grid grid-cols-1 gap-y-1.5 pt-1">
+            {headings.map(h => (
+              <div key={h.key} className="flex items-baseline gap-2.5 text-[13px] text-slate-800">
+                <span className="font-mono font-bold text-slate-900 w-7 shrink-0 text-right">{h.key}</span>
+                <span className="font-medium text-slate-700">{h.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
 
-        {/* Statements */}
-        <div className="space-y-2">
+        {/* Questions with MatchingHeadingsSelect */}
+        <div className="space-y-2 pt-1">
           {gqs.map(q => {
             const qNum = q.questionNumber;
-            const val = answers[qNum] || '';
+            const currentAnswer = answers[qNum] || '';
             const isFlagged = flagged[qNum] || false;
-            const placeholder = researchers.length > 0 
-              ? `${researchers[0]?.key || 'A'}–${researchers[researchers.length - 1]?.key || 'D'}`
-              : 'A–D';
 
             return (
               <div
@@ -671,7 +704,7 @@ export function AnswerSheet({
                   isFlagged ? 'bg-amber-50/50 px-2 rounded' : ''
                 }`}
               >
-                <div className="flex items-start gap-2.5 flex-1">
+                <div className="flex items-start gap-2.5 flex-1 min-w-0">
                   <span className="text-[13px] font-bold text-slate-400 shrink-0 w-6 text-right pt-0.5 select-none font-mono">
                     {qNum}
                   </span>
@@ -680,19 +713,13 @@ export function AnswerSheet({
                   </span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <input
-                    type="text"
-                    maxLength={1}
-                    value={val}
-                    onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase())}
-                    placeholder={placeholder}
-                    className={`w-12 h-10 border-2 text-center uppercase font-bold text-base rounded outline-none transition-colors ${
-                      val
-                        ? 'border-brand-500 bg-brand-50/50 text-brand-800'
-                        : isFlagged
-                        ? 'border-amber-400 bg-amber-50'
-                        : 'border-slate-300 focus:border-brand-500'
-                    }`}
+                  <MatchingHeadingsSelect
+                    q={q}
+                    category="MATCHING_HEADINGS"
+                    currentAnswer={currentAnswer}
+                    onAnswerChange={onAnswerChange}
+                    optionsList={headings}
+                    placeholder="Choose Heading..."
                   />
                   <button
                     type="button"
@@ -714,75 +741,673 @@ export function AnswerSheet({
   }
 
   // ---------------------------------------------------------------------------
-  // 5. SUMMARY COMPLETION WITH INLINE GAPS
+  // 4. MATCHING RESEARCHERS / NAMES
   // ---------------------------------------------------------------------------
 
-  function renderSummaryTextGroup(gqs, group) {
-    const summaryTitle = group.title || gqs[0]?.title || 'Summary';
-    const rawTemplate =
-      group.summaryTemplate || gqs.find(q => q.summary_template)?.summary_template || '';
+  function renderResearcherMatchGroup(gqs, group) {
+    // 1. Resolve reference box from group, questions, options, or instructions
+    let researchers = [];
 
-    if (!rawTemplate) {
-      return (
-        <div className="bg-slate-50/60 border border-slate-200 p-5 sm:p-6 mb-2">
-          {summaryTitle && (
-            <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 tracking-wide border-b border-slate-200 pb-3 mb-4">
-              {summaryTitle}
+    const rawRef =
+      group.refBox ||
+      group.referenceBox ||
+      gqs.find(q => (Array.isArray(q.reference_box) && q.reference_box.length > 0) || (Array.isArray(q.referenceBox) && q.referenceBox.length > 0))?.reference_box ||
+      gqs.find(q => (Array.isArray(q.reference_box) && q.reference_box.length > 0) || (Array.isArray(q.referenceBox) && q.referenceBox.length > 0))?.referenceBox ||
+      null;
+
+    if (Array.isArray(rawRef) && rawRef.length > 0) {
+      researchers = rawRef.map((item, idx) => {
+        if (typeof item === 'object' && item !== null) {
+          let k = (item.key || item.letter || item.code || String.fromCharCode(65 + idx)).trim().toUpperCase();
+          let l = (item.label || item.text || item.value || item.name || item.word || '').trim();
+          const m = l.match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+          if (m) {
+            if (!k) k = m[1].toUpperCase();
+            if (m[1].toUpperCase() === k) l = m[2].trim();
+          }
+          const isPlaceholder = !l || l.toLowerCase() === k.toLowerCase() || l.toLowerCase() === `option ${k.toLowerCase()}`;
+          return { key: k, label: isPlaceholder ? '' : l };
+        }
+        if (typeof item === 'string') {
+          const m = item.match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+          if (m) return { key: m[1].toUpperCase(), label: m[2].trim() };
+          const cleaned = item.trim();
+          if (/^[A-Z]$/i.test(cleaned)) return { key: cleaned.toUpperCase(), label: '' };
+          return { key: String.fromCharCode(65 + idx), label: cleaned };
+        }
+        return { key: String.fromCharCode(65 + idx), label: String(item || '').trim() };
+      });
+    }
+
+    // 2. If refBox is empty or only has empty labels, check gqs[0]?.options or any question's options
+    const qWithOptions = gqs.find(q => Array.isArray(q.options) && q.options.length > 0);
+    if (researchers.length === 0 && qWithOptions && qWithOptions.options.length > 0) {
+      researchers = qWithOptions.options.map((opt, idx) => {
+        if (typeof opt === 'object' && opt !== null) {
+          let k = (opt.key || opt.letter || String.fromCharCode(65 + idx)).trim().toUpperCase();
+          let l = (opt.label || opt.text || opt.name || opt.value || '').trim();
+          const m = l.match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+          if (m) {
+            if (!k) k = m[1].toUpperCase();
+            if (m[1].toUpperCase() === k) l = m[2].trim();
+          }
+          const isPlaceholder = !l || l.toLowerCase() === k.toLowerCase() || l.toLowerCase() === `option ${k.toLowerCase()}`;
+          return { key: k, label: isPlaceholder ? '' : l };
+        }
+        if (typeof opt === 'string') {
+          const m = opt.match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+          if (m) return { key: m[1].toUpperCase(), label: m[2].trim() };
+          const cleaned = opt.trim();
+          if (/^[A-Z]$/i.test(cleaned)) return { key: cleaned.toUpperCase(), label: '' };
+          return { key: String.fromCharCode(65 + idx), label: cleaned };
+        }
+        return { key: String.fromCharCode(65 + idx), label: String(opt || '').trim() };
+      });
+    } else if (researchers.length > 0 && qWithOptions && qWithOptions.options.length > 0) {
+      // If researchers exist but lack labels, try enriching labels from options
+      qWithOptions.options.forEach((opt, idx) => {
+        let k = '';
+        let l = '';
+        if (typeof opt === 'object' && opt !== null) {
+          k = (opt.key || opt.letter || String.fromCharCode(65 + idx)).trim().toUpperCase();
+          l = (opt.label || opt.text || opt.name || opt.value || '').trim();
+        } else if (typeof opt === 'string') {
+          const m = opt.match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+          if (m) {
+            k = m[1].toUpperCase();
+            l = m[2].trim();
+          }
+        }
+        if (k && l) {
+          const existing = researchers.find(r => r.key === k);
+          if (existing && !existing.label) {
+            existing.label = l;
+          }
+        }
+      });
+    }
+
+    // 3. If still empty, derive fallback letter options from the question's instruction (e.g. A, B, C, D)
+    if (researchers.length === 0) {
+      const combinedInst = `${group.instruction || ''} ${gqs[0]?.instruction || ''} ${gqs[0]?.prompt || ''} ${gqs[0]?.text || ''}`;
+      
+      const rangeMatch = combinedInst.match(/\b([A-Z])\s*(?:[-–—]|to)\s*([A-Z])\b/i);
+      if (rangeMatch) {
+        const startCode = rangeMatch[1].toUpperCase().charCodeAt(0);
+        const endCode = rangeMatch[2].toUpperCase().charCodeAt(0);
+        if (endCode >= startCode && endCode - startCode <= 10) {
+          for (let code = startCode; code <= endCode; code++) {
+            researchers.push({ key: String.fromCharCode(code), label: '' });
+          }
+        }
+      }
+
+      if (researchers.length === 0) {
+        const lettersMatch = combinedInst.match(/\b[A-G]\b/g);
+        if (lettersMatch && lettersMatch.length >= 2) {
+          const unique = Array.from(new Set(lettersMatch.map(l => l.toUpperCase())));
+          unique.sort();
+          researchers = unique.map(k => ({ key: k, label: '' }));
+        }
+      }
+
+      if (researchers.length === 0) {
+        researchers = ['A', 'B', 'C', 'D'].map(k => ({ key: k, label: '' }));
+      }
+    }
+
+    const hasLabels = researchers.some(r => r.label && r.label.trim().length > 0);
+    const placeholder = researchers.length > 0 
+      ? `${researchers[0]?.key || 'A'}-${researchers[researchers.length - 1]?.key || 'D'}`
+      : 'A-D';
+
+    return (
+      <div className="space-y-4">
+        {/* List of Options / Researchers Reference Box */}
+        {hasLabels ? (
+          <div className="border border-slate-300 p-4 bg-slate-50/60 rounded">
+            <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-600 mb-2.5 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-slate-500" />
+              <span>{group.subheading || 'List of Options'}</span>
             </div>
-          )}
-          <div className="space-y-4">
-            {gqs.map(q => {
-              const qNum = q.questionNumber || q.q_num;
-              const val = answers[qNum] || '';
-              const isFlagged = flagged[qNum] || false;
-              const promptText = q.text || q.prompt || `Question ${qNum}`;
-              const { before, after } = splitSentenceAtGap(promptText);
-
-              return (
-                <div
-                  key={qNum}
-                  ref={el => (questionRefs.current[qNum] = el)}
-                  className="inline-flex items-baseline gap-1.5 text-sm text-slate-800 flex-wrap py-1 leading-relaxed"
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
+              {researchers.map(item => (
+                <div key={item.key} className="flex items-baseline gap-2 text-[13px]">
+                  <span className="font-mono font-bold text-slate-800 shrink-0">[{item.key}]</span>
+                  <span className="text-slate-700 font-medium">{item.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="border border-slate-200 p-3 bg-slate-50/60 rounded">
+            <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-500 mb-2 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-slate-400" />
+              <span>{group.subheading || 'Available Options'}</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {researchers.map(item => (
+                <span
+                  key={item.key}
+                  className="inline-flex items-center px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-mono font-bold text-slate-800 shadow-2xs"
                 >
-                  <span className="font-mono font-bold text-slate-900">{qNum}.</span>
-                  {before && <span>{before}</span>}
+                  [{item.key}]
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Statements */}
+        <div className="space-y-2">
+          {gqs.map(q => {
+            const qNum = q.questionNumber;
+            const val = (answers[qNum] || '').trim().toUpperCase();
+            const isFlagged = flagged[qNum] || false;
+            const currentAnswer = answers[q.questionNumber] || answers[qNum] || val || '';
+
+            const optionsList = researchers;
+
+            return (
+              <div
+                key={qNum}
+                ref={el => (questionRefs.current[qNum] = el)}
+                className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-slate-100 last:border-0 transition-colors ${
+                  isFlagged ? 'bg-amber-50/50 px-2 rounded' : ''
+                }`}
+              >
+                <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                  <span className="text-[13px] font-bold text-slate-400 shrink-0 w-6 text-right pt-0.5 select-none font-mono">
+                    {qNum}
+                  </span>
+                  <span className="text-[13.5px] text-slate-800 leading-relaxed font-normal">
+                    {q.text || q.prompt}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 pl-8 sm:pl-0">
                   <input
                     type="text"
+                    maxLength={2}
                     value={val}
-                    onChange={e => onAnswerChange(qNum, e.target.value)}
-                    placeholder="..."
-                    className={`w-32 h-7 text-center font-semibold text-sm border-b-2 outline-none bg-amber-50/20 transition-colors ${
-                      val ? 'border-brand-500 text-brand-900' : isFlagged ? 'border-amber-400' : 'border-slate-400 focus:border-brand-500'
+                    onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase().trim())}
+                    placeholder={placeholder}
+                    className={`w-12 h-10 text-center font-mono font-bold text-sm uppercase rounded-xl border-2 outline-none transition-colors shrink-0 ${
+                      val
+                        ? 'border-brand-500 bg-brand-50/50 text-brand-900'
+                        : isFlagged
+                        ? 'border-amber-400 bg-amber-50'
+                        : 'border-slate-300 focus:border-brand-500 bg-white'
                     }`}
                   />
-                  {after && <span>{after}</span>}
+
                   <button
                     type="button"
                     onClick={() => onToggleFlag(qNum)}
-                    className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
+                    className={`p-1 rounded cursor-pointer transition ${
                       isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
                     }`}
                     title={isFlagged ? 'Remove flag' : 'Flag'}
                   >
-                    <Flag className="w-3 h-3" />
+                    <Flag className="w-3.5 h-3.5" />
                   </button>
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
         </div>
-      );
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // HELPER: SANITIZE SUMMARY TEMPLATE
+  // ---------------------------------------------------------------------------
+
+  function sanitizeSummaryTemplate(templateStr, gqs = []) {
+    if (!templateStr || typeof templateStr !== 'string') return '';
+    let cleaned = templateStr.trim();
+    if (!cleaned) return '';
+
+    const qNums = (gqs || [])
+      .map(q => Number(q.questionNumber || q.q_num))
+      .filter(n => !isNaN(n) && n > 0);
+    const minQ = qNums.length > 0 ? Math.min(...qNums) : 1;
+    const maxQ = qNums.length > 0 ? Math.max(...qNums) : 999;
+
+    // 1. Raw JSON opening: [{ or {"
+    const jsonIdx = cleaned.search(/(?:\[\s*\{|\{\s*")/);
+    if (jsonIdx !== -1) {
+      cleaned = cleaned.slice(0, jsonIdx).trim();
     }
 
-    const template = normalizeTemplateGaps(rawTemplate, gqs);
-    const parts = template.split(/(\{\{\d+\}\})/g);
+    // 2. Answer key / Answers:
+    const ansKeyIdx = cleaned.search(/\b(?:ANSWER\s*KEY|Answers\s*:)/i);
+    if (ansKeyIdx !== -1) {
+      cleaned = cleaned.slice(0, ansKeyIdx).trim();
+    }
+
+    // 3. Band score
+    const bandIdx = cleaned.search(/\bBand\s*scores?\b/i);
+    if (bandIdx !== -1) {
+      cleaned = cleaned.slice(0, bandIdx).trim();
+    }
+
+    // 4. Reading Passage / Part / Section tails:
+    const passageIdx = cleaned.search(/\b(?:READING\s+PASSAGE\s+\d+|Passage\s+\d+)\b/i);
+    if (passageIdx !== -1 && passageIdx > 30) {
+      cleaned = cleaned.slice(0, passageIdx).trim();
+    }
+
+    // 5. Subsequent question blocks: "Questions \d+"
+    const questionsRegex = /\bQuestions?\s+(\d+)(?:\s*[\-–—]\s*(\d+))?/gi;
+    let match;
+    while ((match = questionsRegex.exec(cleaned)) !== null) {
+      const startNum = Number(match[1]);
+      const endNum = match[2] ? Number(match[2]) : startNum;
+
+      const isCurrentGroupHeader = match.index < 30 && ((startNum <= maxQ && endNum >= minQ) || (startNum === minQ));
+      if (!isCurrentGroupHeader) {
+        cleaned = cleaned.slice(0, match.index).trim();
+        break;
+      }
+    }
+
+    return cleaned;
+  }
+
+  // ---------------------------------------------------------------------------
+  // HELPER: UNIFIED SUMMARY TEMPLATE RESOLUTION & DEDUPLICATION
+  // ---------------------------------------------------------------------------
+
+  function resolveSummaryTemplate(rawTemplate, gqs) {
+    const sanitizedRaw = sanitizeSummaryTemplate(rawTemplate, gqs);
+    if (sanitizedRaw) {
+      return sanitizedRaw;
+    }
+
+    const prompts = gqs.map(q => sanitizeSummaryTemplate(q.text || q.prompt || '', gqs)).filter(Boolean);
+    if (prompts.length === 0) return '';
+
+    // Check if questions in the group share a long common text prompt (length > 80 chars)
+    const hasLongPrompt = prompts.some(p => p.length > 80);
+    const sharesCommonText = gqs.length > 1 && prompts.length > 1 && (() => {
+      const first = prompts[0];
+      if (first.length > 80) return true;
+      const minLen = Math.min(first.length, prompts[1].length);
+      return minLen >= 40 && first.slice(0, 30).toLowerCase() === prompts[1].slice(0, 30).toLowerCase();
+    })();
+
+    if (!hasLongPrompt && !sharesCommonText && gqs.length === 1 && prompts[0].length <= 80) {
+      return '';
+    }
+
+    // Treat the longest/most complete prompt as the master template
+    let masterText = prompts.reduce((best, curr) => {
+      const bestGaps = (best.match(/(?:\{\{|\@?\[|\()(?:\#|\@)?(?:q_num|blank|\d+)(?:\}\}|\]|\))|\[\s*\]|\(\s*\)|_{2,}|\.{2,}/g) || []).length;
+      const currGaps = (curr.match(/(?:\{\{|\@?\[|\()(?:\#|\@)?(?:q_num|blank|\d+)(?:\}\}|\]|\))|\[\s*\]|\(\s*\)|_{2,}|\.{2,}/g) || []).length;
+      if (currGaps > bestGaps) return curr;
+      if (currGaps === bestGaps && curr.length > best.length) return curr;
+      return best;
+    }, prompts[0]);
+
+    if (!masterText) return '';
+
+    // Extract all question numbers from the group in ascending order
+    const qNums = gqs
+      .map(q => Number(q.questionNumber || q.q_num))
+      .filter(n => !isNaN(n) && n > 0);
+
+    let templateWithGaps = masterText;
+
+    // Replace explicit mentions of each question number with {{qNum}}
+    qNums.forEach(qn => {
+      // 1. [27], (27), {{27}}, @[27], [#27], [blank 27]
+      const bracketRegex = new RegExp(`(?:\\{\\{|\\@?\\[|\\()\\s*(?:\\#|\\@)?(?:q_num|blank)?\\s*${qn}\\s*(?:\\}\\}|\\]|\\))`, 'gi');
+      if (bracketRegex.test(templateWithGaps)) {
+        templateWithGaps = templateWithGaps.replace(bracketRegex, `{{${qn}}}`);
+        return;
+      }
+      // 2. ____ 27 ____ or .... 27 .... or _____ 27 or 27 _____
+      const underlineRegex = new RegExp(`(?:_{2,}|\\.{2,})\\s*\\b${qn}\\b\\s*(?:_{2,}|\\.{2,})?`, 'gi');
+      if (underlineRegex.test(templateWithGaps)) {
+        templateWithGaps = templateWithGaps.replace(underlineRegex, `{{${qn}}}`);
+        return;
+      }
+      // 3. 27. ____ or 27) _____ or 27: _____ or 27 [ ]
+      const prefixRegex = new RegExp(`\\b${qn}\\b[\\.\\:\\)\\s\\-]+(?:_{2,}|\\.{2,}|\\[\\s*\\]|\\(\\s*\\))`, 'gi');
+      if (prefixRegex.test(templateWithGaps)) {
+        templateWithGaps = templateWithGaps.replace(prefixRegex, `{{${qn}}}`);
+        return;
+      }
+      // 4. Standalone question number \b${qn}\b if isolated by non-word characters
+      const standaloneRegex = new RegExp(`(?<![a-zA-Z0-9])\\b${qn}\\b(?![a-zA-Z0-9])`, 'g');
+      if (standaloneRegex.test(templateWithGaps)) {
+        templateWithGaps = templateWithGaps.replace(standaloneRegex, `{{${qn}}}`);
+        return;
+      }
+    });
+
+    // For any unassigned question numbers, replace remaining generic blanks (____, [ ], [q_num], etc.)
+    const assignedNums = new Set(
+      (templateWithGaps.match(/\{\{(\d+)\}\}/g) || []).map(m => Number(m.replace(/\D/g, '')))
+    );
+    const unassignedNums = qNums.filter(qn => !assignedNums.has(qn));
+    let unassignIdx = 0;
+
+    templateWithGaps = templateWithGaps.replace(
+      /(?:\{\{|\@?\[|\()(?:\#|\@)?(?:q_num|blank)(?:\}\}|\]|\))|\[\s*\]|\(\s*\)|_{2,}|\.{3,}/gi,
+      (match) => {
+        if (unassignIdx < unassignedNums.length) {
+          return `{{${unassignedNums[unassignIdx++]}}}`;
+        }
+        return match;
+      }
+    );
+
+    return sanitizeSummaryTemplate(templateWithGaps, gqs);
+  }
+
+  // ---------------------------------------------------------------------------
+  // HELPER: RENDER STRUCTURED NOTES FALLBACK
+  // ---------------------------------------------------------------------------
+
+  function renderStructuredNotes(gqs, group) {
+    if (!gqs || gqs.length === 0) return null;
+    const summaryTitle = group.title || gqs[0]?.title || group.subheading || '';
 
     return (
       <div className="bg-slate-50/60 border border-slate-200 p-5 sm:p-6 mb-2">
-        <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 tracking-wide border-b border-slate-200 pb-3 mb-4">
-          {summaryTitle}
+        {summaryTitle && (
+          <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 tracking-wide border-b border-slate-200 pb-3 mb-4">
+            {summaryTitle}
+          </div>
+        )}
+        <div className="space-y-3">
+          {gqs.map((q, idx) => {
+            const qNum = Number(q.questionNumber || q.q_num);
+            const val = answers[qNum] || '';
+            const isFlagged = flagged[qNum] || false;
+            let rawText = (q.text || q.prompt || '').trim();
+
+            if (qNum) {
+              rawText = rawText.replace(new RegExp(`^\\s*(?:question\\s*)?\\b${qNum}\\b[\\.\\:\\)\\s\\-]+`, 'i'), '').trim();
+            }
+
+            const gapRegex = new RegExp(`(?:\\{\\{|\\@?\\[|\\()\\s*(?:\\#|\\@)?(?:q_num|blank)?\\s*${qNum}?\\s*(?:\\}\\}|\\]|\\))|\[\\s*\]|\\(\\s*\\)|_{2,}|\\.{3,}`, 'i');
+            let beforeText = rawText;
+            let afterText = '';
+
+            const gapMatch = rawText.match(gapRegex);
+            if (gapMatch && gapMatch.index !== undefined) {
+              beforeText = rawText.slice(0, gapMatch.index).trim();
+              afterText = rawText.slice(gapMatch.index + gapMatch[0].length).trim();
+            } else {
+              const punctMatch = rawText.match(/([\.!\?;,]+)$/);
+              if (punctMatch) {
+                beforeText = rawText.slice(0, -punctMatch[0].length).trim();
+                afterText = punctMatch[0];
+              }
+            }
+
+            return (
+              <div
+                key={q.id || qNum || idx}
+                ref={el => { if (qNum && el) questionRefs.current[qNum] = el; }}
+                className={`flex items-start gap-2.5 text-[14px] leading-relaxed text-slate-800 ${
+                  isFlagged ? 'bg-amber-50/60 p-2 rounded' : 'py-1'
+                }`}
+              >
+                <span className="text-slate-400 select-none mt-1 shrink-0">•</span>
+                <div className="flex-1">
+                  {beforeText && <span className="mr-1">{beforeText}</span>}
+                  {qNum ? (
+                    <span className="inline-flex items-center align-baseline mx-1">
+                      <span
+                        className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold mr-1 select-none font-mono ${
+                          val ? 'bg-brand-500 text-white' : 'bg-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {qNum}
+                      </span>
+                      <input
+                        type="text"
+                        value={val}
+                        onChange={e => onAnswerChange(qNum, e.target.value)}
+                        placeholder="..."
+                        className={`w-32 h-7 px-1.5 text-center font-semibold text-sm border-b-2 outline-none bg-amber-50/20 transition-colors ${
+                          val
+                            ? 'border-brand-500 text-brand-900 font-bold'
+                            : isFlagged
+                            ? 'border-amber-400'
+                            : 'border-slate-400 focus:border-brand-500'
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => onToggleFlag(qNum)}
+                        className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
+                          isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                        }`}
+                        title={isFlagged ? 'Remove flag' : 'Flag'}
+                      >
+                        <Flag className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ) : null}
+                  {afterText && <span className="ml-1">{afterText}</span>}
+                </div>
+              </div>
+            );
+          })}
         </div>
-        <p className="text-[14px] leading-[2.3] text-slate-800 font-serif">
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 5. SUMMARY COMPLETION WITH INLINE GAPS
+  // ---------------------------------------------------------------------------
+
+  function renderSummaryTextGroup(gqs, group, renderedTemplateSignatures) {
+    if (!gqs || gqs.length === 0) return null;
+
+    const summaryTitle = group.title || gqs[0]?.title || '';
+    const qNums = gqs
+      .map(q => Number(q.questionNumber || q.q_num))
+      .filter(n => !isNaN(n) && n > 0);
+
+    // -------------------------------------------------------------------------
+    // 1. RESOLVE UNIFIED TEMPLATE OR ASSEMBLE FROM QUESTION SENTENCES
+    // -------------------------------------------------------------------------
+    let tplKey = (
+      group.summaryTemplate ||
+      group.notes_template ||
+      gqs.find(q => q.summary_template)?.summary_template ||
+      gqs.find(q => q.notes_template)?.notes_template ||
+      ''
+    ).trim();
+    tplKey = sanitizeSummaryTemplate(tplKey, gqs);
+
+    const isFirstTime = Boolean(tplKey && (!renderedTemplateSignatures || !renderedTemplateSignatures.has(tplKey)));
+    if (isFirstTime && renderedTemplateSignatures) {
+      renderedTemplateSignatures.add(tplKey);
+    }
+
+    const rawTemplate = isFirstTime ? tplKey : '';
+
+    // Helper: clean redundant instruction prefixes that might have leaked into prompt text
+    const cleanInstructionPrefix = (str) => {
+      if (!str) return '';
+      return str
+        .replace(/^(?:questions?\s+\d+[\s–\-\d]*[\.\:\s]+)?(?:complete the summary[^\.\n]*[\.\n]+)?(?:choose\s+(?:no more than|one word|two words)[^\.\n]*[\.\n]+)?/i, '')
+        .trim();
+    };
+
+    // Helper: convert a single question prompt into sentence with {{qNum}} placeholder
+    const formatQuestionSentence = (q) => {
+      const qn = Number(q.questionNumber || q.q_num);
+      let text = cleanInstructionPrefix(q.text || q.prompt || '');
+      if (!text) return `{{${qn}}}`;
+
+      // Strip leading question number e.g. "20. ", "20) ", "Question 20: "
+      text = text.replace(new RegExp(`^\\s*(?:question\\s*)?\\b${qn}\\b[\\.\\:\\)\\s\\-]+`, 'i'), '').trim();
+
+      // Explicit bracket gap mentioning this qn: {{20}}, [20], (20), [blank 20], [#20], @[20]
+      const explicitBracketRegex = new RegExp(`(?:\\{\\{|\\@?\\[|\\()\\s*(?:\\#|\\@)?(?:q_num|blank)?\\s*${qn}\\s*(?:\\}\\}|\\]|\\))`, 'gi');
+      if (explicitBracketRegex.test(text)) {
+        return text.replace(explicitBracketRegex, `{{${qn}}}`);
+      }
+
+      // Generic bracket gap: [blank], [q_num], [ ], ( )
+      const genericBracketRegex = /(?:\{\{|\@?\[|\()\s*(?:\#|\@)?(?:q_num|blank)\s*(?:\}\}|\]|\))|\[\s*\]|\(\s*\)/gi;
+      if (genericBracketRegex.test(text)) {
+        return text.replace(genericBracketRegex, `{{${qn}}}`);
+      }
+
+      // Underscores or dots: _____ or ..... or _____ 20 _____
+      const underlineGapRegex = new RegExp(`(?:_{2,}|\\.{3,})(?:\\s*\\b${qn}\\b)?(?:\\s*_{2,}|\\.{3,})?`, 'gi');
+      if (underlineGapRegex.test(text)) {
+        return text.replace(underlineGapRegex, `{{${qn}}}`);
+      }
+
+      // Standalone question number placeholder
+      const standaloneNumRegex = new RegExp(`(?<![a-zA-Z0-9])\\b${qn}\\b(?![a-zA-Z0-9])`, 'g');
+      if (standaloneNumRegex.test(text)) {
+        return text.replace(standaloneNumRegex, `{{${qn}}}`);
+      }
+
+      // Fallback: if no gap indicator was found, insert {{qn}} before trailing punctuation if present
+      const trailingPunctMatch = text.match(/([\.!\?;,]+)$/);
+      if (trailingPunctMatch) {
+        const base = text.slice(0, -trailingPunctMatch[0].length).trim();
+        return `${base} {{${qn}}}${trailingPunctMatch[0]}`;
+      }
+      return `${text} {{${qn}}}`;
+    };
+
+    // Determine if rawTemplate contains multiple gap placeholders or question numbers
+    let masterTemplate = '';
+    if (rawTemplate) {
+      const explicitMatches = qNums.filter(qn => {
+        const rx = new RegExp(`(?:\\{\\{|\\@?\\[|\\()\\s*(?:\\#|\\@)?(?:q_num|blank)?\\s*${qn}\\s*(?:\\}\\}|\\]|\\))|\\b${qn}\\b`, 'i');
+        return rx.test(rawTemplate);
+      });
+      const genericGaps = (rawTemplate.match(/_{2,}|\.{3,}|\[\s*\]|\(\s*\)|\[blank\]|\[q_num\]/gi) || []).length;
+
+      if (explicitMatches.length >= 2 || genericGaps >= 2 || explicitMatches.length + genericGaps >= gqs.length) {
+        masterTemplate = rawTemplate;
+      }
+    }
+
+    // Check if any single prompt in gqs contains the full template (length > 100 with multiple gaps)
+    if (!masterTemplate) {
+      const longPromptWithGaps = gqs.find(q => {
+        const p = q.text || q.prompt || '';
+        if (p.length < 100) return false;
+        const gaps = (p.match(/(?:\{\{|\@?\[|\()(?:\#|\@)?(?:q_num|blank|\d+)(?:\}\}|\]|\))|\[\s*\]|\(\s*\)|_{2,}|\.{3,}/g) || []).length;
+        return gaps >= 2;
+      });
+      if (longPromptWithGaps) {
+        masterTemplate = cleanInstructionPrefix(longPromptWithGaps.text || longPromptWithGaps.prompt || '');
+      }
+    }
+
+    // If still no master template, assemble seamlessly from individual question sentences
+    if (!masterTemplate) {
+      masterTemplate = gqs.map(formatQuestionSentence).join(' ');
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. NORMALIZE TEMPLATE GAPS: ENSURE ALL QUESTIONS ARE IN THE TEMPLATE
+    // -------------------------------------------------------------------------
+    let normalized = masterTemplate;
+
+    // First replace explicit mentions of question numbers with {{qn}}
+    qNums.forEach(qn => {
+      const bracketRegex = new RegExp(`(?:\\{\\{|\\@?\\[|\\()\\s*(?:\\#|\\@)?(?:q_num|blank)?\\s*${qn}\\s*(?:\\}\\}|\\]|\\))`, 'gi');
+      if (bracketRegex.test(normalized)) {
+        normalized = normalized.replace(bracketRegex, `{{${qn}}}`);
+        return;
+      }
+      const underlineRegex = new RegExp(`(?:_{2,}|\\.{3,})\\s*\\b${qn}\\b\\s*(?:_{2,}|\\.{3,})?`, 'gi');
+      if (underlineRegex.test(normalized)) {
+        normalized = normalized.replace(underlineRegex, `{{${qn}}}`);
+        return;
+      }
+      const prefixRegex = new RegExp(`\\b${qn}\\b[\\.\\:\\)\\s\\-]+(?:_{2,}|\\.{3,}|\\[\\s*\\]|\\(\\s*\\))`, 'gi');
+      if (prefixRegex.test(normalized)) {
+        normalized = normalized.replace(prefixRegex, `{{${qn}}}`);
+        return;
+      }
+      const standaloneRegex = new RegExp(`(?<![a-zA-Z0-9])\\b${qn}\\b(?![a-zA-Z0-9])`, 'g');
+      if (standaloneRegex.test(normalized)) {
+        normalized = normalized.replace(standaloneRegex, `{{${qn}}}`);
+      }
+    });
+
+    // Replace generic gap markers (____, [ ], [q_num], etc.) with remaining unassigned qNums
+    let assigned = new Set((normalized.match(/\{\{(\d+)\}\}/g) || []).map(m => Number(m.replace(/\D/g, ''))));
+    const unassigned = qNums.filter(qn => !assigned.has(qn));
+    let unassignIdx = 0;
+
+    normalized = normalized.replace(
+      /(?:\{\{|\@?\[|\()(?:\#|\@)?(?:q_num|blank)(?:\}\}|\]|\))|\[\s*\]|\(\s*\)|_{2,}|\.{3,}/gi,
+      (match) => {
+        if (unassignIdx < unassigned.length) {
+          return `{{${unassigned[unassignIdx++]}}}`;
+        }
+        return match;
+      }
+    );
+
+    // Refresh assigned list
+    assigned = new Set((normalized.match(/\{\{(\d+)\}\}/g) || []).map(m => Number(m.replace(/\D/g, ''))));
+
+    // CRITICAL: Ensure NO questions or trailing sentences are cut off at the end!
+    // If any question from gqs is still missing in the template, append its sentence narrative
+    const stillMissing = gqs.filter(q => !assigned.has(Number(q.questionNumber || q.q_num)));
+    if (stillMissing.length > 0) {
+      const missingNarrative = stillMissing.map(formatQuestionSentence).join(' ');
+      normalized = `${normalized.trim()} ${missingNarrative}`.trim();
+    }
+
+    // Clean extraneous underscores or brackets right next to {{qn}} without destroying sentence punctuation
+    normalized = normalized
+      .replace(/_{2,}\s*(\{\{\d+\}\})/g, '$1')
+      .replace(/(\{\{\d+\}\})\s*_{2,}/g, '$1')
+      .replace(/\[\s*\]|\(\s*\)/g, '');
+
+    // If summaryTitle is repeated verbatim at the beginning of the normalized template, remove it
+    if (summaryTitle && normalized.toLowerCase().startsWith(summaryTitle.toLowerCase())) {
+      normalized = normalized.slice(summaryTitle.length).replace(/^[\s\:\-\–\#\*\=]+/, '');
+    }
+
+    normalized = sanitizeSummaryTemplate(normalized, gqs);
+
+    // If after sanitization template lacks sufficient narrative context or doesn't cover most questions, fallback to structured notes
+    const textWithoutGaps = normalized.replace(/\{\{\d+\}\}/g, '').replace(/[^a-zA-Z0-9]/g, '');
+    const assignedGaps = (normalized.match(/\{\{(\d+)\}\}/g) || []).map(m => Number(m.replace(/\D/g, '')));
+    const assignedSet = new Set(assignedGaps);
+    const coversMostQuestions = gqs.length === 0 || (assignedSet.size >= Math.ceil(gqs.length / 2));
+
+    if (textWithoutGaps.length < 30 || !coversMostQuestions) {
+      return renderStructuredNotes(gqs, group);
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. RENDER SUMMARY BLOCK PRESERVING FULL NARRATIVE & NATURAL FLOW
+    // -------------------------------------------------------------------------
+    const parts = normalized.split(/(\{\{\d+\}\})/g);
+
+    return (
+      <div className="bg-slate-50/60 border border-slate-200 p-5 sm:p-6 mb-2">
+        {summaryTitle && (
+          <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 tracking-wide border-b border-slate-200 pb-3 mb-4">
+            {summaryTitle}
+          </div>
+        )}
+        <div className="text-[14.5px] leading-[2.4] text-slate-800 font-serif whitespace-pre-line">
           {parts.map((part, idx) => {
             const match = part.match(/^\{\{(\d+)\}\}$/);
             if (match) {
@@ -792,9 +1417,9 @@ export function AnswerSheet({
 
               return (
                 <span
-                  key={idx}
+                  key={`gap-${qNum}-${idx}`}
                   ref={el => (questionRefs.current[qNum] = el)}
-                  className="inline-flex items-center align-baseline mx-1"
+                  className="inline-flex items-center align-baseline mx-1 my-0.5"
                 >
                   <span
                     className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold mr-1 select-none font-mono ${
@@ -808,9 +1433,9 @@ export function AnswerSheet({
                     value={val}
                     onChange={e => onAnswerChange(qNum, e.target.value)}
                     placeholder="..."
-                    className={`w-28 h-7 text-center font-semibold text-sm border-b-2 outline-none bg-amber-50/20 transition-colors ${
+                    className={`w-32 h-7 px-1.5 text-center font-semibold text-sm border-b-2 outline-none bg-amber-50/20 transition-colors ${
                       val
-                        ? 'border-brand-500 text-brand-900'
+                        ? 'border-brand-500 text-brand-900 font-bold'
                         : isFlagged
                         ? 'border-amber-400'
                         : 'border-slate-400 focus:border-brand-500'
@@ -829,15 +1454,16 @@ export function AnswerSheet({
                 </span>
               );
             }
+
+            // Clean only duplicate artifact underscores without stripping punctuation, dots, or words
+            const cleanText = part.replace(/_{2,}/g, '');
             return (
-              <span key={idx}>
-                {part
-                  .replace(/(?:_{2,}|\.{3,})/g, '')
-                  .replace(/(?:\[|\()?\s*\b[A-Ia-i]\s*[-–—]\s*[A-Ja-j]\b\s*(?:\]|\))?/gi, '')}
+              <span key={`text-${idx}`}>
+                {cleanText}
               </span>
             );
           })}
-        </p>
+        </div>
       </div>
     );
   }
@@ -846,22 +1472,34 @@ export function AnswerSheet({
   // 6. SUMMARY COMPLETION WITH LIST OF WORDS
   // ---------------------------------------------------------------------------
 
-  function renderSummaryWordsGroup(gqs, group) {
+  function renderSummaryWordsGroup(gqs, group, renderedTemplateSignatures) {
     const summaryTitle = group.title || gqs[0]?.title || 'Summary';
-    const refBox = group.refBox || gqs[0]?.reference_box || [];
-    const rawTemplate =
-      group.summaryTemplate || gqs.find(q => q.summary_template)?.summary_template || '';
+    const refBox = group.referenceBox || group.refBox || gqs[0]?.reference_box || [];
+    const tplKey = (
+      group.summaryTemplate ||
+      group.notes_template ||
+      gqs.find(q => q.summary_template)?.summary_template ||
+      ''
+    ).trim();
 
-    if (!rawTemplate) {
+    const isFirstTime = Boolean(tplKey && (!renderedTemplateSignatures || !renderedTemplateSignatures.has(tplKey)));
+    if (isFirstTime && renderedTemplateSignatures) {
+      renderedTemplateSignatures.add(tplKey);
+    }
+
+    const rawTemplate = isFirstTime ? tplKey : '';
+    const effectiveTemplate = resolveSummaryTemplate(rawTemplate, gqs);
+
+    if (!effectiveTemplate) {
       return (
         <div className="space-y-4">
           {refBox.length > 0 && (
             <div className="space-y-1.5">
               <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-600 px-0.5 flex items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5 text-slate-500" />
-                <span>List of Words / Phrases</span>
+                <span>List of Words</span>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-8 gap-y-3 p-4 bg-slate-50 border border-slate-300 rounded">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-8 gap-y-3 p-4 bg-slate-50 border border-slate-300 rounded-xl">
                 {refBox.map(item => (
                   <div key={item.key} className="min-w-0 flex items-center space-x-2 text-sm">
                     <span className="font-mono font-bold text-slate-800 shrink-0">[{item.key}]</span>
@@ -891,7 +1529,7 @@ export function AnswerSheet({
                   <div
                     key={qNum}
                     ref={el => (questionRefs.current[qNum] = el)}
-                    className="flex items-center gap-2 text-sm text-slate-800 flex-wrap py-1"
+                    className="inline-flex items-baseline gap-1.5 text-sm text-slate-800 flex-wrap py-1 leading-relaxed"
                   >
                     <span className="font-mono font-bold text-slate-900">{qNum}.</span>
                     {before && <span>{before}</span>}
@@ -901,7 +1539,7 @@ export function AnswerSheet({
                       value={val}
                       onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase())}
                       placeholder="Letter"
-                      className={`w-12 h-8 text-center font-bold uppercase text-sm border-2 rounded outline-none transition-colors ${
+                      className={`w-24 sm:w-28 h-8 px-3 text-center font-bold uppercase text-sm border-2 rounded outline-none transition-colors ${
                         val ? 'border-brand-500 bg-brand-50/50 text-brand-800' : isFlagged ? 'border-amber-400 bg-amber-50' : 'border-slate-300 focus:border-brand-500'
                       }`}
                     />
@@ -925,7 +1563,7 @@ export function AnswerSheet({
       );
     }
 
-    const template = normalizeTemplateGaps(rawTemplate, gqs);
+    const template = normalizeTemplateGaps(effectiveTemplate, gqs);
     const parts = template.split(/(\{\{\d+\}\})/g);
 
     return (
@@ -935,9 +1573,9 @@ export function AnswerSheet({
           <div className="space-y-1.5">
             <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-600 px-0.5 flex items-center gap-1.5">
               <Layers className="w-3.5 h-3.5 text-slate-500" />
-              <span>List of Words / Phrases</span>
+              <span>List of Words</span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-8 gap-y-3 p-4 bg-slate-50 border border-slate-300 rounded">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-8 gap-y-3 p-4 bg-slate-50 border border-slate-300 rounded-xl">
               {refBox.map(item => (
                 <div key={item.key} className="min-w-0 flex items-center space-x-2 text-sm">
                   <span className="font-mono font-bold text-slate-800 shrink-0">[{item.key}]</span>
@@ -1005,10 +1643,11 @@ export function AnswerSheet({
               }
               return (
                 <span key={idx}>
-                  {part
-                    .replace(/(?:_{2,}|\.{3,})/g, '')
-                    .replace(/(?:\[|\()?\s*\b[A-Ia-i]\s*[-–—]\s*[A-Ja-j]\b\s*(?:\]|\))?/gi, '')}
-                </span>
+                {part
+                  .replace(/(?:_{2,}|\.{2,})/g, '')
+                  .replace(/\[\s*\]|\(\s*\)/g, '')
+                  .replace(/(?:\[|\()?\s*\b[A-Ia-i]\s*[-–—]\s*[A-Ja-j]\b\s*(?:\]|\))?/gi, '')}
+              </span>
               );
             })}
           </p>
@@ -1086,6 +1725,15 @@ export function AnswerSheet({
             );
           }
 
+          const rawPrompt = q.text || q.prompt || `Question ${qNum}`;
+
+          // Clean prompt from trailing options if they were included in question text
+          let promptDisplay = rawPrompt;
+          const firstOptIndex = promptDisplay.search(/(?:^|\n|\r)\s*\[?[A-D]\]?[\.\:\)\s\-]/i);
+          if (firstOptIndex > 0) {
+            promptDisplay = promptDisplay.slice(0, firstOptIndex).trim();
+          }
+
           return (
             <div
               key={qNum}
@@ -1098,7 +1746,7 @@ export function AnswerSheet({
                 </span>
                 <div className="flex-1 flex items-start justify-between gap-2">
                   <p className="text-[13.5px] font-bold text-slate-900 leading-snug">
-                    {q.text || q.prompt}
+                    {promptDisplay}
                   </p>
                   <button
                     type="button"
@@ -1113,21 +1761,53 @@ export function AnswerSheet({
                 </div>
               </div>
               <div className="pl-8 space-y-1.5">
-                {q.options?.map(option => {
-                  const letter = option.charAt(0);
-                  const isSelected =
-                    val.toUpperCase() === letter.toUpperCase() ||
-                    val.toUpperCase() === option.toUpperCase();
-                  const displayText = option.replace(/^[A-Z][\.\)]\s*/, '').trim() || option;
+                {q.options?.map((option, optIdx) => {
+                  let letter = '';
+                  let displayText = '';
+                  if (typeof option === 'object' && option !== null) {
+                    letter = (option.key || option.letter || String.fromCharCode(65 + optIdx)).toUpperCase();
+                    displayText = (option.text || option.label || option.value || '').trim();
+                  } else {
+                    const match = String(option).match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+                    letter = match ? match[1].toUpperCase() : String.fromCharCode(65 + optIdx);
+                    displayText = match ? match[2].trim() : String(option).trim();
+                  }
+
+                  // If option string is only a single letter or displayText is empty/equal to letter,
+                  // fallback to searching any description text in q.options_text or q.text or q.prompt
+                  if (!displayText || displayText.toUpperCase() === letter) {
+                    const searchSources = [q.options_text, q.optionsText, q.text, q.prompt, q.instruction].filter(Boolean);
+                    for (const src of searchSources) {
+                      const regex = new RegExp(`(?:^|\\n|\\r)\\s*\\[?${letter}\\]?[\\.\\:\\)\\s\\-]+([^\\n\\r]+)`, 'i');
+                      const m = String(src).match(regex);
+                      if (m && m[1].trim()) {
+                        let candidate = m[1].trim();
+                        // Truncate if subsequent option is on the same line
+                        const nextLetter = String.fromCharCode(letter.charCodeAt(0) + 1);
+                        const nextRegex = new RegExp(`\\s+\\[?${nextLetter}\\]?[\\.\\:\\)\\s\\-]`, 'i');
+                        const nIdx = candidate.search(nextRegex);
+                        if (nIdx > 0) {
+                          candidate = candidate.slice(0, nIdx).trim();
+                        }
+                        if (candidate && candidate.toUpperCase() !== letter) {
+                          displayText = candidate;
+                          break;
+                        }
+                      }
+                    }
+                  }
+
+                  const isSelected = (val || '').trim().toUpperCase() === letter;
 
                   return (
-                    <label
-                      key={option}
+                    <button
+                      key={letter}
+                      type="button"
                       onClick={() => onAnswerChange(qNum, letter)}
-                      className={`flex items-start gap-2.5 px-2.5 py-1.5 rounded cursor-pointer transition-colors text-[13px] ${
+                      className={`w-full flex items-start gap-2.5 px-2.5 py-1.5 rounded cursor-pointer text-left transition-colors text-[13px] border ${
                         isSelected
-                          ? 'bg-brand-50 text-brand-900 font-semibold'
-                          : 'hover:bg-slate-50 text-slate-700'
+                          ? 'border-brand-500 bg-brand-50 text-brand-900 font-semibold'
+                          : 'border-transparent hover:bg-slate-50 text-slate-700'
                       }`}
                     >
                       <span
@@ -1139,11 +1819,11 @@ export function AnswerSheet({
                       >
                         {letter}
                       </span>
-                      <span className="leading-snug pt-0.5">{displayText}</span>
+                      <span className="leading-snug pt-0.5 flex-1">{displayText}</span>
                       {isSelected && (
                         <Check className="w-3.5 h-3.5 text-brand-600 ml-auto shrink-0 mt-1" />
                       )}
-                    </label>
+                    </button>
                   );
                 })}
               </div>
@@ -1179,25 +1859,25 @@ export function AnswerSheet({
               <span className="text-[13px] font-bold text-slate-400 shrink-0 w-6 text-right pt-1 select-none font-mono">
                 {qNum}
               </span>
-              <div className="flex-1 text-[13.5px] leading-relaxed text-slate-800">
-                <span className="inline-flex items-baseline gap-1.5 flex-wrap leading-relaxed">
-                  {before && <span>{before}</span>}
-                  <span className="inline-flex items-baseline mx-1">
+              <div className="flex-1 text-[13.5px] leading-loose text-slate-800">
+                <span className="inline items-baseline leading-loose">
+                  {before && <span>{before} </span>}
+                  <span className="inline-flex items-baseline mx-1 align-baseline">
                     <input
                       type="text"
                       value={val}
                       onChange={e => onAnswerChange(qNum, e.target.value)}
-                      className={`h-7 px-2 min-w-[120px] max-w-[200px] border-b-2 text-sm font-semibold outline-none bg-transparent transition-colors align-baseline ${
+                      className={`h-7 px-2 min-w-[120px] max-w-[200px] border-b-2 text-sm font-semibold outline-none bg-transparent transition-colors align-baseline inline-block ${
                         val
-                          ? 'border-brand-500'
+                          ? 'border-brand-500 text-brand-900 font-bold'
                           : isFlagged
-                          ? 'border-amber-400'
+                          ? 'border-amber-400 bg-amber-50'
                           : 'border-slate-400 focus:border-brand-500'
                       }`}
                       placeholder="..."
                     />
                   </span>
-                  {after && <span>{after}</span>}
+                  {after && <span> {after}</span>}
                 </span>
               </div>
               <button
@@ -1218,23 +1898,215 @@ export function AnswerSheet({
   }
 
   // ---------------------------------------------------------------------------
+  // 9. FLOW CHART COMPLETION
+  // ---------------------------------------------------------------------------
+
+  function renderFlowChartGroup(gqs, group) {
+    const mainTitle = group.title || gqs[0]?.title || 'Flow-chart Completion';
+    return (
+      <div className="bg-slate-50/60 border border-slate-200 p-5 sm:p-6 mb-2">
+        <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-6">
+          {mainTitle}
+        </div>
+        <div className="flex flex-col items-center space-y-3 max-w-xl mx-auto">
+          {gqs.map((q, idx) => {
+            const isLast = idx === gqs.length - 1;
+            const qNum = q.questionNumber;
+            const currentAnswer = answers[qNum] || '';
+            const isFlagged = flagged[qNum] || false;
+            const rawText = q.prompt || q.text || `Question ${qNum}`;
+            const { before, after, hasGap } = splitSentenceAtGap(rawText);
+
+            return (
+              <React.Fragment key={qNum || idx}>
+                <div
+                  ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
+                  className={`w-full bg-white border-2 p-3 text-xs font-semibold text-slate-900 shadow-2xs transition-colors rounded-xl ${
+                    currentAnswer ? 'border-brand-400 bg-orange-50/20' : 'border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 text-xs leading-loose">
+                      <FlowChartGapItem
+                        q={q}
+                        currentAnswer={currentAnswer}
+                        onAnswerChange={onAnswerChange}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onToggleFlag(qNum)}
+                      className={`p-1 rounded cursor-pointer transition shrink-0 ${
+                        isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                      }`}
+                      title={isFlagged ? 'Remove flag' : 'Flag'}
+                    >
+                      <Flag className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                {!isLast && (
+                  <div className="text-slate-400 font-bold text-lg select-none py-0.5">
+                    ↓
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 10. TABLE COMPLETION (MARKDOWN TABLE OR HTML ZEBRA TABLE)
+  // ---------------------------------------------------------------------------
+
+  function renderTableCompletionGroup(gqs, group, renderedTemplateSignatures) {
+    const mainTitle = group.title || gqs[0]?.title || '';
+    const tplKey = (
+      group.table_template ||
+      group.tableTemplate ||
+      group.summaryTemplate ||
+      group.notes_template ||
+      gqs.find(q => q.table_template || q.tableTemplate || q.notes_template || q.summary_template)?.table_template ||
+      gqs.find(q => q.tableTemplate)?.tableTemplate ||
+      gqs.find(q => q.notes_template)?.notes_template ||
+      gqs.find(q => q.summary_template)?.summary_template ||
+      ''
+    ).trim();
+
+    const hasTableMarkdown = tplKey && tplKey.includes('|');
+    if (tplKey && renderedTemplateSignatures) {
+      renderedTemplateSignatures.add(tplKey);
+    }
+
+    return (
+      <div className="bg-white border-2 border-slate-300 rounded-lg p-5 sm:p-6 shadow-2xs space-y-4 mb-2">
+        {mainTitle && (
+          <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-2">
+            {mainTitle}
+          </div>
+        )}
+
+        {hasTableMarkdown ? (
+          <div className="overflow-x-auto">
+            <MarkdownTable
+              tableContent={normalizeTemplateGaps(tplKey, gqs)}
+              answers={answers}
+              onAnswerChange={onAnswerChange}
+              onToggleFlag={onToggleFlag}
+              flagged={flagged}
+              questionRefs={questionRefs}
+              questions={gqs}
+            />
+          </div>
+        ) : (
+          /* Alternating-row table grid when markdown table | is absent */
+          <div className="border border-slate-300 rounded-md overflow-hidden bg-white">
+            <table className="w-full border-collapse text-left text-sm">
+              <thead>
+                <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  <th className="py-2.5 px-4 w-16 text-center font-mono">#</th>
+                  <th className="py-2.5 px-4">{group.subheading || 'Information / Context'}</th>
+                  <th className="py-2.5 px-4 w-44 sm:w-56 text-center">Answer</th>
+                  <th className="w-10"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {gqs.map((q, qIdx) => {
+                  const qNum = q.questionNumber || q.q_num;
+                  const val = answers[qNum] || '';
+                  const isFlagged = flagged[qNum] || false;
+                  const rawText = q.cleanPrompt || q.text || q.prompt || '';
+                  const { before, after } = splitSentenceAtGap(rawText);
+
+                  return (
+                    <tr
+                      key={qNum || qIdx}
+                      ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
+                      className={`border-b border-slate-200 last:border-0 transition-colors ${
+                        isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
+                      }`}
+                    >
+                      <td className="py-3 px-4 text-center font-mono font-bold text-amber-600 text-xs">
+                        {qNum}
+                      </td>
+                      <td className="py-3 px-4 text-[13.5px] text-slate-800 leading-snug">
+                        {before || cleanGapArtifacts(rawText) || `Item ${qNum}`}
+                        {after && <span className="ml-1 text-slate-600">{cleanGapArtifacts(after)}</span>}
+                      </td>
+                      <td className="py-3 px-4 text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <input
+                            type="text"
+                            value={val}
+                            onChange={e => onAnswerChange(qNum, e.target.value)}
+                            placeholder="..."
+                            className={`w-full max-w-[180px] h-9 px-2.5 border-2 text-center font-medium text-sm rounded outline-none transition-colors ${
+                              val
+                                ? 'border-brand-500 bg-orange-50/30 text-slate-900 font-semibold'
+                                : isFlagged
+                                ? 'border-amber-400 bg-amber-50'
+                                : 'border-slate-300 focus:border-brand-500'
+                            }`}
+                          />
+                        </div>
+                      </td>
+                      <td className="pr-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => onToggleFlag(qNum)}
+                          className={`p-1.5 rounded cursor-pointer transition ${
+                            isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                          }`}
+                          title={isFlagged ? 'Remove flag' : 'Flag'}
+                        >
+                          <Flag className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // GROUP DISPATCHER
   // ---------------------------------------------------------------------------
 
-  function renderGroup(group, groupIdx) {
+  function renderGroup(group, groupIdx, renderedTemplateSignatures) {
     const { category, questions: gqs } = group;
+
+    const hasTableMarkdown = Boolean(
+      (group.table_template && group.table_template.includes('|')) ||
+      (group.tableTemplate && group.tableTemplate.includes('|')) ||
+      (group.notes_template && group.notes_template.includes('|')) ||
+      (group.summaryTemplate && group.summaryTemplate.includes('|')) ||
+      gqs?.some(q => (q.table_template && q.table_template.includes('|')) || (q.tableTemplate && q.tableTemplate.includes('|')) || (q.notes_template && q.notes_template.includes('|')) || (q.summary_template && q.summary_template.includes('|')))
+    );
+    const isTableGroup = category === 'TABLE_COMPLETION' || hasTableMarkdown;
+    const hasRefBoxItems = (Array.isArray(group.refBox) && group.refBox.length > 0) || (Array.isArray(group.referenceBox) && group.referenceBox.length > 0);
 
     return (
       <div key={groupIdx} className="mb-10 last:mb-2">
         {renderGroupHeader(group)}
-        {category === 'TFNG' && renderTFNGGroup(gqs)}
-        {category === 'NOTES' && renderNotesGroup(gqs, group)}
-        {category === 'PARA_MATCH' && renderParaMatchGroup(gqs)}
-        {category === 'RESEARCHER_MATCH' && renderResearcherMatchGroup(gqs, group)}
-        {category === 'SUMMARY_TEXT' && renderSummaryTextGroup(gqs, group)}
-        {category === 'SUMMARY_WORDS' && renderSummaryWordsGroup(gqs, group)}
-        {category === 'MC' && renderMCGroup(gqs)}
-        {category === 'FILL_BLANK' && renderFillBlankGroup(gqs)}
+        {(category === 'TFNG' || category === 'YNNG') && renderTFNGGroup(gqs, category)}
+        {(category === 'NOTES' || category === 'FORM_COMPLETION') && !isTableGroup && renderNotesGroup(gqs, group, renderedTemplateSignatures)}
+        {isTableGroup && renderTableCompletionGroup(gqs, group, renderedTemplateSignatures)}
+        {(category === 'MATCHING_INFORMATION' || category === 'PARA_MATCH') && renderParaMatchGroup(gqs)}
+        {category === 'MATCHING_HEADINGS' && renderMatchingHeadingsGroup(gqs, group)}
+        {(category === 'MATCHING_FEATURES' || category === 'RESEARCHER_MATCH' || category === 'MATCHING' || category === 'MAP_DIAGRAM_LABELING') && renderResearcherMatchGroup(gqs, group)}
+        {((category === 'SUMMARY_TEXT' || category === 'SUMMARY_COMPLETION') && !isTableGroup && !hasRefBoxItems) && renderSummaryTextGroup(gqs, group, renderedTemplateSignatures)}
+        {(category === 'SUMMARY_WORDS' || category === 'SUMMARY_MATCHING' || (((category === 'SUMMARY_COMPLETION' || category === 'SUMMARY_TEXT') && !isTableGroup) && hasRefBoxItems)) && renderSummaryWordsGroup(gqs, group, renderedTemplateSignatures)}
+        {(category === 'MC' || category === 'MULTIPLE_CHOICE' || category === 'MULTIPLE_CHOICE_MULTI') && renderMCGroup(gqs)}
+        {category === 'FILL_BLANK' && !isTableGroup && renderFillBlankGroup(gqs)}
+        {category === 'FLOW_CHART' && renderFlowChartGroup(gqs, group)}
       </div>
     );
   }
@@ -1243,7 +2115,10 @@ export function AnswerSheet({
   // RENDER
   // ---------------------------------------------------------------------------
 
-  const groups = groupQuestions(filteredQuestions, activePassageId);
+  const groups = groupQuestionsIntoSets(filteredQuestions, activePassageRefBox).map(g => ({
+    ...g,
+    refBox: g.refBox || g.referenceBox,
+  }));
 
   return (
     <div className="h-full flex flex-col bg-slate-100">
@@ -1289,7 +2164,7 @@ export function AnswerSheet({
       </div>
 
       {/* Continuous Examination Paper Sheet */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+      <div ref={questionsContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-6">
         {bookletHtml && viewMode === 'booklet' ? (
           <div className="bg-white border border-slate-200 shadow-sm rounded p-4">
             <div className="border-b pb-2 mb-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex justify-between">
@@ -1301,6 +2176,7 @@ export function AnswerSheet({
               answers={answers}
               onAnswerChange={onAnswerChange}
               flagged={flagged}
+              questions={questions}
             />
           </div>
         ) : (
@@ -1310,7 +2186,10 @@ export function AnswerSheet({
                 Questions for Passage {activePassageId} will appear here once the exam is loaded.
               </p>
             )}
-            {groups.map((group, gIdx) => renderGroup(group, gIdx))}
+            {(() => {
+              const renderedTemplateSignatures = new Set();
+              return groups.map((group, gIdx) => renderGroup(group, gIdx, renderedTemplateSignatures));
+            })()}
           </div>
         )}
       </div>

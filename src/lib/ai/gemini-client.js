@@ -212,14 +212,20 @@ export async function apiGradeWritingSubmission({
 /**
  * Calls POST /api/exams/parse-section on the server for a single section
  */
-export async function apiParseExamSection({ sectionType, file, fileName }) {
+export async function apiParseExamSection({ sectionType, files, file, fileName }) {
   const formData = new FormData();
   formData.append('sectionType', sectionType);
-  const f = file?.file || file;
-  if (!f) {
-    throw new Error(`No file provided for ${sectionType} section parsing.`);
+
+  const fileArray = Array.isArray(files) ? files : (files ? [files] : (file ? [file] : []));
+  if (fileArray.length === 0) {
+    throw new Error(`No file(s) provided for ${sectionType} section parsing.`);
   }
-  formData.append('file', f, fileName || file?.name || `${sectionType}.pdf`);
+
+  fileArray.forEach((fObj, idx) => {
+    const f = fObj?.file || fObj;
+    const name = fObj?.name || fileName || f?.name || `${sectionType}_${idx + 1}.pdf`;
+    formData.append(`file${idx}`, f, name);
+  });
 
   const response = await fetch('/api/exams/parse-section', {
     method: 'POST',

@@ -16,10 +16,11 @@ import {
   BookOpen,
   Type,
   ListChecks,
-  Layers
+  Layers,
+  MapPin
 } from 'lucide-react';
 import { Badge } from '../common/Badge';
-import { IeltsBookletRenderer } from './IeltsBookletRenderer';
+import { IeltsBookletRenderer, FlowChartGapItem, MarkdownTable } from './IeltsBookletRenderer';
 import { 
   groupQuestionsIntoSets, 
   normalizeTemplateGaps,
@@ -63,70 +64,106 @@ function renderNotesTemplate(template, { answers, flagged, onAnswerChange, onTog
 
   return (
     <div className="space-y-3 font-sans">
-      {lines.map((line, lIdx) => {
-        const isHeading = /^(?:#{1,4}\s+|\*\*(?:[^*]+)\*\*|[A-Z\s]{4,}:?$)/.test(line) && !line.includes('{{');
-        if (isHeading) {
-          const cleanHeading = line.replace(/^[#*\s]+|[#*\s]+$/g, '').replace(/:$/, '');
-          return (
-            <div key={lIdx} className="text-[13.5px] font-bold text-slate-900 border-b border-slate-300/70 pb-1 mt-4 mb-2">
-              {cleanHeading}
-            </div>
-          );
+      {(() => {
+        const blocks = [];
+        let currentTableLines = [];
+
+        for (const line of lines) {
+          if (line.includes('|')) {
+            currentTableLines.push(line);
+          } else {
+            if (currentTableLines.length > 0) {
+              blocks.push({ type: 'table', content: currentTableLines.join('\n') });
+              currentTableLines = [];
+            }
+            blocks.push({ type: 'line', content: line });
+          }
+        }
+        if (currentTableLines.length > 0) {
+          blocks.push({ type: 'table', content: currentTableLines.join('\n') });
         }
 
-        const isBullet = /^[-*•]\s+/.test(line) || /^\d+\.\s+/.test(line);
-        const textContent = line.replace(/^[-*•]\s+/, '');
-        const tokens = textContent.split(/(\{\{\d+\}\})/g);
-
-        const content = tokens.map((token, tIdx) => {
-          const m = token.match(/^\{\{(\d+)\}\}$/);
-          if (m) {
-            const qNum = Number(m[1]);
-            const val = answers[qNum] || '';
-            const isFlagged = flagged[qNum] || false;
+        return blocks.map((block, bIdx) => {
+          if (block.type === 'table') {
             return (
-              <span key={tIdx} className="inline-flex items-baseline mx-1">
-                <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono">
-                  {qNum}
-                </span>
-                <input
-                  type="text"
-                  ref={el => { if (el) questionRefs.current[qNum] = el; }}
-                  value={val}
-                  onChange={e => onAnswerChange(qNum, e.target.value)}
-                  placeholder="..."
-                  className="w-36 h-7 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-amber-500 transition-colors"
-                />
-                <button
-                  type="button"
-                  onClick={() => onToggleFlag(qNum)}
-                  className={`p-1 rounded cursor-pointer transition ml-0.5 ${
-                    isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                  }`}
-                  title={isFlagged ? 'Remove flag' : 'Flag'}
-                >
-                  <Flag className="w-3 h-3" />
-                </button>
-              </span>
+              <MarkdownTable
+                key={`tbl-${bIdx}`}
+                tableContent={block.content}
+                answers={answers}
+                onAnswerChange={onAnswerChange}
+                onToggleFlag={onToggleFlag}
+                flagged={flagged}
+                questionRefs={questionRefs}
+                questions={questions}
+              />
             );
           }
-          return <span key={tIdx}>{cleanGapArtifacts(token)}</span>;
-        });
 
-        if (isBullet) {
+          const line = block.content;
+          const isHeading = /^(?:#{1,4}\s+|\*\*(?:[^*]+)\*\*|[A-Z\s]{4,}:?$)/.test(line) && !line.includes('{{');
+          if (isHeading) {
+            const cleanHeading = line.replace(/^[#*\s]+|[#*\s]+$/g, '').replace(/:$/, '');
+            return (
+              <div key={bIdx} className="text-[13.5px] font-bold text-slate-900 border-b border-slate-300/70 pb-1 mt-4 mb-2">
+                {cleanHeading}
+              </div>
+            );
+          }
+
+          const isBullet = /^[-*•]\s+/.test(line) || /^\d+\.\s+/.test(line);
+          const textContent = line.replace(/^[-*•]\s+/, '');
+          const tokens = textContent.split(/(\{\{\d+\}\})/g);
+
+          const content = tokens.map((token, tIdx) => {
+            const m = token.match(/^\{\{(\d+)\}\}$/);
+            if (m) {
+              const qNum = Number(m[1]);
+              const val = answers[qNum] || '';
+              const isFlagged = flagged[qNum] || false;
+              return (
+                <span key={tIdx} className="inline-flex items-baseline mx-1">
+                  <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono">
+                    {qNum}
+                  </span>
+                  <input
+                    type="text"
+                    ref={el => { if (el) questionRefs.current[qNum] = el; }}
+                    value={val}
+                    onChange={e => onAnswerChange(qNum, e.target.value)}
+                    placeholder="..."
+                    className="w-36 h-7 border-b-2 border-slate-400 bg-transparent text-center font-semibold text-sm outline-none focus:border-amber-500 transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onToggleFlag(qNum)}
+                    className={`p-1 rounded cursor-pointer transition ml-0.5 ${
+                      isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                    }`}
+                    title={isFlagged ? 'Remove flag' : 'Flag'}
+                  >
+                    <Flag className="w-3 h-3" />
+                  </button>
+                </span>
+              );
+            }
+            return <span key={tIdx}>{cleanGapArtifacts(token)}</span>;
+          });
+
+          if (isBullet) {
+            return (
+              <li key={bIdx} className="text-[13.5px] text-slate-800 list-disc ml-4 leading-loose">
+                {content}
+              </li>
+            );
+          }
+
           return (
-            <li key={lIdx} className="text-[13.5px] text-slate-800 list-disc ml-4 leading-loose">
+            <p key={bIdx} className="text-[13.5px] text-slate-800 leading-loose mb-2">
               {content}
-            </li>
+            </p>
           );
-        }
-
-        return (
-          <p key={lIdx} className="text-[13.5px] text-slate-800 leading-loose mb-2">
-            {content}
-          </p>
-        );
-      })}
+        });
+      })()}
     </div>
   );
 }
@@ -173,7 +210,7 @@ function renderStructuredNotes({
       {secMap.map((sec, sIdx) => (
         <div key={sIdx} className="space-y-2">
           {sec.subheading && (
-            <div className="text-[13px] font-bold text-slate-900 border-b border-slate-300/70 pb-1">
+            <div className="text-[13.5px] font-extrabold uppercase tracking-wide text-slate-900 border-b border-slate-300 pb-1">
               {sec.subheading}
             </div>
           )}
@@ -300,13 +337,15 @@ function renderStructuredNotes({
  * Official Cambridge IELTS Listening Numbering Partition Logic (40 Qs across 4 Parts)
  */
 export const resolveListeningPart = (q) => {
-  if (q.partId) return Number(q.partId);
-  if (q.part) return Number(q.part);
+  if (!q) return 1;
+  const p = q.partId ?? q.part ?? q.part_id ?? q.sectionId ?? q.section;
+  if (p !== undefined && p !== null && !isNaN(Number(p)) && Number(p) > 0) {
+    return Number(p);
+  }
   const qNum = Number(q.questionNumber || q.q_num || 0);
-  if (qNum >= 1 && qNum <= 10) return 1;
-  if (qNum >= 11 && qNum <= 20) return 2;
-  if (qNum >= 21 && qNum <= 30) return 3;
-  if (qNum >= 31 && qNum <= 40) return 4;
+  if (qNum > 0) {
+    return Math.min(4, Math.max(1, Math.ceil(qNum / 10)));
+  }
   return 1;
 };
 
@@ -499,7 +538,9 @@ export function ListeningSection({
             const isSelected = partNum === activePartId;
             const isDone = playedParts[partNum];
             const isPlaying = playingPartId === partNum;
-            const qRange = partNum === 1 ? '1–10' : partNum === 2 ? '11–20' : partNum === 3 ? '21–30' : '31–40';
+            const partQs = questions.filter(q => resolveListeningPart(q) === partNum);
+            const partQNums = partQs.map(q => Number(q.questionNumber || q.q_num)).filter(n => !isNaN(n) && n > 0);
+            const qRange = partQNums.length > 0 ? `${Math.min(...partQNums)}–${Math.max(...partQNums)}` : '';
 
             return (
               <button
@@ -515,7 +556,7 @@ export function ListeningSection({
                 }`}
               >
                 <span>Part {partNum}</span>
-                <span className="text-[10px] opacity-75 font-normal">({qRange})</span>
+                {qRange && <span className="text-[10px] opacity-75 font-normal">({qRange})</span>}
                 {isPlaying && (
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
                 )}
@@ -670,6 +711,7 @@ export function ListeningSection({
                       answers={answers}
                       onAnswerChange={onAnswerChange}
                       flagged={flagged}
+                      questions={partQuestions}
                     />
                   </div>
                 ) : (
@@ -687,6 +729,7 @@ export function ListeningSection({
                       }
 
                       const questionGroups = groupQuestionsIntoSets(partQuestions, currentPart?.reference_box);
+                      const renderedTemplateSignatures = new Set();
 
                       return questionGroups.map((group, gIdx) => {
                         const category = group.category;
@@ -712,11 +755,26 @@ export function ListeningSection({
                             </div>
 
                             {/* 1. NOTES / SUMMARY / FILL_BLANK */}
-                            {(category === 'NOTES' || category === 'FILL_BLANK') && (() => {
-                              const notesTemplate = group.summaryTemplate || 
+                            {(category === 'NOTES' || category === 'FILL_BLANK' || category === 'SUMMARY_COMPLETION') && (() => {
+                              const tplKey = (
+                                group.summaryTemplate || 
+                                group.notes_template ||
                                 gqs.find(q => q.notes_template || q.summary_template)?.notes_template ||
                                 gqs.find(q => q.summary_template)?.summary_template ||
-                                (gqs.length === partQuestions.length ? currentPart?.notes_template : null);
+                                currentPart?.notes_template ||
+                                currentPart?.notesTemplate ||
+                                ''
+                              ).trim();
+
+                              const isFirstTime = Boolean(tplKey && !renderedTemplateSignatures.has(tplKey));
+                              if (isFirstTime) {
+                                renderedTemplateSignatures.add(tplKey);
+                              }
+
+                              // Считаем количество пропусков, реально упомянутых в шаблоне
+                              const coveredGapsCount = (tplKey.match(/(?:\{\{|\@?\[|\()(?:\#|\@)?(?:q_num|blank|\d+)(?:\}\}|\]|\))|\[\s*\]|\(\s*\)|_{2,}|\.{3,}/gi) || []).length;
+                              const hasSufficientCoverage = coveredGapsCount >= Math.ceil(gqs.length / 2);
+                              const shouldUseTemplate = isFirstTime && Boolean(tplKey) && hasSufficientCoverage;
 
                               return (
                                 <div className="bg-slate-50/70 border border-slate-200 p-6 sm:p-8">
@@ -725,8 +783,8 @@ export function ListeningSection({
                                       {groupTitle}
                                     </div>
                                   )}
-                                  {notesTemplate ? (
-                                    renderNotesTemplate(notesTemplate, {
+                                  {shouldUseTemplate ? (
+                                    renderNotesTemplate(tplKey, {
                                       answers,
                                       flagged,
                                       onAnswerChange,
@@ -748,14 +806,280 @@ export function ListeningSection({
                               );
                             })()}
 
+                            {/* 2. TABLE COMPLETION */}
+                            {category === 'TABLE_COMPLETION' && (() => {
+                              const tplKey = (
+                                group.table_template ||
+                                group.tableTemplate ||
+                                group.summaryTemplate ||
+                                group.notes_template ||
+                                gqs.find(q => q.table_template || q.tableTemplate || q.notes_template || q.summary_template)?.table_template ||
+                                gqs.find(q => q.tableTemplate)?.tableTemplate ||
+                                gqs.find(q => q.notes_template)?.notes_template ||
+                                gqs.find(q => q.summary_template)?.summary_template ||
+                                currentPart?.table_template ||
+                                currentPart?.notes_template ||
+                                ''
+                              ).trim();
+
+                              const hasTableMarkdown = tplKey && tplKey.includes('|');
+                              const isFirstTime = Boolean(tplKey && !renderedTemplateSignatures.has(tplKey));
+                              if (isFirstTime) {
+                                renderedTemplateSignatures.add(tplKey);
+                              }
+
+                              return (
+                                <div className="bg-white border-2 border-slate-300 rounded-lg p-5 sm:p-6 shadow-2xs space-y-4">
+                                  {groupTitle && (
+                                    <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-2">
+                                      {groupTitle}
+                                    </div>
+                                  )}
+
+                                  {hasTableMarkdown ? (
+                                    isFirstTime ? (
+                                      <div className="overflow-x-auto">
+                                        <MarkdownTable
+                                          tableContent={normalizeTemplateGaps(tplKey, gqs)}
+                                          answers={answers}
+                                          onAnswerChange={onAnswerChange}
+                                          onToggleFlag={onToggleFlag}
+                                          flagged={flagged}
+                                          questionRefs={questionRefs}
+                                          questions={gqs}
+                                        />
+                                      </div>
+                                    ) : null
+                                  ) : (
+                                    /* Alternating-row table grid when markdown table | is absent */
+                                    <div className="border border-slate-300 rounded-md overflow-hidden bg-white">
+                                      <table className="w-full border-collapse text-left text-sm">
+                                        <thead>
+                                          <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                            <th className="py-2.5 px-4 w-16 text-center font-mono">#</th>
+                                            <th className="py-2.5 px-4">{group.subheading || 'Information / Context'}</th>
+                                            <th className="py-2.5 px-4 w-44 sm:w-56 text-center">Answer</th>
+                                            <th className="w-10"></th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {gqs.map((q, qIdx) => {
+                                            const qNum = q.questionNumber || q.q_num;
+                                            const val = answers[qNum] || '';
+                                            const isFlagged = flagged[qNum] || false;
+                                            const rawText = (q.cleanPrompt || q.text || q.prompt || '').trim();
+                                            const { before: splitBefore, after: splitAfter } = splitSentenceAtGap(rawText);
+                                            const before = q.before || splitBefore || '';
+                                            const after = q.after || splitAfter || '';
+
+                                            const isGeneric = (str) => !str || !str.trim() || /^(?:(?:questions?|q)[\s#.:-]*\d*[\s.:-]*|\d+[\s.:-]*)$/i.test(str.trim());
+                                            const cleanedRaw = cleanGapArtifacts(rawText);
+                                            const contextBulletsText = (Array.isArray(q.context_bullets) ? q.context_bullets : Array.isArray(q.bullets) ? q.bullets : [])
+                                              .map(b => (typeof b === 'object' && b !== null ? (b.text || b.prompt || '') : String(b || '')))
+                                              .map(s => cleanGapArtifacts(s).trim())
+                                              .filter(s => !isGeneric(s))
+                                              .join(' • ');
+                                            const rowDesc = q.description || q.row_context || q.rowContext || q.context || q.parent_context || '';
+                                            const validRowDesc = !isGeneric(rowDesc) ? cleanGapArtifacts(rowDesc).trim() : '';
+
+                                            let labelCandidate = '';
+                                            if (!isGeneric(before)) {
+                                              labelCandidate = before;
+                                            } else if (!isGeneric(cleanedRaw)) {
+                                              labelCandidate = cleanedRaw;
+                                            } else {
+                                              labelCandidate = 
+                                                (!isGeneric(q.subheading) ? q.subheading.trim() : '') ||
+                                                (!isGeneric(q.title) ? q.title.trim() : '') ||
+                                                contextBulletsText ||
+                                                validRowDesc ||
+                                                (group.subheading && !isGeneric(group.subheading) ? `${group.subheading} (${qNum})` : '') ||
+                                                (group.title && !isGeneric(group.title) ? `${group.title} (${qNum})` : '');
+                                            }
+                                            const labelText = labelCandidate || `Question ${qNum}`;
+
+                                            return (
+                                              <tr
+                                                key={qNum || qIdx}
+                                                ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
+                                                className={`border-b border-slate-200 last:border-0 transition-colors ${
+                                                  isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
+                                                }`}
+                                              >
+                                                <td className="py-3 px-4 text-center font-mono font-bold text-amber-600 text-xs">
+                                                  {qNum}
+                                                </td>
+                                                <td className="py-3 px-4 text-[13.5px] text-slate-800 leading-snug">
+                                                  {labelText}
+                                                  {after && <span className="ml-1 text-slate-600">{cleanGapArtifacts(after)}</span>}
+                                                </td>
+                                                <td className="py-3 px-4 text-center">
+                                                  <div className="flex items-center justify-center gap-1.5">
+                                                    <input
+                                                      type="text"
+                                                      value={val}
+                                                      onChange={e => onAnswerChange(qNum, e.target.value)}
+                                                      placeholder="..."
+                                                      className={`w-full max-w-[180px] h-9 px-2.5 border-2 text-center font-medium text-sm rounded outline-none transition-colors ${
+                                                        val
+                                                          ? 'border-brand-500 bg-orange-50/30 text-slate-900'
+                                                          : isFlagged
+                                                          ? 'border-amber-400 bg-amber-50'
+                                                          : 'border-slate-300 focus:border-brand-500'
+                                                      }`}
+                                                    />
+                                                  </div>
+                                                </td>
+                                                <td className="pr-3 text-center">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => onToggleFlag(qNum)}
+                                                    className={`p-1 rounded cursor-pointer transition ${
+                                                      isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                                    }`}
+                                                    title={isFlagged ? 'Remove flag' : 'Flag'}
+                                                  >
+                                                    <Flag className="w-3.5 h-3.5" />
+                                                  </button>
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {/* 3. FORM COMPLETION */}
+                            {category === 'FORM_COMPLETION' && (() => {
+                              const tplKey = (
+                                group.form_template ||
+                                group.formTemplate ||
+                                group.summaryTemplate ||
+                                group.notes_template ||
+                                gqs.find(q => q.form_template || q.formTemplate || q.notes_template || q.summary_template)?.form_template ||
+                                gqs.find(q => q.formTemplate)?.formTemplate ||
+                                gqs.find(q => q.notes_template)?.notes_template ||
+                                gqs.find(q => q.summary_template)?.summary_template ||
+                                currentPart?.form_template ||
+                                currentPart?.notes_template ||
+                                ''
+                              ).trim();
+
+                              const isFirstTime = Boolean(tplKey && !renderedTemplateSignatures.has(tplKey));
+                              if (isFirstTime) {
+                                renderedTemplateSignatures.add(tplKey);
+                              }
+
+                              return (
+                                <div className="bg-white border-2 border-slate-300 rounded-xl p-6 sm:p-8 shadow-xs space-y-5">
+                                  {groupTitle && (
+                                    <div className="text-center font-black text-sm sm:text-base text-slate-900 uppercase tracking-widest border-b-2 border-slate-800 pb-3 mb-4">
+                                      {groupTitle}
+                                    </div>
+                                  )}
+
+                                  {tplKey && isFirstTime ? (
+                                    renderNotesTemplate(tplKey, {
+                                      answers,
+                                      flagged,
+                                      onAnswerChange,
+                                      onToggleFlag,
+                                      questionRefs,
+                                      questions: gqs,
+                                    })
+                                  ) : (
+                                    <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden">
+                                      {gqs.map((q, qIdx) => {
+                                        const qNum = q.questionNumber || q.q_num;
+                                        const val = answers[qNum] || '';
+                                        const isFlagged = flagged[qNum] || false;
+                                        const rawText = q.cleanPrompt || q.prompt || q.text || '';
+                                        const { before, after } = splitSentenceAtGap(rawText);
+                                        const labelText = before || cleanGapArtifacts(rawText) || `Field ${qNum}`;
+
+                                        return (
+                                          <div
+                                            key={qNum || qIdx}
+                                            ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
+                                            className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 gap-3 transition-colors ${
+                                              isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'
+                                            }`}
+                                          >
+                                            <div className="sm:w-1/2 text-sm font-semibold text-slate-800">
+                                              {labelText}
+                                            </div>
+                                            <div className="sm:w-1/2 flex items-center gap-2">
+                                              <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0 font-mono select-none">
+                                                {qNum}
+                                              </span>
+                                              <input
+                                                type="text"
+                                                value={val}
+                                                onChange={e => onAnswerChange(qNum, e.target.value)}
+                                                placeholder="Type answer..."
+                                                className={`flex-1 h-9 px-3 border-2 text-sm font-medium rounded outline-none transition-colors ${
+                                                  val
+                                                    ? 'border-brand-500 bg-orange-50/30 text-slate-900'
+                                                    : isFlagged
+                                                    ? 'border-amber-400 bg-amber-50'
+                                                    : 'border-slate-300 focus:border-brand-500'
+                                                }`}
+                                              />
+                                              {after && <span className="text-xs text-slate-600 font-medium">{cleanGapArtifacts(after)}</span>}
+                                              <button
+                                                type="button"
+                                                onClick={() => onToggleFlag(qNum)}
+                                                className={`p-1 rounded cursor-pointer transition shrink-0 ${
+                                                  isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                                }`}
+                                                title={isFlagged ? 'Remove flag' : 'Flag'}
+                                              >
+                                                <Flag className="w-3.5 h-3.5" />
+                                              </button>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
                             {/* 2. MULTIPLE CHOICE */}
-                            {category === 'MULTIPLE_CHOICE' && (() => {
+                            {(category === 'MULTIPLE_CHOICE' || category === 'MULTIPLE_CHOICE_MULTI') && (() => {
                               // Generic dual-select detection:
                               const isDualQuestion = (q, idx, arr) => {
-                                const text = `${instructionStr} ${q.cleanPrompt || ''} ${q.prompt || ''} ${q.text || ''} ${q.instruction || ''}`.toLowerCase();
-                                if (/choose.*(?:two|2)|which.*(?:two|2)|select.*(?:two|2)|two\s+(?:options|letters|reasons|statements|answers)/i.test(text)) {
+                                const opts = Array.isArray(q?.options) ? q.options : [];
+
+                                // 1. IELTS Standard Guard: Dual-select questions in Cambridge IELTS
+                                // ALWAYS provide at least 5 options (A, B, C, D, E).
+                                // If a question has fewer than 4 options (e.g. standard 3 options A, B, C),
+                                // it CANNOT under any circumstances be a dual selection.
+                                if (opts.length > 0 && opts.length < 4) {
+                                  return false;
+                                }
+
+                                // 2. Check for explicit two-choice phrases with strict word boundaries
+                                // Excludes ordinals and numbers like 20th, 21st, 2nd, 20, 200
+                                const dualRegexes = [
+                                  /\b(?:choose|select)\s+(?:any\s+)?(?:two|2)\b/i,
+                                  /\bwhich\s+(?:two|2)\b/i,
+                                  /\b(?:two|2)\s+(?:options|letters|reasons|statements|answers)\b/i,
+                                ];
+
+                                const text = `${q.instruction || ''} ${q.cleanPrompt || ''} ${q.prompt || ''} ${q.text || ''} ${instructionStr || ''}`.toLowerCase();
+                                const hasDualPhrase = dualRegexes.some(rx => rx.test(text));
+
+                                if (hasDualPhrase && (opts.length >= 4 || opts.length === 0)) {
                                   return true;
                                 }
+
+                                // 3. Neighbor pairing logic: check for identical prompt on adjacent questions with 5 options
                                 const prev = arr[idx - 1];
                                 const next = arr[idx + 1];
                                 const sameAsPrev = prev && (prev.prompt === q.prompt || prev.text === q.text) && (Array.isArray(q.options) && q.options.length === 5);
@@ -854,9 +1178,9 @@ export function ListeningSection({
                                         </p>
                                         <div className="grid grid-cols-1 gap-2 pt-1">
                                           {rawOptions.map((opt, oIdx) => {
-                                            const letterMatch = String(opt).match(/^\[?([A-Z])\]?[\.\:\s\-]*(.*)$/i);
-                                            const letter = (letterMatch ? letterMatch[1] : String.fromCharCode(65 + oIdx)).toUpperCase();
-                                            const optText = letterMatch ? letterMatch[2] : opt;
+                                            const match = String(opt).match(/^\[?([A-Z])\]?[\.\:\)\s\-]+(.*)$/i);
+                                            const letter = (match ? match[1] : String.fromCharCode(65 + oIdx)).toUpperCase();
+                                            const optText = match ? match[2].trim() : String(opt).trim();
                                             const isSelected = valA === letter || valB === letter;
 
                                             return (
@@ -898,7 +1222,7 @@ export function ListeningSection({
                                               value={valA}
                                               onChange={e => onAnswerChange(qNumA, e.target.value.toUpperCase())}
                                               placeholder="Letter"
-                                              className={`w-11 h-9 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
+                                              className={`w-24 sm:w-28 h-9 px-3 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
                                                 valA ? 'border-amber-500 bg-amber-50/50 text-slate-900' : flagged[qNumA] ? 'border-amber-400 bg-amber-50' : 'border-slate-300 focus:border-amber-500'
                                               }`}
                                             />
@@ -922,7 +1246,7 @@ export function ListeningSection({
                                                 value={valB}
                                                 onChange={e => onAnswerChange(qNumB, e.target.value.toUpperCase())}
                                                 placeholder="Letter"
-                                                className={`w-11 h-9 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
+                                                className={`w-24 sm:w-28 h-9 px-3 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
                                                   valB ? 'border-amber-500 bg-amber-50/50 text-slate-900' : flagged[qNumB] ? 'border-amber-400 bg-amber-50' : 'border-slate-300 focus:border-amber-500'
                                                 }`}
                                               />
@@ -946,8 +1270,8 @@ export function ListeningSection({
                                     const qNum = q.questionNumber;
                                     const val = (answers[qNum] || '').toUpperCase();
                                     const isFlagged = flagged[qNum] || false;
-                                    const promptText = q.cleanPrompt || q.prompt || q.text || `Question ${qNum}`;
-                                    const rawOptions = q.options || [];
+                                    const promptText = q.cleanPrompt || q.prompt || q.text || group.instruction || instructionStr || `Question ${qNum}`;
+                                    const rawOptions = (q.options && q.options.length > 0) ? q.options : ['A', 'B', 'C', 'D', 'E'];
 
                                     return (
                                       <div
@@ -980,9 +1304,9 @@ export function ListeningSection({
 
                                         <div className="grid grid-cols-1 gap-2 pt-1 pl-8">
                                           {rawOptions.map((opt, oIdx) => {
-                                            const letterMatch = String(opt).match(/^\[?([A-Z])\]?[\.\:\s\-]*(.*)$/i);
-                                            const letter = (letterMatch ? letterMatch[1] : String.fromCharCode(65 + oIdx)).toUpperCase();
-                                            const optText = letterMatch ? letterMatch[2] : opt;
+                                            const match = String(opt).match(/^\[?([A-Z])\]?[\.\:\)\s\-]+(.*)$/i);
+                                            const letter = (match ? match[1] : String.fromCharCode(65 + oIdx)).toUpperCase();
+                                            const optText = match ? match[2].trim() : String(opt).trim();
                                             const isSelected = val === letter;
 
                                             return (
@@ -1015,37 +1339,117 @@ export function ListeningSection({
                               );
                             })()}
 
-                            {/* 3. MATCHING TABLE */}
-                            {category === 'MATCHING' && (() => {
-                              const refBox = group.referenceBox || [];
+                            {/* 3. MATCHING & MAP / DIAGRAM LABELING TABLE */}
+                            {(category === 'MATCHING' || category === 'MATCHING_FEATURES' || category === 'MAP_DIAGRAM_LABELING' || category === 'MAP_LABELLING' || category === 'MAP_LABELING' || category === 'DIAGRAM_LABEL') && (() => {
+                              const isMapQuestion =
+                                category === 'MAP_DIAGRAM_LABELING' ||
+                                category === 'MAP_LABELLING' ||
+                                category === 'MAP_LABELING' ||
+                                category === 'DIAGRAM_LABEL' ||
+                                /\b(?:label\s+the\s+map|diagram|map)\b/i.test(`${group.instruction || ''} ${instructionStr || ''} ${group.subheading || ''}`);
+
+                              const mapImageUrl = currentExam.listening_map_image_url || currentListening.map_image_url || currentExam.listening?.map_image_url || '';
+
+                              // Resolve refBox: group.referenceBox first, then fallback to question options
+                              const rawGroupRefBox = group.referenceBox && group.referenceBox.length > 0
+                                ? group.referenceBox
+                                : (() => {
+                                    const qWithOpts = gqs.find(q => Array.isArray(q.options) && q.options.length > 0);
+                                    if (!qWithOpts) return [];
+                                    return qWithOpts.options.map((opt, idx) => {
+                                      if (typeof opt === 'object' && opt !== null) {
+                                        return {
+                                          key: String(opt.key || opt.letter || String.fromCharCode(65 + idx)).trim().toUpperCase(),
+                                          label: String(opt.label || opt.text || opt.value || '').trim(),
+                                        };
+                                      }
+                                      if (typeof opt === 'string') {
+                                        const m = opt.match(/^\[?([A-Z0-9ivxlcdm]+)\]?[\.\:\s\-]\s*(.*)$/i);
+                                        if (m) return { key: m[1].toUpperCase(), label: m[2].trim() };
+                                        return { key: String.fromCharCode(65 + idx), label: opt.trim() };
+                                      }
+                                      return { key: String.fromCharCode(65 + idx), label: String(opt) };
+                                    });
+                                  })();
+
+                              // Fallback: derive letter options from instruction if still empty (e.g. A-K, A-H, A to F)
+                              let effectiveRefList = rawGroupRefBox;
+                              if (!effectiveRefList || effectiveRefList.length === 0) {
+                                const combinedInst = `${group.instruction || ''} ${instructionStr || ''} ${gqs.map(q => q.prompt || q.text || '').join(' ')}`;
+                                const rangeMatch = combinedInst.match(/\b([A-Z])\s*(?:[-–—]|to)\s*([A-Z])\b/i);
+                                if (rangeMatch) {
+                                  const startCode = rangeMatch[1].toUpperCase().charCodeAt(0);
+                                  const endCode = rangeMatch[2].toUpperCase().charCodeAt(0);
+                                  if (endCode >= startCode && endCode - startCode <= 20) {
+                                    effectiveRefList = [];
+                                    for (let code = startCode; code <= endCode; code++) {
+                                      effectiveRefList.push({ key: String.fromCharCode(code), label: '' });
+                                    }
+                                  }
+                                }
+                              }
+
+                              const refBox = deduplicateRefBox(effectiveRefList);
                               const placeholderRange = refBox.length > 0
                                 ? `${refBox[0]?.key}–${refBox[refBox.length - 1]?.key}`
                                 : 'Letter';
 
                               return (
                                 <div className="space-y-4">
+                                  {/* Map / Diagram Image (Rendered strictly centered above questions) */}
+                                  {isMapQuestion && (
+                                    mapImageUrl ? (
+                                      <div className="max-w-2xl mx-auto rounded-2xl border border-slate-300 shadow-sm overflow-hidden bg-white my-4 p-2">
+                                        <img
+                                          src={mapImageUrl}
+                                          alt="Map or diagram for this section"
+                                          className="w-full h-auto object-contain"
+                                        />
+                                      </div>
+                                    ) : (
+                                      <div className="max-w-2xl mx-auto rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 my-4 flex items-center justify-center gap-2 text-slate-500 text-xs font-medium">
+                                        <MapPin className="w-4 h-4 text-slate-400 shrink-0" />
+                                        <span>Map diagram for this section. Refer to your booklet.</span>
+                                      </div>
+                                    )
+                                  )}
+
+                                  {/* Options Reference Box / Badges (Placed underneath the map image) */}
                                   {refBox.length > 0 && (
-                                    <div className="border border-slate-300 p-4 bg-slate-50/60">
+                                    <div className="border border-slate-300 p-4 bg-slate-50/60 rounded-xl">
                                       <div className="text-[11px] font-extrabold uppercase tracking-widest text-slate-600 mb-2.5 flex items-center gap-1.5">
                                         <Layers className="w-3.5 h-3.5 text-slate-500" />
-                                        <span>{group.subheading || 'Options Box'}</span>
+                                        <span>{group.subheading || (isMapQuestion ? 'Available Map Labels' : 'List of Options')}</span>
                                       </div>
-                                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1.5">
-                                        {refBox.map(item => (
-                                          <div key={item.key} className="flex items-baseline gap-2 text-[13px]">
-                                            <span className="font-mono font-bold text-slate-800 shrink-0">[{item.key}]</span>
-                                            <span className="text-slate-700 font-medium">{item.label}</span>
-                                          </div>
-                                        ))}
-                                      </div>
+                                      {refBox.some(r => r.label && r.label.trim()) ? (
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1.5">
+                                          {refBox.map(item => (
+                                            <div key={item.key} className="flex items-baseline gap-2 text-[13px]">
+                                              <span className="font-mono font-bold text-slate-800 shrink-0">[{item.key}]</span>
+                                              <span className="text-slate-700 font-medium">{item.label}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          {refBox.map(item => (
+                                            <span
+                                              key={item.key}
+                                              className="inline-flex items-center justify-center px-3 py-1 bg-white border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-800 shadow-2xs"
+                                            >
+                                              [{item.key}]
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
                                   )}
 
-                                  <div className="border border-slate-300 overflow-hidden">
+                                  <div className="border border-slate-300 overflow-hidden rounded-xl bg-white shadow-2xs">
                                     <table className="w-full border-collapse text-left text-sm">
                                       <thead>
                                         <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                          <th className="py-2.5 px-4">{group.subheading || 'Item / Statement'}</th>
+                                          <th className="py-2.5 px-4">{group.subheading || (isMapQuestion ? 'Location / Feature' : 'Item / Statement')}</th>
                                           <th className="py-2.5 px-4 w-36 text-center">Answer</th>
                                           <th className="w-10"></th>
                                         </tr>
@@ -1079,12 +1483,12 @@ export function ListeningSection({
                                                     value={val}
                                                     onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase())}
                                                     placeholder={placeholderRange}
-                                                    className={`w-11 h-9 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
+                                                    className={`w-12 h-10 text-center font-mono font-bold text-sm uppercase rounded-xl border-2 outline-none transition-colors shrink-0 ${
                                                       val
                                                         ? 'border-amber-500 bg-amber-50/50 text-slate-900'
                                                         : isFlagged
                                                         ? 'border-amber-400 bg-amber-50'
-                                                        : 'border-slate-300 focus:border-amber-500'
+                                                        : 'border-slate-300 focus:border-amber-500 bg-white'
                                                     }`}
                                                   />
                                                   {hint && (
@@ -1118,7 +1522,27 @@ export function ListeningSection({
 
                             {/* 4. FLOW CHART */}
                             {category === 'FLOW_CHART' && (() => {
-                              const refBox = group.referenceBox || [];
+                              const rawFlowRefBox = group.referenceBox && group.referenceBox.length > 0
+                                ? group.referenceBox
+                                : (() => {
+                                    const qWithOpts = gqs.find(q => Array.isArray(q.options) && q.options.length > 0);
+                                    if (!qWithOpts) return [];
+                                    return qWithOpts.options.map((opt, idx) => {
+                                      if (typeof opt === 'object' && opt !== null) {
+                                        return {
+                                          key: String(opt.key || opt.letter || String.fromCharCode(65 + idx)).trim().toUpperCase(),
+                                          label: String(opt.label || opt.text || opt.value || '').trim(),
+                                        };
+                                      }
+                                      if (typeof opt === 'string') {
+                                        const m = opt.match(/^\[?([A-Z0-9ivxlcdm]+)\]?[\.\:\s\-]\s*(.*)$/i);
+                                        if (m) return { key: m[1].toUpperCase(), label: m[2].trim() };
+                                        return { key: String.fromCharCode(65 + idx), label: opt.trim() };
+                                      }
+                                      return { key: String.fromCharCode(65 + idx), label: String(opt) };
+                                    });
+                                  })();
+                              const refBox = deduplicateRefBox(rawFlowRefBox);
 
                               return (
                                 <div className="space-y-5">
@@ -1151,48 +1575,41 @@ export function ListeningSection({
                                         const qNum = step.questionNumber;
                                         const val = answers[qNum] || '';
                                         const isFlagged = flagged[qNum] || false;
-                                        const rawText = step.cleanPrompt || step.text || step.prompt || '';
-                                        const { before, after } = splitSentenceAtGap(rawText);
-                                        const hint = getRefHint(val, refBox);
+                                        const currentAnswer = answers[qNum] || '';
+                                        const rawText = step.prompt || step.text || step.cleanPrompt || '';
+                                        const { before, after, hasGap } = splitSentenceAtGap(rawText);
+                                        const hint = getRefHint(currentAnswer, refBox);
 
                                         return (
                                           <React.Fragment key={qNum || idx}>
                                             <div
                                               ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
-                                              className={`w-full bg-white border-2 p-3 text-center text-[13.5px] font-semibold text-slate-900 shadow-2xs transition-colors ${
-                                                val ? 'border-amber-400 bg-amber-50/20' : 'border-slate-300'
+                                              className={`w-full bg-white border-2 p-3 text-[13px] font-semibold text-slate-900 shadow-2xs transition-colors rounded-xl ${
+                                                currentAnswer ? 'border-brand-400 bg-orange-50/20' : 'border-slate-300'
                                               }`}
                                             >
-                                              <div className="flex items-center justify-center gap-2 flex-wrap">
-                                                {before && <span>{before}</span>}
-                                                <span className="inline-flex items-center gap-1">
-                                                  <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center font-mono select-none">
-                                                    {qNum}
-                                                  </span>
-                                                  <input
-                                                    type="text"
-                                                    maxLength={2}
-                                                    value={val}
-                                                    onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase())}
-                                                    placeholder="Letter"
-                                                    className="w-12 h-8 border-2 border-slate-400 focus:border-amber-500 text-center font-bold uppercase text-sm rounded outline-none bg-white transition-colors"
+                                              <div className="flex items-start gap-2">
+                                                <div className="flex-1 text-xs leading-loose">
+                                                  <FlowChartGapItem
+                                                    q={step}
+                                                    currentAnswer={currentAnswer}
+                                                    onAnswerChange={onAnswerChange}
                                                   />
                                                   {hint && (
                                                     <span className="text-[11px] text-amber-700 italic font-normal ml-1">
                                                       ({hint})
                                                     </span>
                                                   )}
-                                                </span>
-                                                {after && <span>{after}</span>}
+                                                </div>
                                                 <button
                                                   type="button"
                                                   onClick={() => onToggleFlag(qNum)}
-                                                  className={`p-1 rounded cursor-pointer transition ml-1 ${
+                                                  className={`p-1 rounded cursor-pointer transition shrink-0 ${
                                                     isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
                                                   }`}
                                                   title={isFlagged ? 'Remove flag' : 'Flag'}
                                                 >
-                                                  <Flag className="w-3 h-3" />
+                                                  <Flag className="w-3.5 h-3.5" />
                                                 </button>
                                               </div>
                                             </div>
@@ -1249,6 +1666,29 @@ export function ListeningSection({
                                 </div>
                               );
                             })()}
+
+                            {/* FALLBACK FOR UNHANDLED CATEGORIES */}
+                            {![
+                              'NOTES', 'FILL_BLANK', 'SUMMARY_COMPLETION',
+                              'TABLE_COMPLETION', 'FORM_COMPLETION',
+                              'MULTIPLE_CHOICE', 'MULTIPLE_CHOICE_MULTI', 'MATCHING', 'MATCHING_FEATURES', 'MATCHING_HEADINGS', 'FLOW_CHART', 'SUMMARY_MATCHING', 'MAP_DIAGRAM_LABELING'
+                            ].includes(category) && (
+                              <div className="bg-slate-50/70 border border-slate-200 p-6 sm:p-8">
+                                {groupTitle && (
+                                  <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-5">
+                                    {groupTitle}
+                                  </div>
+                                )}
+                                {renderStructuredNotes({
+                                  items: gqs,
+                                  answers,
+                                  flagged,
+                                  onAnswerChange,
+                                  onToggleFlag,
+                                  questionRefs,
+                                })}
+                              </div>
+                            )}
                           </div>
                         );
                       });

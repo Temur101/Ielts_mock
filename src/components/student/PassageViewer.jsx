@@ -177,7 +177,12 @@ export function PassageViewer({
     setHighlightCount(0);
   };
 
-  const passageContent = currentPassage.content || currentPassage.passage_text || currentPassage.text || '';
+  const passageContent = 
+    currentPassage.content || 
+    currentPassage.passage_text || 
+    currentPassage.passageText || 
+    currentPassage.text || 
+    '';
   
   // Universal paragraph resolution for ANY passage:
   let parsedParagraphs = [];
@@ -213,7 +218,8 @@ export function PassageViewer({
         <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200 shadow-xs">
           {safePassages.map((p) => {
             const isActive = p.id === activePassageId;
-            const qRange = p.id === 1 ? '1–13' : p.id === 2 ? '14–26' : '27–40';
+            const rawRange = p.question_range || p.range || (p.startQ && p.endQ ? `${p.startQ}–${p.endQ}` : '');
+            const qRange = rawRange ? String(rawRange).replace(/^Questions?\s*/i, '').trim() : '';
             return (
               <button
                 key={p.id}
@@ -225,7 +231,7 @@ export function PassageViewer({
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                Passage {p.id} <span className="opacity-75 font-normal text-[11px]">({qRange})</span>
+                Passage {p.id} {qRange && <span className="opacity-75 font-normal text-[11px]">({qRange})</span>}
               </button>
             );
           })}
@@ -331,21 +337,31 @@ export function PassageViewer({
         </div>
 
         {/* Distinct Paragraphs with Bold Indicators and Clear Vertical Separation */}
-        <div>
-          {parsedParagraphs.map((para, pIdx) => (
-            <p
-              key={para.label || pIdx}
-              className={`mb-5 leading-relaxed text-slate-800 text-justify ${fontSize || 'text-[15px]'}`}
-            >
-              {para.label && (
-                <strong className="font-extrabold text-slate-900 text-base mr-2 select-none">
-                  {para.label}
-                </strong>
-              )}
-              {para.content}
-            </p>
-          ))}
-        </div>
+        {parsedParagraphs.length > 0 ? (
+          <div>
+            {parsedParagraphs.map((para, pIdx) => (
+              <p
+                key={para.label || pIdx}
+                className={`mb-5 leading-relaxed text-slate-800 text-justify ${fontSize || 'text-[15px]'}`}
+              >
+                {para.label && (
+                  <strong className="font-extrabold text-slate-900 text-base mr-2 select-none">
+                    {para.label}
+                  </strong>
+                )}
+                {para.content}
+              </p>
+            ))}
+          </div>
+        ) : (
+          <div className={`leading-relaxed text-slate-800 whitespace-pre-line text-justify ${fontSize || 'text-[15px]'}`}>
+            {passageContent || (
+              <p className="text-slate-400 italic text-center py-8">
+                Reading passage content will appear here once the exam is loaded.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
     </div>

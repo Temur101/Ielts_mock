@@ -188,18 +188,18 @@ function renderStructuredNotes({
     );
   }
 
-  const hasSubheadings = items.some(it => Boolean(it.subheading && String(it.subheading).trim()));
+  const hasSubheadings = items.some(it => Boolean((it.subheading || it.section_heading || it.section_title || it.category_title) && String(it.subheading || it.section_heading || it.section_title || it.category_title).trim()));
   const secMap = [];
 
   if (hasSubheadings) {
     items.forEach(it => {
-      const sub = (it.subheading && String(it.subheading).trim()) || 'Notes';
-      let s = secMap.find(sec => sec.subheading.toLowerCase() === sub.toLowerCase());
-      if (!s) {
-        s = { subheading: sub, items: [] };
-        secMap.push(s);
+      const sub = (it.subheading || it.section_heading || it.section_title || it.category_title || '').trim();
+      const lastSec = secMap[secMap.length - 1];
+      if (lastSec && lastSec.subheading.toLowerCase() === sub.toLowerCase()) {
+        lastSec.items.push(it);
+      } else {
+        secMap.push({ subheading: sub, items: [it] });
       }
-      s.items.push(it);
     });
   } else {
     secMap.push({ subheading: '', items: items });
@@ -219,31 +219,72 @@ function renderStructuredNotes({
               const qNum = q.questionNumber || q.q_num;
               const isQuestion = Boolean(
                 qNum &&
-                (typeof qNum === 'number' || !isNaN(Number(qNum))) &&
-                String(q.type || '').toLowerCase() !== 'context'
+                (typeof qNum === 'number' || (!isNaN(Number(qNum)) && Number(qNum) > 0)) &&
+                String(q.type || '').toLowerCase() !== 'context' &&
+                !q.is_context &&
+                !q.isContext
               );
               const val = isQuestion ? (answers[qNum] || '') : '';
               const isFlagged = isQuestion ? (flagged[qNum] || false) : false;
               const cBullets = q.context_bullets || q.bullets || [];
 
+              const staticContexts = [
+                q.parent_context,
+                q.context,
+                q.context_text,
+                q.description,
+              ].filter(Boolean);
+
               return (
                 <React.Fragment key={q.id || qNum || qIdx}>
+                  {/* Context bullets attached to question/item */}
                   {Array.isArray(cBullets) && cBullets.map((cb, cbIdx) => {
-                    const bulletText = typeof cb === 'object' ? (cb.text || cb.prompt || '') : cb;
+                    const bulletText = typeof cb === 'object' && cb !== null ? (cb.text || cb.prompt || '') : String(cb || '');
                     return (
-                      <li key={cbIdx} className="text-[13px] text-slate-600 list-disc ml-4 leading-relaxed">
+                      <li key={`cb-${cbIdx}`} className="text-[13px] text-slate-600 list-disc ml-4 leading-relaxed">
                         {cleanGapArtifacts(bulletText)}
                       </li>
                     );
                   })}
 
+                  {/* Parent / ambient static contexts */}
+                  {staticContexts.map((ctx, cIdx) => {
+                    const ctxItems = Array.isArray(ctx) ? ctx : [ctx];
+                    return ctxItems.map((ci, ciIdx) => {
+                      const text = typeof ci === 'object' && ci !== null ? (ci.text || ci.prompt || ci.label || '') : String(ci || '');
+                      const cleaned = cleanGapArtifacts(text).trim();
+                      if (!cleaned || cleaned === cleanGapArtifacts(q.text || '').trim()) return null;
+                      return (
+                        <li key={`ctx-${cIdx}-${ciIdx}`} className="text-[13px] text-slate-600 list-disc ml-4 leading-relaxed">
+                          {cleaned}
+                        </li>
+                      );
+                    });
+                  })}
+
+                  {/* Prefilled note on question */}
+                  {q.prefilled && isQuestion && (
+                    <li className="text-[13px] text-slate-600 list-disc ml-4 leading-relaxed italic">
+                      {typeof q.prefilled === 'object' ? (q.prefilled.text || q.prefilled.value || '') : String(q.prefilled)}
+                    </li>
+                  )}
+
+                  {/* Static informational item without input */}
                   {!isQuestion ? (
-                    <li className="text-[13px] text-slate-700 list-disc ml-4 leading-relaxed">
-                      {cleanGapArtifacts(q.text || q.prompt || '')}
+                    <li className="text-[13px] text-slate-700 list-disc ml-4 leading-relaxed font-normal">
+                      {q.label && q.value ? (
+                        <span>
+                          <strong className="font-semibold text-slate-900">{cleanGapArtifacts(q.label)}: </strong>
+                          <span>{cleanGapArtifacts(q.value)}</span>
+                        </span>
+                      ) : (
+                        <span>{cleanGapArtifacts(q.text || q.prompt || q.label || q.title || q.description || '')}</span>
+                      )}
                     </li>
                   ) : (
+                    /* Question item with gap input */
                     <li
-                      ref={el => (questionRefs.current[qNum] = el)}
+                      ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
                       className="text-[13.5px] text-slate-800 list-disc ml-4 leading-loose"
                     >
                       {(() => {
@@ -865,8 +906,15 @@ export function ListeningSection({
                                         <tbody>
                                           {gqs.map((q, qIdx) => {
                                             const qNum = q.questionNumber || q.q_num;
-                                            const val = answers[qNum] || '';
-                                            const isFlagged = flagged[qNum] || false;
+                                            const isQuestion = Boolean(
+                                              qNum &&
+                                              (typeof qNum === 'number' || (!isNaN(Number(qNum)) && Number(qNum) > 0)) &&
+                                              String(q.type || '').toLowerCase() !== 'context' &&
+                                              !q.is_context &&
+                                              !q.isContext
+                                            );
+                                            const val = isQuestion ? (answers[qNum] || '') : '';
+                                            const isFlagged = isQuestion ? (flagged[qNum] || false) : false;
                                             const rawText = (q.cleanPrompt || q.text || q.prompt || '').trim();
                                             const { before: splitBefore, after: splitAfter } = splitSentenceAtGap(rawText);
                                             const before = q.before || splitBefore || '';
@@ -874,11 +922,11 @@ export function ListeningSection({
 
                                             const isGeneric = (str) => !str || !str.trim() || /^(?:(?:questions?|q)[\s#.:-]*\d*[\s.:-]*|\d+[\s.:-]*)$/i.test(str.trim());
                                             const cleanedRaw = cleanGapArtifacts(rawText);
-                                            const contextBulletsText = (Array.isArray(q.context_bullets) ? q.context_bullets : Array.isArray(q.bullets) ? q.bullets : [])
+                                            const cBullets = (Array.isArray(q.context_bullets) ? q.context_bullets : Array.isArray(q.bullets) ? q.bullets : [])
                                               .map(b => (typeof b === 'object' && b !== null ? (b.text || b.prompt || '') : String(b || '')))
                                               .map(s => cleanGapArtifacts(s).trim())
-                                              .filter(s => !isGeneric(s))
-                                              .join(' • ');
+                                              .filter(s => !isGeneric(s));
+                                            const contextBulletsText = cBullets.join(' • ');
                                             const rowDesc = q.description || q.row_context || q.rowContext || q.context || q.parent_context || '';
                                             const validRowDesc = !isGeneric(rowDesc) ? cleanGapArtifacts(rowDesc).trim() : '';
 
@@ -896,53 +944,89 @@ export function ListeningSection({
                                                 (group.subheading && !isGeneric(group.subheading) ? `${group.subheading} (${qNum})` : '') ||
                                                 (group.title && !isGeneric(group.title) ? `${group.title} (${qNum})` : '');
                                             }
-                                            const labelText = labelCandidate || `Question ${qNum}`;
+                                            const labelText = labelCandidate || (isQuestion ? `Question ${qNum}` : 'Information');
+
+                                            const qSubheading = (q.subheading || q.section_heading || q.category || '').trim();
+                                            const prevQ = qIdx > 0 ? gqs[qIdx - 1] : null;
+                                            const prevSubheading = (prevQ?.subheading || prevQ?.section_heading || prevQ?.category || '').trim();
+                                            const showSubheading = qSubheading && qSubheading.toLowerCase() !== prevSubheading.toLowerCase();
 
                                             return (
-                                              <tr
-                                                key={qNum || qIdx}
-                                                ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
-                                                className={`border-b border-slate-200 last:border-0 transition-colors ${
-                                                  isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
-                                                }`}
-                                              >
-                                                <td className="py-3 px-4 text-center font-mono font-bold text-amber-600 text-xs">
-                                                  {qNum}
-                                                </td>
-                                                <td className="py-3 px-4 text-[13.5px] text-slate-800 leading-snug">
-                                                  {labelText}
-                                                  {after && <span className="ml-1 text-slate-600">{cleanGapArtifacts(after)}</span>}
-                                                </td>
-                                                <td className="py-3 px-4 text-center">
-                                                  <div className="flex items-center justify-center gap-1.5">
-                                                    <input
-                                                      type="text"
-                                                      value={val}
-                                                      onChange={e => onAnswerChange(qNum, e.target.value)}
-                                                      placeholder="..."
-                                                      className={`w-full max-w-[180px] h-9 px-2.5 border-2 text-center font-medium text-sm rounded outline-none transition-colors ${
-                                                        val
-                                                          ? 'border-brand-500 bg-orange-50/30 text-slate-900'
-                                                          : isFlagged
-                                                          ? 'border-amber-400 bg-amber-50'
-                                                          : 'border-slate-300 focus:border-brand-500'
-                                                      }`}
-                                                    />
-                                                  </div>
-                                                </td>
-                                                <td className="pr-3 text-center">
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => onToggleFlag(qNum)}
-                                                    className={`p-1 rounded cursor-pointer transition ${
-                                                      isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                                                    }`}
-                                                    title={isFlagged ? 'Remove flag' : 'Flag'}
-                                                  >
-                                                    <Flag className="w-3.5 h-3.5" />
-                                                  </button>
-                                                </td>
-                                              </tr>
+                                              <React.Fragment key={q.id || qNum || qIdx}>
+                                                {showSubheading && (
+                                                  <tr className="bg-slate-100 border-y border-slate-300">
+                                                    <td colSpan={4} className="py-2 px-4 text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                                                      {qSubheading}
+                                                    </td>
+                                                  </tr>
+                                                )}
+                                                <tr
+                                                  ref={el => { if (isQuestion && qNum) questionRefs.current[qNum] = el; }}
+                                                  className={`border-b border-slate-200 last:border-0 transition-colors ${
+                                                    isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
+                                                  }`}
+                                                >
+                                                  <td className="py-3 px-4 text-center font-mono font-bold text-amber-600 text-xs">
+                                                    {isQuestion ? qNum : '—'}
+                                                  </td>
+                                                  <td className="py-3 px-4 text-[13.5px] text-slate-800 leading-snug">
+                                                    {labelText}
+                                                    {after && <span className="ml-1 text-slate-600">{cleanGapArtifacts(after)}</span>}
+                                                    {validRowDesc && validRowDesc !== labelCandidate && (
+                                                      <div className="text-xs text-slate-500 mt-1 italic">{validRowDesc}</div>
+                                                    )}
+                                                    {cBullets.length > 0 && !contextBulletsText.includes(labelCandidate) && (
+                                                      <ul className="mt-1 space-y-0.5 pl-4 list-disc text-xs text-slate-600">
+                                                        {cBullets.map((bText, bIdx) => (
+                                                          <li key={bIdx}>{bText}</li>
+                                                        ))}
+                                                      </ul>
+                                                    )}
+                                                    {q.prefilled && (
+                                                      <div className="text-xs text-slate-600 bg-slate-50 px-2 py-0.5 rounded mt-1 border border-slate-200 inline-block font-mono">
+                                                        Prefilled: {cleanGapArtifacts(typeof q.prefilled === 'object' ? q.prefilled.text : String(q.prefilled))}
+                                                      </div>
+                                                    )}
+                                                  </td>
+                                                  <td className="py-3 px-4 text-center">
+                                                    {isQuestion ? (
+                                                      <div className="flex items-center justify-center gap-1.5">
+                                                        <input
+                                                          type="text"
+                                                          value={val}
+                                                          onChange={e => onAnswerChange(qNum, e.target.value)}
+                                                          placeholder="..."
+                                                          className={`w-full max-w-[180px] h-9 px-2.5 border-2 text-center font-medium text-sm rounded outline-none transition-colors ${
+                                                            val
+                                                              ? 'border-brand-500 bg-orange-50/30 text-slate-900'
+                                                              : isFlagged
+                                                              ? 'border-amber-400 bg-amber-50'
+                                                              : 'border-slate-300 focus:border-brand-500'
+                                                          }`}
+                                                        />
+                                                      </div>
+                                                    ) : (
+                                                      <span className="inline-block text-xs font-semibold text-slate-700 bg-slate-100 px-3 py-1.5 rounded border border-slate-200">
+                                                        {cleanGapArtifacts(q.value || q.prefilled || q.answer || q.example || 'Information')}
+                                                      </span>
+                                                    )}
+                                                  </td>
+                                                  <td className="pr-3 text-center">
+                                                    {isQuestion ? (
+                                                      <button
+                                                        type="button"
+                                                        onClick={() => onToggleFlag(qNum)}
+                                                        className={`p-1 rounded cursor-pointer transition ${
+                                                          isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                                        }`}
+                                                        title={isFlagged ? 'Remove flag' : 'Flag'}
+                                                      >
+                                                        <Flag className="w-3.5 h-3.5" />
+                                                      </button>
+                                                    ) : null}
+                                                  </td>
+                                                </tr>
+                                              </React.Fragment>
                                             );
                                           })}
                                         </tbody>
@@ -995,53 +1079,113 @@ export function ListeningSection({
                                     <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden">
                                       {gqs.map((q, qIdx) => {
                                         const qNum = q.questionNumber || q.q_num;
-                                        const val = answers[qNum] || '';
-                                        const isFlagged = flagged[qNum] || false;
+                                        const isQuestion = Boolean(
+                                          qNum &&
+                                          (typeof qNum === 'number' || (!isNaN(Number(qNum)) && Number(qNum) > 0)) &&
+                                          String(q.type || '').toLowerCase() !== 'context' &&
+                                          !q.is_context &&
+                                          !q.isContext
+                                        );
+                                        const val = isQuestion ? (answers[qNum] || '') : '';
+                                        const isFlagged = isQuestion ? (flagged[qNum] || false) : false;
                                         const rawText = q.cleanPrompt || q.prompt || q.text || '';
                                         const { before, after } = splitSentenceAtGap(rawText);
-                                        const labelText = before || cleanGapArtifacts(rawText) || `Field ${qNum}`;
+                                        const labelText = before || cleanGapArtifacts(rawText) || (isQuestion ? `Field ${qNum}` : 'Information');
+
+                                        const qSubheading = (q.subheading || q.section_heading || q.category || '').trim();
+                                        const prevQ = qIdx > 0 ? gqs[qIdx - 1] : null;
+                                        const prevSubheading = (prevQ?.subheading || prevQ?.section_heading || prevQ?.category || '').trim();
+                                        const showSubheading = qSubheading && qSubheading.toLowerCase() !== prevSubheading.toLowerCase();
+
+                                        const cBullets = (Array.isArray(q.context_bullets) ? q.context_bullets : Array.isArray(q.bullets) ? q.bullets : [])
+                                          .map(b => (typeof b === 'object' && b !== null ? (b.text || b.prompt || '') : String(b || '')))
+                                          .map(s => cleanGapArtifacts(s).trim())
+                                          .filter(Boolean);
+
+                                        const staticContexts = [
+                                          q.parent_context,
+                                          q.context,
+                                          q.context_text,
+                                          q.description,
+                                        ].filter(Boolean);
 
                                         return (
-                                          <div
-                                            key={qNum || qIdx}
-                                            ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
-                                            className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 gap-3 transition-colors ${
-                                              isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'
-                                            }`}
-                                          >
-                                            <div className="sm:w-1/2 text-sm font-semibold text-slate-800">
-                                              {labelText}
+                                          <React.Fragment key={q.id || qNum || qIdx}>
+                                            {showSubheading && (
+                                              <div className="bg-slate-100/90 px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 border-b border-slate-200">
+                                                {qSubheading}
+                                              </div>
+                                            )}
+                                            <div
+                                              ref={el => { if (isQuestion && qNum) questionRefs.current[qNum] = el; }}
+                                              className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 gap-3 transition-colors ${
+                                                isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'
+                                              }`}
+                                            >
+                                              <div className="sm:w-1/2 text-sm font-semibold text-slate-800">
+                                                {labelText}
+                                                {staticContexts.map((ctx, cIdx) => {
+                                                  const text = typeof ctx === 'object' && ctx !== null ? (ctx.text || ctx.prompt || '') : String(ctx || '');
+                                                  const cleaned = cleanGapArtifacts(text).trim();
+                                                  if (!cleaned || cleaned === labelText) return null;
+                                                  return (
+                                                    <div key={cIdx} className="text-xs text-slate-500 font-normal mt-0.5 italic">
+                                                      {cleaned}
+                                                    </div>
+                                                  );
+                                                })}
+                                                {cBullets.length > 0 && (
+                                                  <ul className="mt-1.5 space-y-0.5 pl-4 list-disc text-xs text-slate-500 font-normal">
+                                                    {cBullets.map((bText, bIdx) => (
+                                                      <li key={bIdx}>{bText}</li>
+                                                    ))}
+                                                  </ul>
+                                                )}
+                                                {q.prefilled && isQuestion && (
+                                                  <div className="text-xs text-slate-500 italic mt-0.5">
+                                                    Prefilled: {cleanGapArtifacts(typeof q.prefilled === 'object' ? q.prefilled.text : String(q.prefilled))}
+                                                  </div>
+                                                )}
+                                              </div>
+                                              <div className="sm:w-1/2 flex items-center gap-2">
+                                                {isQuestion ? (
+                                                  <>
+                                                    <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0 font-mono select-none">
+                                                      {qNum}
+                                                    </span>
+                                                    <input
+                                                      type="text"
+                                                      value={val}
+                                                      onChange={e => onAnswerChange(qNum, e.target.value)}
+                                                      placeholder="Type answer..."
+                                                      className={`flex-1 h-9 px-3 border-2 text-sm font-medium rounded outline-none transition-colors ${
+                                                        val
+                                                          ? 'border-brand-500 bg-orange-50/30 text-slate-900'
+                                                          : isFlagged
+                                                          ? 'border-amber-400 bg-amber-50'
+                                                          : 'border-slate-300 focus:border-brand-500'
+                                                      }`}
+                                                    />
+                                                    {after && <span className="text-xs text-slate-600 font-medium">{cleanGapArtifacts(after)}</span>}
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => onToggleFlag(qNum)}
+                                                      className={`p-1 rounded cursor-pointer transition shrink-0 ${
+                                                        isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                                      }`}
+                                                      title={isFlagged ? 'Remove flag' : 'Flag'}
+                                                    >
+                                                      <Flag className="w-3.5 h-3.5" />
+                                                    </button>
+                                                  </>
+                                                ) : (
+                                                  <span className="text-sm font-medium text-slate-700 bg-slate-100 px-3 py-1.5 rounded border border-slate-200">
+                                                    {cleanGapArtifacts(q.value || q.prefilled || q.answer || q.example || after || 'Information')}
+                                                  </span>
+                                                )}
+                                              </div>
                                             </div>
-                                            <div className="sm:w-1/2 flex items-center gap-2">
-                                              <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0 font-mono select-none">
-                                                {qNum}
-                                              </span>
-                                              <input
-                                                type="text"
-                                                value={val}
-                                                onChange={e => onAnswerChange(qNum, e.target.value)}
-                                                placeholder="Type answer..."
-                                                className={`flex-1 h-9 px-3 border-2 text-sm font-medium rounded outline-none transition-colors ${
-                                                  val
-                                                    ? 'border-brand-500 bg-orange-50/30 text-slate-900'
-                                                    : isFlagged
-                                                    ? 'border-amber-400 bg-amber-50'
-                                                    : 'border-slate-300 focus:border-brand-500'
-                                                }`}
-                                              />
-                                              {after && <span className="text-xs text-slate-600 font-medium">{cleanGapArtifacts(after)}</span>}
-                                              <button
-                                                type="button"
-                                                onClick={() => onToggleFlag(qNum)}
-                                                className={`p-1 rounded cursor-pointer transition shrink-0 ${
-                                                  isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                                                }`}
-                                                title={isFlagged ? 'Remove flag' : 'Flag'}
-                                              >
-                                                <Flag className="w-3.5 h-3.5" />
-                                              </button>
-                                            </div>
-                                          </div>
+                                          </React.Fragment>
                                         );
                                       })}
                                     </div>
@@ -1350,13 +1494,19 @@ export function ListeningSection({
 
                               const mapImageUrl = currentExam.listening_map_image_url || currentListening.map_image_url || currentExam.listening?.map_image_url || '';
 
-                              // Resolve refBox: group.referenceBox first, then fallback to question options
+                              // Resolve refBox: group.referenceBox first, then fallback to question options, or part reference_box / options
                               const rawGroupRefBox = group.referenceBox && group.referenceBox.length > 0
                                 ? group.referenceBox
                                 : (() => {
                                     const qWithOpts = gqs.find(q => Array.isArray(q.options) && q.options.length > 0);
-                                    if (!qWithOpts) return [];
-                                    return qWithOpts.options.map((opt, idx) => {
+                                    const partOpts = Array.isArray(currentPart?.reference_box) && currentPart.reference_box.length > 0
+                                      ? currentPart.reference_box
+                                      : Array.isArray(currentPart?.options) && currentPart.options.length > 0
+                                      ? currentPart.options
+                                      : null;
+                                    const optsSource = qWithOpts ? qWithOpts.options : partOpts;
+                                    if (!optsSource) return [];
+                                    return optsSource.map((opt, idx) => {
                                       if (typeof opt === 'object' && opt !== null) {
                                         return {
                                           key: String(opt.key || opt.letter || String.fromCharCode(65 + idx)).trim().toUpperCase(),
@@ -1372,11 +1522,26 @@ export function ListeningSection({
                                     });
                                   })();
 
-                              // Fallback: derive letter options from instruction if still empty (e.g. A-K, A-H, A to F)
+                              // Fallback: derive letter options from raw instructions or texts if still empty (e.g. A-K, A-H, A to F, letters A-G)
                               let effectiveRefList = rawGroupRefBox;
                               if (!effectiveRefList || effectiveRefList.length === 0) {
-                                const combinedInst = `${group.instruction || ''} ${instructionStr || ''} ${gqs.map(q => q.prompt || q.text || '').join(' ')}`;
-                                const rangeMatch = combinedInst.match(/\b([A-Z])\s*(?:[-–—]|to)\s*([A-Z])\b/i);
+                                const instructionSources = [
+                                  group.instruction,
+                                  instructionStr,
+                                  currentPart?.instruction,
+                                  currentPart?.raw_instruction,
+                                  currentPart?.title,
+                                  ...gqs.map(q => q.instruction),
+                                  ...gqs.map(q => q.cleanPrompt),
+                                  ...gqs.map(q => q.prompt),
+                                  ...gqs.map(q => q.text),
+                                ].filter(Boolean).join(' ');
+
+                                const rangeMatch = 
+                                  instructionSources.match(/\bletters?\s+([A-Z])\s*(?:[-–—]|to)\s*([A-Z])\b/i) ||
+                                  instructionSources.match(/\boptions?\s+([A-Z])\s*(?:[-–—]|to)\s*([A-Z])\b/i) ||
+                                  instructionSources.match(/\b([A-Z])\s*(?:[-–—]|to)\s*([A-Z])\b/i);
+
                                 if (rangeMatch) {
                                   const startCode = rangeMatch[1].toUpperCase().charCodeAt(0);
                                   const endCode = rangeMatch[2].toUpperCase().charCodeAt(0);

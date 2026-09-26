@@ -421,8 +421,13 @@ export function StudentExamRoom({
               question_range: pData?.question_range || existing?.question_range || pData?.range || existing?.range || '',
               startQ: pData?.startQ ?? existing?.startQ ?? null,
               endQ: pData?.endQ ?? existing?.endQ ?? null,
+              reference_box: pData?.reference_box || pData?.referenceBox || existing?.reference_box || existing?.referenceBox || null,
+              referenceBox: pData?.reference_box || pData?.referenceBox || existing?.reference_box || existing?.referenceBox || null,
+              options: pData?.options || existing?.options || null,
             };
           });
+
+          const currentPassage = compiledPassages[activePassageId - 1];
 
           return (
             <div className="h-full flex flex-col md:flex-row overflow-hidden">
@@ -444,6 +449,9 @@ export function StudentExamRoom({
                   onToggleFlag={(qNum) => setReadingFlagged(prev => ({ ...prev, [qNum]: !prev[qNum] }))}
                   activePassageId={activePassageId}
                   onJumpToPassage={setActivePassageId}
+                  passage={currentPassage}
+                  passages={compiledPassages}
+                  exam={exam}
                   bookletHtml={
                     exam.reading?.sections?.find(s => s.part === activePassageId)?.page_content_html ||
                     exam.reading_parts?.[`part${activePassageId}`]?.page_content_html ||

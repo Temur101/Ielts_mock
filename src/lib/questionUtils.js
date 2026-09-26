@@ -217,7 +217,9 @@ export function normalizeReferenceBox(rawRefBox, fallbackOptions = [], instructi
     instText = fallbackOptions;
   }
   if (result.length === 0 && instText) {
-    const rangeMatch = instText.match(/\b([A-Z])\s*(?:[-–—]|to)\s*([A-Z])\b/i);
+    const rangeMatch = instText.match(/\b([A-Z])\s*(?:[-–—]|to)\s*([A-Z])\b/i) ||
+      instText.match(/\bletters?\s+([A-Z])\s*[-–—]\s*([A-Z])\b/i) ||
+      instText.match(/\boptions?\s+([A-Z])\s*[-–—]\s*([A-Z])\b/i);
     if (rangeMatch) {
       const startCode = rangeMatch[1].toUpperCase().charCodeAt(0);
       const endCode = rangeMatch[2].toUpperCase().charCodeAt(0);
@@ -679,9 +681,10 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         : []
     );
 
+    const instructionSources = [extractedInst, q.instruction, q.raw_instruction, q.prompt, q.text].filter(Boolean).join(' ');
     const normQRefBox = rawQRef 
-      ? normalizeReferenceBox(rawQRef, fallbackOpts, extractedInst || q.instruction || '') 
-      : (fallbackOpts.length > 0 ? normalizeReferenceBox([], fallbackOpts, extractedInst || q.instruction || '') : []);
+      ? normalizeReferenceBox(rawQRef, fallbackOpts, instructionSources) 
+      : normalizeReferenceBox([], fallbackOpts, instructionSources);
     const hasExplicitRef = normQRefBox.length > 0;
 
     // Only questions that EXPLICITLY possess an attached reference box on their own object (q.reference_box / q.referenceBox),
@@ -694,34 +697,45 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
     // Effective reference box ONLY attaches if:
     // a) The question explicitly contains its own reference_box / referenceBox array, OR
     // b) The question category is explicitly MATCHING, MATCHING_HEADINGS, or SUMMARY_MATCHING.
+    // SCOPING PRIORITY (Rules.md): Local question options (normQRefBox / q.options) have ABSOLUTE
+    // priority over the section's general defaultRefBox.
+    let localQuestionOptions = normQRefBox.length > 0 ? normQRefBox : [];
+    if (localQuestionOptions.length === 0 && Array.isArray(q.options) && q.options.length >= 2) {
+      localQuestionOptions = normalizeReferenceBox([], q.options, extractedInst || q.instruction || '');
+    }
+
     let effectiveRefBox = [];
     const defaultHasRoman = defaultRefBox.some(r => /^(i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii)$/i.test(r.key));
 
-    if (hasExplicitRef) {
-      effectiveRefBox = normQRefBox;
-    } else if (category === 'SUMMARY_MATCHING') {
-      effectiveRefBox = defaultRefBox.length > 0 ? defaultRefBox : normQRefBox;
-    } else if (category === 'MATCHING_HEADINGS') {
-      effectiveRefBox = defaultHasRoman ? defaultRefBox : normQRefBox;
+    if (category === 'MATCHING_HEADINGS') {
+      if (localQuestionOptions.length > 0 && (localQuestionOptions.some(r => /^(i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii)$/i.test(r.key)) || !defaultHasRoman)) {
+        effectiveRefBox = localQuestionOptions;
+      } else if (defaultHasRoman) {
+        effectiveRefBox = defaultRefBox;
+      } else {
+        effectiveRefBox = localQuestionOptions;
+      }
     } else if (
       category === 'MATCHING' ||
       category === 'MATCHING_FEATURES' ||
       category === 'MATCHING_INFORMATION' ||
       category === 'MAP_DIAGRAM_LABELING' ||
-      category === 'FLOW_CHART'
+      category === 'FLOW_CHART' ||
+      category === 'SUMMARY_MATCHING' ||
+      category === 'SUMMARY_WORDS'
     ) {
-      // General matching (researchers, statements, features) shouldn't inherit Roman numerals meant for headings
-      if (!defaultHasRoman && defaultRefBox.length > 0) {
+      // Local options of the question have strict highest priority over defaultRefBox
+      if (localQuestionOptions.length > 0) {
+        effectiveRefBox = localQuestionOptions;
+      } else if (!defaultHasRoman && defaultRefBox.length > 0) {
         effectiveRefBox = defaultRefBox;
-      } else if (normQRefBox.length > 0) {
-        effectiveRefBox = normQRefBox;
-      } else if (Array.isArray(q.options) && q.options.length >= 2) {
-        effectiveRefBox = normalizeReferenceBox([], q.options, extractedInst || q.instruction || '');
       } else if (category === 'MAP_DIAGRAM_LABELING') {
         effectiveRefBox = normalizeReferenceBox([], [], extractedInst || q.instruction || '');
       } else {
         effectiveRefBox = [];
       }
+    } else if (localQuestionOptions.length > 0) {
+      effectiveRefBox = localQuestionOptions;
     }
 
     const questionItem = {
@@ -766,7 +780,13 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
       const thisHasRoman = effectiveRefBox.some(r => /^(i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii)$/i.test(r.key));
       const romanCompositionChanged = (currentHasRoman !== thisHasRoman) && (currentGroup.referenceBox.length > 0 || effectiveRefBox.length > 0);
 
-      const refBoxChanged = refBoxSigChanged || refBoxPresenceChanged || refBoxKeysChanged || romanCompositionChanged;
+      const prevQ = currentGroup.questions[currentGroup.questions.length - 1];
+      const prevType = String(prevQ?.type || '').toUpperCase();
+      const currentIsFlow = currentGroup.category === 'FLOW_CHART' || prevType.includes('FLOW_CHART');
+      const thisIsFlow = category === 'FLOW_CHART' || typeStr.includes('FLOW_CHART');
+      const isBothFlowChart = currentIsFlow && thisIsFlow;
+
+      const refBoxChanged = !isBothFlowChart && (refBoxSigChanged || refBoxPresenceChanged || refBoxKeysChanged || romanCompositionChanged);
 
       // 3. Dynamic sub-range detector in instructions
       // Look for ranges in instruction: /Questions?\s+(\d+)\s*[\-–—]\s*(\d+)/gi
@@ -794,6 +814,7 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         startsNewSubRange ||
         (currentStartNum !== null && thisStartNum !== null && currentStartNum !== thisStartNum) ||
         (thisStartNum !== null && thisStartNum !== currentGroup.startQ && thisStartNum === qNum);
+      const instructionRangeChangedFinal = !isBothFlowChart && instructionRangeChanged;
 
       // 4. Strict category and type transitions
       const currentIsMC = currentGroup.category === 'MULTIPLE_CHOICE' || currentGroup.category === 'MULTIPLE_CHOICE_MULTI';
@@ -802,12 +823,8 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
       const thisIsMatchingOrFlow = category === 'MATCHING' || category.startsWith('MATCHING_') || category === 'FLOW_CHART';
       const mcToMatchingOrFlowTransition = (currentIsMC && thisIsMatchingOrFlow) || (currentIsMatchingOrFlow && thisIsMC);
 
-      const prevQ = currentGroup.questions[currentGroup.questions.length - 1];
-      const prevType = String(prevQ?.type || '').toUpperCase();
-      const currentIsFlow = currentGroup.category === 'FLOW_CHART' || prevType.includes('FLOW_CHART');
-      const thisIsFlow = category === 'FLOW_CHART' || typeStr.includes('FLOW_CHART');
-      const currentIsAnyMatching = currentGroup.category === 'MATCHING' || currentGroup.category.startsWith('MATCHING_') || prevType.includes('MATCH');
-      const thisIsAnyMatching = category === 'MATCHING' || category.startsWith('MATCHING_') || typeStr.includes('MATCH');
+      const currentIsAnyMatching = (currentGroup.category === 'MATCHING' || currentGroup.category.startsWith('MATCHING_') || prevType.includes('MATCH')) && !currentIsFlow;
+      const thisIsAnyMatching = (category === 'MATCHING' || category.startsWith('MATCHING_') || typeStr.includes('MATCH')) && !thisIsFlow;
       const flowAndMatchingConflict = (currentIsFlow && thisIsAnyMatching) || (currentIsAnyMatching && thisIsFlow);
 
       const isExplicitPair = /choose.*two|which two|two options|two letters|select two/i.test(`${currentGroup.instruction} ${questionItem.cleanPrompt}`) ||
@@ -819,7 +836,13 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         (qNum === currentGroup.endQ + 1) &&
         isExplicitPair;
 
-      const instructionChanged = !isDualContinuation && extractedInst && currentGroup.instruction && extractedInst !== currentGroup.instruction;
+      // For consecutive FLOW_CHART questions, block splitting by instructionChanged or step text variations!
+      const instructionChanged = 
+        !isBothFlowChart && 
+        !isDualContinuation && 
+        extractedInst && 
+        currentGroup.instruction && 
+        extractedInst !== currentGroup.instruction;
       
       const hasRomanOpts = (opts) => Array.isArray(opts) && opts.some(o => {
         const str = typeof o === 'object' && o !== null ? (o.key || o.letter || o.value || o.label || '') : String(o);
@@ -850,7 +873,7 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
 
       const currentOptRoman = currentHasRoman || hasRomanOpts(currentGroup.questions[0]?.options);
       const thisOptRoman = thisHasRoman || hasRomanOpts(q.options);
-      const optionTypeChanged = (currentOptRoman !== thisOptRoman) && 
+      const optionTypeChanged = !isBothFlowChart && (currentOptRoman !== thisOptRoman) && 
         ((currentGroup.questions[0]?.options?.length > 0 || currentGroup.referenceBox.length > 0) &&
          (q.options?.length > 0 || effectiveRefBox.length > 0));
 
@@ -858,7 +881,7 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         (currentGroup.category === 'FLOW_CHART' && category !== 'FLOW_CHART') ||
         (currentGroup.category !== 'FLOW_CHART' && category === 'FLOW_CHART');
 
-      const typeFormatChanged = Boolean(prevType && typeStr && prevType !== typeStr && !isDualContinuation);
+      const typeFormatChanged = !isBothFlowChart && Boolean(prevType && typeStr && prevType !== typeStr && !isDualContinuation);
 
       if (
         categoryChanged ||
@@ -866,7 +889,7 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         mcToMatchingOrFlowTransition ||
         flowAndMatchingConflict ||
         startsNewSubRange ||
-        instructionRangeChanged ||
+        instructionRangeChangedFinal ||
         optionTypeChanged ||
         headingsToFeaturesTransition ||
         featuresToHeadingsTransition ||
@@ -874,7 +897,7 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         flowChartTransition ||
         typeFormatChanged
       ) {
-        if (!isDualContinuation || categoryChanged || refBoxChanged || mcToMatchingOrFlowTransition || flowAndMatchingConflict || startsNewSubRange || optionTypeChanged || headingsToFeaturesTransition || featuresToHeadingsTransition || instructionRangeChanged) {
+        if (!isDualContinuation || categoryChanged || refBoxChanged || mcToMatchingOrFlowTransition || flowAndMatchingConflict || startsNewSubRange || optionTypeChanged || headingsToFeaturesTransition || featuresToHeadingsTransition || instructionRangeChangedFinal) {
           isNewGroup = true;
         }
       }

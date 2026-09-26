@@ -115,6 +115,10 @@ export function AnswerSheet({
       const found = passages.find(p => Number(p.id || p.passageId) === Number(activePassageId));
       if (found?.reference_box || found?.referenceBox) return found.reference_box || found.referenceBox;
     }
+    const examParts = exam?.reading_parts?.[`part${activePassageId}`];
+    if (examParts?.reference_box || examParts?.referenceBox) return examParts.reference_box || examParts.referenceBox;
+    const examSections = exam?.reading?.sections?.find(s => Number(s.part || s.id) === Number(activePassageId));
+    if (examSections?.reference_box || examSections?.referenceBox) return examSections.reference_box || examSections.referenceBox;
     const examPassages = exam?.reading_passages || exam?.reading?.passages;
     if (Array.isArray(examPassages) && examPassages.length > 0) {
       const found = examPassages.find(p => Number(p.id || p.passageId) === Number(activePassageId));
@@ -748,9 +752,10 @@ export function AnswerSheet({
     // 1. Resolve reference box from group, questions, options, or instructions
     let researchers = [];
 
-    const rawRef =
+    let rawRef =
       group.refBox ||
       group.referenceBox ||
+      activePassageRefBox ||
       gqs.find(q => (Array.isArray(q.reference_box) && q.reference_box.length > 0) || (Array.isArray(q.referenceBox) && q.referenceBox.length > 0))?.reference_box ||
       gqs.find(q => (Array.isArray(q.reference_box) && q.reference_box.length > 0) || (Array.isArray(q.referenceBox) && q.referenceBox.length > 0))?.referenceBox ||
       null;
@@ -777,6 +782,34 @@ export function AnswerSheet({
         }
         return { key: String.fromCharCode(65 + idx), label: String(item || '').trim() };
       });
+    }
+
+    // If researchers have no descriptive labels or is empty, try activePassageRefBox
+    if ((researchers.length === 0 || !researchers.some(r => r.label && r.label.trim().length > 0)) && Array.isArray(activePassageRefBox) && activePassageRefBox.length > 0) {
+      const activeNormalized = activePassageRefBox.map((item, idx) => {
+        if (typeof item === 'object' && item !== null) {
+          let k = (item.key || item.letter || item.code || String.fromCharCode(65 + idx)).trim().toUpperCase();
+          let l = (item.label || item.text || item.value || item.name || item.word || '').trim();
+          const m = l.match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+          if (m) {
+            if (!k) k = m[1].toUpperCase();
+            if (m[1].toUpperCase() === k) l = m[2].trim();
+          }
+          const isPlaceholder = !l || l.toLowerCase() === k.toLowerCase() || l.toLowerCase() === `option ${k.toLowerCase()}`;
+          return { key: k, label: isPlaceholder ? '' : l };
+        }
+        if (typeof item === 'string') {
+          const m = item.match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+          if (m) return { key: m[1].toUpperCase(), label: m[2].trim() };
+          const cleaned = item.trim();
+          if (/^[A-Z]$/i.test(cleaned)) return { key: cleaned.toUpperCase(), label: '' };
+          return { key: String.fromCharCode(65 + idx), label: cleaned };
+        }
+        return { key: String.fromCharCode(65 + idx), label: String(item || '').trim() };
+      });
+      if (activeNormalized.some(r => r.label && r.label.trim().length > 0) || activeNormalized.length > researchers.length) {
+        researchers = activeNormalized;
+      }
     }
 
     // 2. If refBox is empty or only has empty labels, check gqs[0]?.options or any question's options
@@ -1398,7 +1431,15 @@ export function AnswerSheet({
     // -------------------------------------------------------------------------
     // 3. RENDER SUMMARY BLOCK PRESERVING FULL NARRATIVE & NATURAL FLOW
     // -------------------------------------------------------------------------
-    const parts = normalized.split(/(\{\{\d+\}\})/g);
+    // Strip newlines directly adjacent to gap markers {{N}} and normalize spaces
+    const cleanSummaryTemplate = normalized
+      .replace(/\r?\n\s*(\{\{\d+\}\})/g, ' $1')
+      .replace(/(\{\{\d+\}\})\s*\r?\n/g, '$1 ')
+      .replace(/[ \t]+/g, ' ')
+      .trim();
+
+    // Split template into natural paragraphs by double newlines
+    const paragraphs = cleanSummaryTemplate.split(/\n\s*\n+/);
 
     return (
       <div className="bg-slate-50/60 border border-slate-200 p-5 sm:p-6 mb-2">
@@ -1407,60 +1448,68 @@ export function AnswerSheet({
             {summaryTitle}
           </div>
         )}
-        <div className="text-[14.5px] leading-[2.4] text-slate-800 font-serif whitespace-pre-line">
-          {parts.map((part, idx) => {
-            const match = part.match(/^\{\{(\d+)\}\}$/);
-            if (match) {
-              const qNum = Number(match[1]);
-              const val = answers[qNum] || '';
-              const isFlagged = flagged[qNum] || false;
+        <div className="space-y-4">
+          {paragraphs.map((paraText, pIdx) => {
+            const singleLinePara = paraText.replace(/\r?\n+/g, ' ').trim();
+            const parts = singleLinePara.split(/(\{\{\d+\}\})/g);
 
-              return (
-                <span
-                  key={`gap-${qNum}-${idx}`}
-                  ref={el => (questionRefs.current[qNum] = el)}
-                  className="inline-flex items-center align-baseline mx-1 my-0.5"
-                >
-                  <span
-                    className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold mr-1 select-none font-mono ${
-                      val ? 'bg-brand-500 text-white' : 'bg-slate-200 text-slate-600'
-                    }`}
-                  >
-                    {qNum}
-                  </span>
-                  <input
-                    type="text"
-                    value={val}
-                    onChange={e => onAnswerChange(qNum, e.target.value)}
-                    placeholder="..."
-                    className={`w-32 h-7 px-1.5 text-center font-semibold text-sm border-b-2 outline-none bg-amber-50/20 transition-colors ${
-                      val
-                        ? 'border-brand-500 text-brand-900 font-bold'
-                        : isFlagged
-                        ? 'border-amber-400'
-                        : 'border-slate-400 focus:border-brand-500'
-                    }`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onToggleFlag(qNum)}
-                    className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
-                      isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                    }`}
-                    title={isFlagged ? 'Remove flag' : 'Flag'}
-                  >
-                    <Flag className="w-3 h-3" />
-                  </button>
-                </span>
-              );
-            }
-
-            // Clean only duplicate artifact underscores without stripping punctuation, dots, or words
-            const cleanText = part.replace(/_{2,}/g, '');
             return (
-              <span key={`text-${idx}`}>
-                {cleanText}
-              </span>
+              <p key={pIdx} className="text-[14.5px] leading-loose font-serif text-slate-800 mb-4 last:mb-0">
+                {parts.map((part, idx) => {
+                  const match = part.match(/^\{\{(\d+)\}\}$/);
+                  if (match) {
+                    const qNum = Number(match[1]);
+                    const val = answers[qNum] || '';
+                    const isFlagged = flagged[qNum] || false;
+
+                    return (
+                      <span
+                        key={`gap-${qNum}-${pIdx}-${idx}`}
+                        ref={el => (questionRefs.current[qNum] = el)}
+                        className="inline-flex items-center align-baseline mx-1"
+                      >
+                        <span
+                          className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold mr-1 select-none font-mono shrink-0 ${
+                            val ? 'bg-brand-500 text-white' : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {qNum}
+                        </span>
+                        <input
+                          type="text"
+                          value={val}
+                          onChange={e => onAnswerChange(qNum, e.target.value)}
+                          placeholder="..."
+                          className={`w-28 sm:w-32 h-7 px-1.5 text-center font-semibold text-sm border-b-2 outline-none bg-amber-50/20 transition-colors inline-block ${
+                            val
+                              ? 'border-brand-500 text-brand-900 font-bold'
+                              : isFlagged
+                              ? 'border-amber-400'
+                              : 'border-slate-400 focus:border-brand-500'
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => onToggleFlag(qNum)}
+                          className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
+                            isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                          }`}
+                          title={isFlagged ? 'Remove flag' : 'Flag'}
+                        >
+                          <Flag className="w-3 h-3" />
+                        </button>
+                      </span>
+                    );
+                  }
+
+                  const cleanText = part.replace(/_{2,}/g, '');
+                  return (
+                    <span key={`text-${pIdx}-${idx}`}>
+                      {cleanText}
+                    </span>
+                  );
+                })}
+              </p>
             );
           })}
         </div>
@@ -1564,7 +1613,13 @@ export function AnswerSheet({
     }
 
     const template = normalizeTemplateGaps(effectiveTemplate, gqs);
-    const parts = template.split(/(\{\{\d+\}\})/g);
+    const cleanWordsTemplate = template
+      .replace(/\r?\n\s*(\{\{\d+\}\})/g, ' $1')
+      .replace(/(\{\{\d+\}\})\s*\r?\n/g, '$1 ')
+      .replace(/[ \t]+/g, ' ')
+      .trim();
+
+    const wordParagraphs = cleanWordsTemplate.split(/\n\s*\n+/);
 
     return (
       <div className="space-y-4">
@@ -1590,67 +1645,78 @@ export function AnswerSheet({
 
         {/* Narrative Summary with inline single-letter inputs */}
         <div className="bg-slate-50/60 border border-slate-200 p-5 sm:p-6">
-          <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 tracking-wide border-b border-slate-200 pb-3 mb-4">
-            {summaryTitle}
-          </div>
-          <p className="text-[14px] leading-[2.3] text-slate-800 font-serif">
-            {parts.map((part, idx) => {
-              const match = part.match(/^\{\{(\d+)\}\}$/);
-              if (match) {
-                const qNum = Number(match[1]);
-                const val = answers[qNum] || '';
-                const isFlagged = flagged[qNum] || false;
+          {summaryTitle && (
+            <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 tracking-wide border-b border-slate-200 pb-3 mb-4">
+              {summaryTitle}
+            </div>
+          )}
+          <div className="space-y-4">
+            {wordParagraphs.map((paraText, pIdx) => {
+              const singleLinePara = paraText.replace(/\r?\n+/g, ' ').trim();
+              const parts = singleLinePara.split(/(\{\{\d+\}\})/g);
 
-                return (
-                  <span
-                    key={idx}
-                    ref={el => (questionRefs.current[qNum] = el)}
-                    className="inline-flex items-center align-baseline mx-1"
-                  >
-                    <span
-                      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold mr-1 select-none font-mono ${
-                        val ? 'bg-brand-500 text-white' : 'bg-slate-200 text-slate-600'
-                      }`}
-                    >
-                      {qNum}
-                    </span>
-                    <input
-                      type="text"
-                      maxLength={1}
-                      value={val}
-                      onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase())}
-                      placeholder="A–J"
-                      className={`w-10 h-7 text-center font-bold uppercase text-sm border-b-2 outline-none bg-amber-50/20 transition-colors ${
-                        val
-                          ? 'border-brand-500 text-brand-900'
-                          : isFlagged
-                          ? 'border-amber-400'
-                          : 'border-slate-400 focus:border-brand-500'
-                      }`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => onToggleFlag(qNum)}
-                      className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
-                        isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                      }`}
-                      title={isFlagged ? 'Remove flag' : 'Flag'}
-                    >
-                      <Flag className="w-3 h-3" />
-                    </button>
-                  </span>
-                );
-              }
               return (
-                <span key={idx}>
-                {part
-                  .replace(/(?:_{2,}|\.{2,})/g, '')
-                  .replace(/\[\s*\]|\(\s*\)/g, '')
-                  .replace(/(?:\[|\()?\s*\b[A-Ia-i]\s*[-–—]\s*[A-Ja-j]\b\s*(?:\]|\))?/gi, '')}
-              </span>
+                <p key={pIdx} className="text-[14.5px] leading-loose font-serif text-slate-800 mb-4 last:mb-0">
+                  {parts.map((part, idx) => {
+                    const match = part.match(/^\{\{(\d+)\}\}$/);
+                    if (match) {
+                      const qNum = Number(match[1]);
+                      const val = answers[qNum] || '';
+                      const isFlagged = flagged[qNum] || false;
+
+                      return (
+                        <span
+                          key={`gap-${qNum}-${pIdx}-${idx}`}
+                          ref={el => (questionRefs.current[qNum] = el)}
+                          className="inline-flex items-center align-baseline mx-1"
+                        >
+                          <span
+                            className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold mr-1 select-none font-mono shrink-0 ${
+                              val ? 'bg-brand-500 text-white' : 'bg-slate-200 text-slate-600'
+                            }`}
+                          >
+                            {qNum}
+                          </span>
+                          <input
+                            type="text"
+                            maxLength={1}
+                            value={val}
+                            onChange={e => onAnswerChange(qNum, e.target.value.toUpperCase())}
+                            placeholder="A–J"
+                            className={`w-10 h-7 text-center font-bold uppercase text-sm border-b-2 outline-none bg-amber-50/20 transition-colors inline-block ${
+                              val
+                                ? 'border-brand-500 text-brand-900 font-bold'
+                                : isFlagged
+                                ? 'border-amber-400'
+                                : 'border-slate-400 focus:border-brand-500'
+                            }`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => onToggleFlag(qNum)}
+                            className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
+                              isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                            }`}
+                            title={isFlagged ? 'Remove flag' : 'Flag'}
+                          >
+                            <Flag className="w-3 h-3" />
+                          </button>
+                        </span>
+                      );
+                    }
+                    return (
+                      <span key={`text-${pIdx}-${idx}`}>
+                        {part
+                          .replace(/(?:_{2,}|\.{2,})/g, '')
+                          .replace(/\[\s*\]|\(\s*\)/g, '')
+                          .replace(/(?:\[|\()?\s*\b[A-Ia-i]\s*[-–—]\s*[A-Ja-j]\b\s*(?:\]|\))?/gi, '')}
+                      </span>
+                    );
+                  })}
+                </p>
               );
             })}
-          </p>
+          </div>
         </div>
       </div>
     );
@@ -1660,10 +1726,232 @@ export function AnswerSheet({
   // 7. MULTIPLE CHOICE (Q32–35)
   // ---------------------------------------------------------------------------
 
-  function renderMCGroup(gqs) {
+  function renderMCGroup(gqs, group) {
+    const groupInstruction = group?.instruction || '';
+
+    // Generic dual-select detection:
+    const isDualQuestion = (q, idx, arr) => {
+      const opts = Array.isArray(q?.options) ? q.options : [];
+
+      // 1. IELTS Standard Guard: Dual-select questions in Cambridge IELTS
+      // ALWAYS provide at least 5 options (A, B, C, D, E).
+      // If a question has fewer than 4 options (e.g. standard 3 options A, B, C),
+      // it CANNOT under any circumstances be a dual selection.
+      if (opts.length > 0 && opts.length < 4) {
+        return false;
+      }
+
+      // 2. Check for explicit two-choice phrases with strict word boundaries
+      const dualRegexes = [
+        /\b(?:choose|select)\s+(?:any\s+)?(?:two|2)\b/i,
+        /\bwhich\s+(?:two|2)\b/i,
+        /\b(?:two|2)\s+(?:options|letters|reasons|statements|answers)\b/i,
+      ];
+
+      const text = `${q.instruction || ''} ${q.cleanPrompt || ''} ${q.prompt || ''} ${q.text || ''} ${groupInstruction}`.toLowerCase();
+      const hasDualPhrase = dualRegexes.some(rx => rx.test(text));
+
+      if (hasDualPhrase && (opts.length >= 4 || opts.length === 0)) {
+        return true;
+      }
+
+      // 3. Neighbor pairing logic: check for identical prompt on adjacent questions with >= 4 options
+      const prev = arr[idx - 1];
+      const next = arr[idx + 1];
+      const sameAsPrev = prev && (prev.prompt === q.prompt || prev.text === q.text) && (Array.isArray(q.options) && q.options.length >= 4);
+      const sameAsNext = next && (next.prompt === q.prompt || next.text === q.text) && (Array.isArray(q.options) && q.options.length >= 4);
+      return Boolean(sameAsPrev || sameAsNext);
+    };
+
+    // Deduplicate by questionNumber to ensure each question appears strictly once
+    const seenInGroup = new Set();
+    const uniqueGqs = gqs.filter(q => {
+      const num = Number(q.questionNumber || q.q_num);
+      if (!num || seenInGroup.has(num)) return false;
+      seenInGroup.add(num);
+      return true;
+    });
+
+    const dualQuestions = [];
+    const singleQuestions = [];
+
+    uniqueGqs.forEach((q, idx) => {
+      if (isDualQuestion(q, idx, uniqueGqs)) {
+        dualQuestions.push(q);
+      } else {
+        singleQuestions.push(q);
+      }
+    });
+
+    // Group dual-select questions into pairs of 2 dynamically without hardcoded indices
+    const dualPairs = [];
+    const sortedDual = [...dualQuestions].sort(
+      (a, b) => Number(a.questionNumber || a.q_num || 0) - Number(b.questionNumber || b.q_num || 0)
+    );
+    for (let i = 0; i < sortedDual.length; i += 2) {
+      dualPairs.push([sortedDual[i], sortedDual[i + 1] || null]);
+    }
+
+    // Strictly eliminate any duplicate single-choice MCQ renderings beneath them
+    const dualNumSet = new Set();
+    dualPairs.forEach(([qA, qB]) => {
+      if (qA?.questionNumber) dualNumSet.add(Number(qA.questionNumber));
+      if (qB?.questionNumber) dualNumSet.add(Number(qB.questionNumber));
+    });
+    const filteredSingleQuestions = singleQuestions.filter(
+      q => !dualNumSet.has(Number(q.questionNumber || q.q_num))
+    );
+
+    const renderDualCard = ([qA, qB], pIdx) => {
+      if (!qA) return null;
+      const qNumA = Number(qA.questionNumber || qA.q_num);
+      const qNumB = qB ? Number(qB.questionNumber || qB.q_num) : qNumA + 1;
+      const pairRange = qB ? `Questions ${qNumA} and ${qNumB}` : `Question ${qNumA}`;
+      const rawPrompt = qA.cleanPrompt || qA.prompt || qA.text || qB?.cleanPrompt || '';
+      const cleanPrompt = rawPrompt.replace(/^(?:Questions?\s*)?(?:\d+\s*[-–&and\s]*\d+|\d+)[\.\:\s\-]+/i, '').trim();
+      const rawOptions = (qA.options && qA.options.length >= 2) 
+        ? qA.options 
+        : (qB?.options && qB.options.length >= 2) 
+          ? qB.options 
+          : ['A', 'B', 'C', 'D', 'E'];
+      
+      const valA = (answers[qNumA] || '').trim().toUpperCase();
+      const valB = (answers[qNumB] || '').trim().toUpperCase();
+
+      const handleDualSelect = (letter) => {
+        const L = letter.toUpperCase();
+        if (valA === L) {
+          onAnswerChange(qNumA, '');
+        } else if (valB === L) {
+          onAnswerChange(qNumB, '');
+        } else if (!valA) {
+          onAnswerChange(qNumA, L);
+        } else if (!valB) {
+          onAnswerChange(qNumB, L);
+        } else {
+          onAnswerChange(qNumB, L);
+        }
+      };
+
+      const isFlaggedA = flagged[qNumA] || false;
+      const isFlaggedB = flagged[qNumB] || false;
+
+      return (
+        <div key={`dual-${pIdx}-${qNumA}`} className="bg-white border border-slate-200 rounded-lg p-5 sm:p-6 space-y-4 shadow-2xs">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+            <span className="text-xs font-black uppercase tracking-wider text-brand-700 font-mono">
+              {pairRange}
+            </span>
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+              Select TWO options
+            </span>
+          </div>
+          <p className="text-sm font-bold text-slate-800 leading-snug">
+            {cleanPrompt}
+          </p>
+          <div className="grid grid-cols-1 gap-2 pt-1">
+            {rawOptions.map((opt, oIdx) => {
+              let letter = '';
+              let optText = '';
+              if (typeof opt === 'object' && opt !== null) {
+                letter = (opt.key || opt.letter || String.fromCharCode(65 + oIdx)).toUpperCase();
+                optText = (opt.text || opt.label || opt.value || '').trim();
+              } else {
+                const match = String(opt).match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+                letter = match ? match[1].toUpperCase() : String.fromCharCode(65 + oIdx);
+                optText = match ? match[2].trim() : String(opt).trim();
+              }
+              const isSelected = valA === letter || valB === letter;
+
+              return (
+                <button
+                  key={letter}
+                  type="button"
+                  onClick={() => handleDualSelect(letter)}
+                  className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
+                    isSelected
+                      ? 'border-brand-500 bg-brand-50/70 text-slate-900 font-semibold shadow-xs'
+                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
+                    isSelected
+                      ? 'bg-brand-500 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 border border-slate-300'
+                  }`}>
+                    {letter}
+                  </span>
+                  <span className="flex-1 leading-snug">{optText}</span>
+                  {isSelected && (
+                    <Check className="w-4 h-4 text-brand-600 ml-auto shrink-0" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Dual Answer Slots */}
+          <div className="flex flex-wrap items-center gap-4 pt-3 border-t border-slate-200 text-xs">
+            <span className="font-bold text-slate-600 uppercase tracking-wider font-mono">
+              Your Answers:
+            </span>
+            <div ref={el => (questionRefs.current[qNumA] = el)} className="flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold flex items-center justify-center font-mono select-none">
+                {qNumA}
+              </span>
+              <input
+                type="text"
+                maxLength={1}
+                value={valA}
+                onChange={e => onAnswerChange(qNumA, e.target.value.toUpperCase())}
+                placeholder="Letter"
+                className={`w-24 sm:w-28 h-9 px-3 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
+                  valA ? 'border-brand-500 bg-brand-50/50 text-slate-900' : isFlaggedA ? 'border-amber-400 bg-amber-50' : 'border-slate-300 focus:border-brand-500'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={() => onToggleFlag(qNumA)}
+                className={`p-1 rounded cursor-pointer transition ${isFlaggedA ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'}`}
+                title={isFlaggedA ? `Remove flag ${qNumA}` : `Flag ${qNumA}`}
+              >
+                <Flag className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {qB && (
+              <div ref={el => (questionRefs.current[qNumB] = el)} className="flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold flex items-center justify-center font-mono select-none">
+                  {qNumB}
+                </span>
+                <input
+                  type="text"
+                  maxLength={1}
+                  value={valB}
+                  onChange={e => onAnswerChange(qNumB, e.target.value.toUpperCase())}
+                  placeholder="Letter"
+                  className={`w-24 sm:w-28 h-9 px-3 border-2 text-center font-bold uppercase text-sm rounded outline-none transition-colors ${
+                    valB ? 'border-brand-500 bg-brand-50/50 text-slate-900' : isFlaggedB ? 'border-amber-400 bg-amber-50' : 'border-slate-300 focus:border-brand-500'
+                  }`}
+                />
+                <button
+                  type="button"
+                  onClick={() => onToggleFlag(qNumB)}
+                  className={`p-1 rounded cursor-pointer transition ${isFlaggedB ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'}`}
+                  title={isFlaggedB ? `Remove flag ${qNumB}` : `Flag ${qNumB}`}
+                >
+                  <Flag className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     return (
-      <div className="space-y-5">
-        {gqs.map(q => {
+      <div className="space-y-6">
+        {dualPairs.map(([qA, qB], pIdx) => renderDualCard([qA, qB], pIdx))}
+        {filteredSingleQuestions.map(q => {
           const qNum = q.questionNumber;
           const val = answers[qNum] || '';
           const isFlagged = flagged[qNum] || false;
@@ -1981,6 +2269,87 @@ export function AnswerSheet({
       renderedTemplateSignatures.add(tplKey);
     }
 
+    // Dynamic non-markdown table parsing
+    const explicitHeaders = 
+      group.table_headers || 
+      group.headers || 
+      group.tableColumns || 
+      group.columns || 
+      gqs.find(q => Array.isArray(q.table_headers) || Array.isArray(q.headers))?.table_headers || 
+      gqs.find(q => Array.isArray(q.table_headers) || Array.isArray(q.headers))?.headers || 
+      null;
+
+    const parsedRows = gqs.map((q, qIdx) => {
+      const qNum = Number(q.questionNumber || q.q_num);
+      const val = answers[qNum] || '';
+      const isFlagged = flagged[qNum] || false;
+      const rawText = q.cleanPrompt || q.text || q.prompt || '';
+
+      let rawCells = null;
+      if (Array.isArray(q.columns) && q.columns.length > 0) {
+        rawCells = [...q.columns];
+      } else if (Array.isArray(q.cells) && q.cells.length > 0) {
+        rawCells = [...q.cells];
+      } else if (Array.isArray(q.row) && q.row.length > 0) {
+        rawCells = [...q.row];
+      } else if (q.row && typeof q.row === 'object') {
+        rawCells = Object.values(q.row);
+      } else if (rawText.includes('\t')) {
+        rawCells = rawText.split('\t').map(s => s.trim());
+      } else if (rawText.includes(' | ')) {
+        rawCells = rawText.split(' | ').map(s => s.trim());
+      } else {
+        const meta = q.subheading || q.category_label || q.category || q.date || q.year || q.location || '';
+        if (meta && meta.toLowerCase() !== 'table' && meta.toLowerCase() !== 'table_completion') {
+          rawCells = [meta, rawText];
+        } else {
+          rawCells = [rawText];
+        }
+      }
+
+      // Identify which cell contains the input gap
+      let gapCellIndex = -1;
+      for (let c = 0; c < rawCells.length; c++) {
+        const cStr = String(rawCells[c] || '');
+        if (splitSentenceAtGap(cStr).hasGap || cStr.includes(`{{${qNum}}}`) || cStr.includes(`{{q_num}}`) || new RegExp(`\\b${qNum}\\b`).test(cStr)) {
+          gapCellIndex = c;
+          break;
+        }
+      }
+      if (gapCellIndex === -1) {
+        gapCellIndex = rawCells.length - 1;
+      }
+
+      return {
+        q,
+        qNum,
+        val,
+        isFlagged,
+        rawCells,
+        gapCellIndex,
+      };
+    });
+
+    const maxCols = Math.max(
+      ...parsedRows.map(r => r.rawCells.length),
+      Array.isArray(explicitHeaders) ? explicitHeaders.length : 1
+    );
+
+    let finalHeaders = [];
+    if (Array.isArray(explicitHeaders) && explicitHeaders.length > 0) {
+      finalHeaders = explicitHeaders.map(h => typeof h === 'object' ? h.label || h.title || h.name || String(h) : String(h));
+    } else if (maxCols >= 3) {
+      finalHeaders = Array.from({ length: maxCols }, (_, idx) => {
+        if (idx === 0) return group.subheading || 'Category / Feature';
+        if (idx === maxCols - 1) return 'Details / Assessment';
+        return `Column ${idx + 1}`;
+      });
+    } else if (maxCols === 2) {
+      finalHeaders = [group.subheading || 'Feature / Topic', 'Description / Details'];
+    } else {
+      finalHeaders = [group.subheading || 'Information'];
+    }
+
     return (
       <div className="bg-white border-2 border-slate-300 rounded-lg p-5 sm:p-6 shadow-2xs space-y-4 mb-2">
         {mainTitle && (
@@ -2002,69 +2371,84 @@ export function AnswerSheet({
             />
           </div>
         ) : (
-          /* Alternating-row table grid when markdown table | is absent */
-          <div className="border border-slate-300 rounded-md overflow-hidden bg-white">
+          /* Alternating-row table grid with dynamic columns and inline sentence gaps */
+          <div className="border border-slate-300 rounded-md overflow-x-auto bg-white">
             <table className="w-full border-collapse text-left text-sm">
               <thead>
                 <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  <th className="py-2.5 px-4 w-16 text-center font-mono">#</th>
-                  <th className="py-2.5 px-4">{group.subheading || 'Information / Context'}</th>
-                  <th className="py-2.5 px-4 w-44 sm:w-56 text-center">Answer</th>
-                  <th className="w-10"></th>
+                  <th className="py-2.5 px-3 w-12 text-center font-mono">#</th>
+                  {finalHeaders.map((headerText, hIdx) => (
+                    <th key={hIdx} className="py-2.5 px-4 border-l border-slate-200 first:border-l-0">
+                      {headerText}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {gqs.map((q, qIdx) => {
-                  const qNum = q.questionNumber || q.q_num;
-                  const val = answers[qNum] || '';
-                  const isFlagged = flagged[qNum] || false;
-                  const rawText = q.cleanPrompt || q.text || q.prompt || '';
-                  const { before, after } = splitSentenceAtGap(rawText);
+                {parsedRows.map((row, rIdx) => {
+                  const { q, qNum, val, isFlagged, rawCells, gapCellIndex } = row;
 
                   return (
                     <tr
-                      key={qNum || qIdx}
+                      key={qNum || rIdx}
                       ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
                       className={`border-b border-slate-200 last:border-0 transition-colors ${
-                        isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
+                        isFlagged ? 'bg-amber-50/50' : rIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
                       }`}
                     >
-                      <td className="py-3 px-4 text-center font-mono font-bold text-amber-600 text-xs">
-                        {qNum}
+                      <td className="py-3 px-2 text-center font-mono font-bold text-brand-600 text-xs align-middle">
+                        {qNum || ''}
                       </td>
-                      <td className="py-3 px-4 text-[13.5px] text-slate-800 leading-snug">
-                        {before || cleanGapArtifacts(rawText) || `Item ${qNum}`}
-                        {after && <span className="ml-1 text-slate-600">{cleanGapArtifacts(after)}</span>}
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <div className="flex items-center justify-center gap-1.5">
-                          <input
-                            type="text"
-                            value={val}
-                            onChange={e => onAnswerChange(qNum, e.target.value)}
-                            placeholder="..."
-                            className={`w-full max-w-[180px] h-9 px-2.5 border-2 text-center font-medium text-sm rounded outline-none transition-colors ${
-                              val
-                                ? 'border-brand-500 bg-orange-50/30 text-slate-900 font-semibold'
-                                : isFlagged
-                                ? 'border-amber-400 bg-amber-50'
-                                : 'border-slate-300 focus:border-brand-500'
-                            }`}
-                          />
-                        </div>
-                      </td>
-                      <td className="pr-3 text-center">
-                        <button
-                          type="button"
-                          onClick={() => onToggleFlag(qNum)}
-                          className={`p-1.5 rounded cursor-pointer transition ${
-                            isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                          }`}
-                          title={isFlagged ? 'Remove flag' : 'Flag'}
-                        >
-                          <Flag className="w-3.5 h-3.5" />
-                        </button>
-                      </td>
+                      {Array.from({ length: maxCols }, (_, cIdx) => {
+                        const cellContent = rawCells[cIdx] !== undefined ? String(rawCells[cIdx]) : '';
+                        const isGapCell = cIdx === gapCellIndex;
+
+                        if (isGapCell) {
+                          const { before, after, hasGap } = splitSentenceAtGap(cellContent);
+                          return (
+                            <td key={cIdx} className="py-3 px-4 border-l border-slate-200 text-[13.5px] text-slate-800 leading-snug align-middle">
+                              <span className="inline-flex items-baseline flex-wrap gap-1">
+                                {before && <span>{before}</span>}
+                                <span className="inline-flex items-center align-baseline mx-1">
+                                  <span className="w-5 h-5 rounded-full bg-brand-100 text-brand-800 text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono shrink-0">
+                                    {qNum}
+                                  </span>
+                                  <input
+                                    type="text"
+                                    value={val}
+                                    onChange={e => onAnswerChange(qNum, e.target.value)}
+                                    placeholder="..."
+                                    className={`w-28 sm:w-36 h-7 px-2 border-b-2 text-center font-semibold text-xs outline-none bg-amber-50/20 transition-colors inline-block ${
+                                      val
+                                        ? 'border-brand-500 text-brand-900 font-bold'
+                                        : isFlagged
+                                        ? 'border-amber-400 bg-amber-50'
+                                        : 'border-slate-400 focus:border-brand-500'
+                                    }`}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => onToggleFlag(qNum)}
+                                    className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
+                                      isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                    }`}
+                                    title={isFlagged ? 'Remove flag' : 'Flag'}
+                                  >
+                                    <Flag className="w-3 h-3" />
+                                  </button>
+                                </span>
+                                {after && <span className="ml-1">{after}</span>}
+                              </span>
+                            </td>
+                          );
+                        }
+
+                        return (
+                          <td key={cIdx} className="py-3 px-4 border-l border-slate-200 text-[13.5px] text-slate-800 leading-snug align-middle">
+                            {cellContent || '—'}
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}
@@ -2104,7 +2488,7 @@ export function AnswerSheet({
         {(category === 'MATCHING_FEATURES' || category === 'RESEARCHER_MATCH' || category === 'MATCHING' || category === 'MAP_DIAGRAM_LABELING') && renderResearcherMatchGroup(gqs, group)}
         {((category === 'SUMMARY_TEXT' || category === 'SUMMARY_COMPLETION') && !isTableGroup && !hasRefBoxItems) && renderSummaryTextGroup(gqs, group, renderedTemplateSignatures)}
         {(category === 'SUMMARY_WORDS' || category === 'SUMMARY_MATCHING' || (((category === 'SUMMARY_COMPLETION' || category === 'SUMMARY_TEXT') && !isTableGroup) && hasRefBoxItems)) && renderSummaryWordsGroup(gqs, group, renderedTemplateSignatures)}
-        {(category === 'MC' || category === 'MULTIPLE_CHOICE' || category === 'MULTIPLE_CHOICE_MULTI') && renderMCGroup(gqs)}
+        {(category === 'MC' || category === 'MULTIPLE_CHOICE' || category === 'MULTIPLE_CHOICE_MULTI') && renderMCGroup(gqs, group)}
         {category === 'FILL_BLANK' && !isTableGroup && renderFillBlankGroup(gqs)}
         {category === 'FLOW_CHART' && renderFlowChartGroup(gqs, group)}
       </div>

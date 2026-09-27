@@ -67,6 +67,9 @@ const missingColumnsCache = {
   exams: new Set([
     'listening_map_image_url',
     'listening_map_image_name',
+    'listening_parts_data',
+    'writing_task1',
+    'writing_task2',
   ]),
   students: new Set([
     'current_stage',

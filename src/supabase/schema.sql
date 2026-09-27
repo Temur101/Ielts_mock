@@ -47,8 +47,8 @@ CREATE TABLE IF NOT EXISTS public.exams (
     writing_pdf_url TEXT NULL,
     writing_pdf_name VARCHAR(255) NULL,
     writing_tasks JSONB NOT NULL DEFAULT '{"task1": {}, "task2": {}}'::jsonb,
-    writing_task1 JSONB NOT NULL DEFAULT '{"min_words": 150, "recommended_mins": 20, "prompt": ""}'::jsonb,
-    writing_task2 JSONB NOT NULL DEFAULT '{"min_words": 250, "recommended_mins": 40, "prompt": ""}'::jsonb,
+    writing_task1 TEXT NULL,
+    writing_task2 TEXT NULL,
     task_1_prompt TEXT NULL,
     task_2_prompt TEXT NULL,
 
@@ -110,8 +110,8 @@ ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_parts_data JSONB DEF
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS listening_questions JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_pdf_name VARCHAR(255) NULL;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_tasks JSONB DEFAULT '{"task1": {}, "task2": {}}'::jsonb;
-ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_task1 JSONB DEFAULT '{"min_words": 150, "recommended_mins": 20, "prompt": ""}'::jsonb;
-ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_task2 JSONB DEFAULT '{"min_words": 250, "recommended_mins": 40, "prompt": ""}'::jsonb;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_task1 TEXT NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS writing_task2 TEXT NULL;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS task_1_prompt TEXT NULL;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS task_2_prompt TEXT NULL;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS anti_cheat_strictness VARCHAR(32) DEFAULT 'strict';

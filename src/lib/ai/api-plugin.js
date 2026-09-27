@@ -1322,3 +1322,12 @@ export function ieltsGeminiApiPlugin() {
   };
 }
 
+export {
+  resilientParseReading,
+  resilientParseListening,
+  resilientParseWriting,
+  parseMultipartFormData,
+  is503OrUnavailable,
+  ensureEnvLoaded,
+};
+

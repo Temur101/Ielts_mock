@@ -31,9 +31,17 @@ dist-ssr
 .env.production.local
 
 # Repomix & build artifacts
-repomix-output.xml
-repomix-output.*
+repomix*
+*.xml
 
-# Subagent teamwork scratch logs
-.agents/teamwork/
+# Subagent teamwork & AI documentation/scratch
+.agents/
+AGENTS.md
+Plan.md
+plan.md
+ARCHITECTURE.md
+architecture.md
+AUDIT_REPORT.md
+Result.md
+Rules.md
 

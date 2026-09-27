@@ -3,7 +3,7 @@
 
 export const DEFAULT_IELTS_EXAM = {
   id: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
-  pin_code: "IELTS-904",
+  pin_code: "",
   title: "IELTS Academic Master Assessment 2026",
   duration_mins: 60,
   reading_duration_mins: 60,
@@ -39,7 +39,7 @@ export const DEFAULT_IELTS_EXAM = {
       title: "Reading Passage 1",
       pdf_url: "",
       pdf_name: "",
-      passage_text: "The Flavian Amphitheatre, universally known today as the Colosseum, represents one of the pinnacle architectural achievements of the ancient Roman Empire...",
+      passage_text: "",
       questions: [],
       answer_keys: {},
     },
@@ -48,7 +48,7 @@ export const DEFAULT_IELTS_EXAM = {
       title: "Reading Passage 2",
       pdf_url: "",
       pdf_name: "",
-      passage_text: "The integration of Artificial Intelligence (AI) into clinical diagnostics has revolutionized modern medical pathology and healthcare delivery systems...",
+      passage_text: "",
       questions: [],
       answer_keys: {},
     },
@@ -57,7 +57,7 @@ export const DEFAULT_IELTS_EXAM = {
       title: "Reading Passage 3",
       pdf_url: "",
       pdf_name: "",
-      passage_text: "Over 3.8 billion years of evolutionary refinement, biological organisms have engineered resilient structures, energy-efficient locomotions, and self-healing materials...",
+      passage_text: "",
       questions: [],
       answer_keys: {},
     },
@@ -126,11 +126,8 @@ export const DEFAULT_IELTS_EXAM = {
       title: "Task 1: Academic Report (Visual Data Analysis)",
       recommended_mins: 20,
       min_words: 150,
-      prompt: `The chart below shows the percentage of electricity generated from renewable energy sources (Solar, Wind, Hydro, and Geothermal) across four European countries between 2010 and 2025.
-
-Summarise the information by selecting and reporting the main features, and make comparisons where relevant.
-Write at least 150 words.`,
-      visual_description: "Bar chart & Line graph comparison showing Renewable Energy Share in UK, Germany, Spain, and Norway from 2010 to 2025.",
+      prompt: "Please refer to the attached Task 1 PDF booklet for the prompt instructions and data visualization.",
+      visual_description: "",
       pdf_name: "",
       pdf_url: "",
       image_url: "",
@@ -139,11 +136,7 @@ Write at least 150 words.`,
       title: "Task 2: Discursive Essay (Contemporary Global Issue)",
       recommended_mins: 40,
       min_words: 250,
-      prompt: `Some people argue that technological advances in artificial intelligence and automation will lead to mass unemployment and economic inequality, while others believe AI will create more rewarding and innovative job opportunities.
-
-Discuss both views and give your own opinion.
-Give reasons for your answer and include any relevant examples from your own knowledge or experience.
-Write at least 250 words.`,
+      prompt: "Please refer to the attached Task 2 PDF booklet for the prompt instructions and essay topic.",
       pdf_name: "",
       pdf_url: "",
       image_url: "",
@@ -158,21 +151,14 @@ Write at least 250 words.`,
       title: "Task 1: Academic Report (Visual Data Analysis)",
       recommended_mins: 20,
       min_words: 150,
-      prompt: `The chart below shows the percentage of electricity generated from renewable energy sources (Solar, Wind, Hydro, and Geothermal) across four European countries between 2010 and 2025.
-
-Summarise the information by selecting and reporting the main features, and make comparisons where relevant.
-Write at least 150 words.`,
-      visual_description: "Bar chart & Line graph comparison showing Renewable Energy Share in UK, Germany, Spain, and Norway from 2010 to 2025.",
+      prompt: "Please refer to the attached Task 1 PDF booklet for the prompt instructions and data visualization.",
+      visual_description: "",
     },
     task2: {
       title: "Task 2: Discursive Essay (Contemporary Global Issue)",
       recommended_mins: 40,
       min_words: 250,
-      prompt: `Some people argue that technological advances in artificial intelligence and automation will lead to mass unemployment and economic inequality, while others believe AI will create more rewarding and innovative job opportunities.
-
-Discuss both views and give your own opinion.
-Give reasons for your answer and include any relevant examples from your own knowledge or experience.
-Write at least 250 words.`,
+      prompt: "Please refer to the attached Task 2 PDF booklet for the prompt instructions and essay topic.",
     },
   },
 

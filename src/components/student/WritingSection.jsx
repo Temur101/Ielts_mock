@@ -21,10 +21,15 @@ export function WritingSection({
   task2Essay = '',
   onTask1Change,
   onTask2Change,
+  isTimeUp = false,
+  timeRemaining = 0,
 }) {
   const [activeTask, setActiveTask] = useState(1); // 1 | 2
   const [pageImages, setPageImages] = useState({ 1: null, 2: null });
   const [isRenderingPdf, setIsRenderingPdf] = useState(false);
+
+  const DEFAULT_TASK1_PROMPT = "Please refer to the attached Task 1 PDF booklet for the prompt instructions and data visualization.";
+  const DEFAULT_TASK2_PROMPT = "Please refer to the attached Task 2 PDF booklet for the prompt instructions and essay topic.";
 
   // Dynamic Prompt extraction from Supabase exam and parsed payload
   const task_1_prompt = exam?.task_1_prompt || 
@@ -32,14 +37,14 @@ export function WritingSection({
                         writingData?.task1_prompt || 
                         writingData?.task1?.prompt || 
                         exam?.writing_tasks?.task1?.prompt || 
-                        "The chart below shows the percentage of electricity generated from renewable energy sources across four European countries between 2010 and 2025.\n\nSummarise the information by selecting and reporting the main features, and make comparisons where relevant.\nWrite at least 150 words.";
+                        DEFAULT_TASK1_PROMPT;
 
   const task_2_prompt = exam?.task_2_prompt || 
                         writingData?.task_2_prompt || 
                         writingData?.task2_prompt || 
                         writingData?.task2?.prompt || 
                         exam?.writing_tasks?.task2?.prompt || 
-                        "Some people argue that technological advances in artificial intelligence and automation will lead to mass unemployment and economic inequality, while others believe AI will create more rewarding and innovative job opportunities.\n\nDiscuss both views and give your own opinion.\nWrite at least 250 words.";
+                        DEFAULT_TASK2_PROMPT;
 
   const task1 = {
     title: writingData?.task1?.title || "Task 1: Academic Report",
@@ -310,7 +315,9 @@ export function WritingSection({
           <div className="flex-1 p-3 sm:p-4 flex flex-col overflow-hidden">
             <textarea
               value={currentEssay}
+              disabled={isTimeUp}
               onChange={(e) => {
+                if (isTimeUp) return;
                 if (activeTask === 1) {
                   onTask1Change(e.target.value);
                 } else {
@@ -318,11 +325,17 @@ export function WritingSection({
                 }
               }}
               placeholder={
-                activeTask === 1
+                isTimeUp
+                  ? "Time is up. This section is locked."
+                  : activeTask === 1
                   ? "Type your Task 1 response here (minimum 150 words)..."
                   : "Type your Task 2 essay here (minimum 250 words)..."
               }
-              className="flex-1 w-full h-full p-4 text-sm rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 font-sans text-slate-900 leading-relaxed resize-none focus:outline-none bg-white shadow-xs"
+              className={`flex-1 w-full h-full p-4 text-sm rounded-xl border font-sans leading-relaxed resize-none focus:outline-none shadow-xs ${
+                isTimeUp 
+                  ? 'bg-slate-100 border-slate-300 text-slate-500 cursor-not-allowed' 
+                  : 'bg-white border-slate-200 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 text-slate-900'
+              }`}
             />
           </div>
 

@@ -10,20 +10,37 @@ import {
   updateExamStage, 
   updateStudentStage, 
   subscribeToExamRealtime,
+  removeExamRealtimeChannel,
   updateExamPinCode,
-  upsertStudent 
+  updateExamStatus,
+  updateExamAssets,
+  upsertStudent,
+  generateCryptoPin,
+  generateUUID,
+  getSupabaseClient
 } from './lib/supabase';
 import { 
   gradeSectionExam, 
   calculateWritingBand, 
   calculateOverallIeltsBand 
 } from './lib/ieltsGrading';
+import { 
+  calculateStageDurationSeconds, 
+  getRemainingSeconds, 
+  formatExamTimer 
+} from './lib/examTimerUtils';
 import { archiveCurrentSession } from './lib/sessionHistory';
 import { loadPersistentExam, savePersistentExam, isCorruptedExam } from './lib/persistentStorage';
 import { apiGradeWritingSubmission } from './lib/ai/gemini-client';
 import { SuperAdminHub } from './components/superadmin/SuperAdminHub';
 import { SuperAdminLogin } from './components/superadmin/SuperAdminLogin';
 import { getSuperAdminSession, signOutSuperAdmin } from './lib/superAdminService';
+import { 
+  AdminPasswordModal, 
+  TEACHER_ACCESS_PASSWORD, 
+  isAdminAuthenticated, 
+  setAdminAuthenticated 
+} from './components/admin/AdminPasswordModal';
 
 // Web Audio tone generator
 function playExamTone(type = 'start') {
@@ -61,7 +78,7 @@ function playExamTone(type = 'start') {
   }
 }
 
-// Route helper to support /super-admin, /super-admin/login, and /join?pin=...
+// Route helper to support /super-admin, /super-admin/login, /admin, and /join?pin=...
 function parseCurrentRoute() {
   if (typeof window === 'undefined') return { path: '/', pin: null };
   const pathname = window.location.pathname.toLowerCase();
@@ -75,6 +92,9 @@ function parseCurrentRoute() {
   if (pathname === '/super-admin/login') {
     return { path: '/super-admin/login', pin };
   }
+  if (pathname === '/admin') {
+    return { path: '/admin', pin };
+  }
   if (pathname === '/join' || pin) {
     return { path: '/join', pin };
   }
@@ -83,6 +103,14 @@ function parseCurrentRoute() {
 
 export default function App() {
   const [route, setRoute] = useState(parseCurrentRoute);
+  const [currentRole, setCurrentRole] = useState(() => {
+    const initialRoute = parseCurrentRoute();
+    if (initialRoute.path === '/join') return 'student';
+    const isAuthed = isAdminAuthenticated();
+    const saved = localStorage.getItem('ielts_active_role');
+    if (saved === 'admin' && isAuthed) return 'admin';
+    return 'student';
+  });
   const [superAdminUser, setSuperAdminUser] = useState(null);
   const [checkingSuperAdminAuth, setCheckingSuperAdminAuth] = useState(true);
 
@@ -119,11 +147,17 @@ export default function App() {
     initSuperAdmin();
   }, []);
 
-  const [currentRole, setCurrentRole] = useState(() => {
-    const initialRoute = parseCurrentRoute();
-    if (initialRoute.path === '/join') return 'student';
-    return localStorage.getItem('ielts_active_role') || 'admin';
-  });
+  // Sync admin mode class on body for complete anti-cheat exemption (free copy/selection)
+  useEffect(() => {
+    const isAuthed = isAdminAuthenticated();
+    if (typeof document !== 'undefined') {
+      if (isAuthed) {
+        document.body.classList.add('admin-mode');
+      } else {
+        document.body.classList.remove('admin-mode');
+      }
+    }
+  }, [route.path, currentRole]);
 
   const [exam, setExam] = useState(() => {
     try {
@@ -160,6 +194,62 @@ export default function App() {
   });
 
   const [soundEnabled, setSoundEnabled] = useState(true);
+
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [pendingAdminAction, setPendingAdminAction] = useState(null);
+  const [passwordModalMeta, setPasswordModalMeta] = useState({
+    title: 'Teacher & Proctor Authentication',
+    description: 'Please enter the access password to proceed.',
+  });
+
+  const requestAdminAccess = (actionCallback, meta = {}) => {
+    if (isAdminAuthenticated()) {
+      if (typeof actionCallback === 'function') actionCallback();
+    } else {
+      setPasswordModalMeta({
+        title: meta.title || 'Teacher & Proctor Authentication',
+        description: meta.description || 'Please enter the proctor password (1234) to proceed.',
+      });
+      setPendingAdminAction(() => actionCallback);
+      setPasswordModalOpen(true);
+    }
+  };
+
+  const handleRoleChange = (newRole) => {
+    if (newRole === 'admin') {
+      requestAdminAccess(() => {
+        setCurrentRole('admin');
+        localStorage.setItem('ielts_active_role', 'admin');
+      }, {
+        title: 'Switch to Teacher View',
+        description: 'Teacher console access requires the proctor password.',
+      });
+    } else {
+      setCurrentRole('student');
+      localStorage.setItem('ielts_active_role', 'student');
+    }
+  };
+
+  const handleOpenSuperAdmin = () => {
+    requestAdminAccess(() => {
+      navigateTo('/super-admin');
+    }, {
+      title: 'Super-Admin Hub Authentication',
+      description: 'Super-Admin command center requires administrative verification.',
+    });
+  };
+
+  // Student Route Guard: Prevent enrolled external students from accessing '/', '/admin', '/super-admin'
+  useEffect(() => {
+    if (isAdminAuthenticated()) return;
+
+    if (currentStudent && currentStudent.status !== 'completed' && currentStudent.status !== 'disqualified') {
+      if (route.path === '/admin' || route.path === '/super-admin' || (route.path === '/' && currentRole === 'admin')) {
+        const pin = route.pin || currentStudent.exam_pin || exam.pin_code;
+        navigateTo('/join', pin ? { pin } : {});
+      }
+    }
+  }, [route.path, currentStudent, currentRole, exam.pin_code]);
 
   // Load master exam from IndexedDB persistent storage on startup
   useEffect(() => {
@@ -222,15 +312,16 @@ export default function App() {
           break;
         }
         case 'ADMIN_SET_STAGE': {
-          const { stage, stage_started_at } = payload;
+          const { stage, stage_started_at, stage_ends_at, status } = payload;
           setExam(prev => {
             const isFinished = stage === 'exam_completed' || stage === 'writing_finished';
             const isActive = stage.endsWith('_active');
             return {
               ...prev,
               current_stage: stage,
-              status: isFinished ? 'finished' : isActive ? 'active' : 'lobby',
+              status: isFinished ? 'finished' : (status || (isActive ? 'in_progress' : 'lobby')),
               stage_started_at: stage_started_at || (isActive ? new Date().toISOString() : prev.stage_started_at),
+              stage_ends_at: stage_ends_at !== undefined ? stage_ends_at : (isActive ? prev.stage_ends_at : null),
               started_at: (stage === 'listening_active' && !prev.started_at) ? (stage_started_at || new Date().toISOString()) : prev.started_at,
               ended_at: isFinished ? new Date().toISOString() : prev.ended_at
             };
@@ -386,7 +477,7 @@ export default function App() {
           break;
 
         case 'ADMIN_RESET_SESSION': {
-          const resetPin = payload.pin_code || `IELTS-${Math.floor(100 + Math.random() * 900)}`;
+          const resetPin = payload.pin_code || generateCryptoPin();
           setExam(payload.exam || {
             ...DEFAULT_IELTS_EXAM,
             pin_code: resetPin,
@@ -511,6 +602,31 @@ export default function App() {
 
   // Live Supabase Realtime Channel Subscription (Instant Asset & State Broadcast)
   useEffect(() => {
+    // Initial fetch of existing registered candidates for current exam session
+    const supabase = getSupabaseClient();
+    if (supabase && exam?.id) {
+      supabase.from('students').select('*').eq('exam_id', exam.id).then(({ data, error }) => {
+        if (!error && Array.isArray(data)) {
+          setStudents(data);
+        }
+      });
+
+      // Synchronize latest exam state from Supabase on mount / reconnect (Server-Anchored Sync)
+      supabase.from('exams').select('*').eq('id', exam.id).maybeSingle().then(({ data: remoteExam, error: examErr }) => {
+        if (!examErr && remoteExam) {
+          setExam(prev => ({
+            ...prev,
+            status: remoteExam.status || prev.status,
+            current_stage: remoteExam.current_stage || prev.current_stage,
+            stage_started_at: remoteExam.stage_started_at || prev.stage_started_at,
+            stage_ends_at: remoteExam.stage_ends_at !== undefined ? remoteExam.stage_ends_at : prev.stage_ends_at,
+            started_at: remoteExam.started_at || prev.started_at,
+            ended_at: remoteExam.ended_at || prev.ended_at,
+          }));
+        }
+      });
+    }
+
     if (!exam?.pin_code) return;
 
     const channel = subscribeToExamRealtime(exam.pin_code, {
@@ -520,6 +636,12 @@ export default function App() {
           setExam(prev => ({
             ...prev,
             title: newExam.title || prev.title,
+            status: newExam.status || prev.status,
+            current_stage: newExam.current_stage || prev.current_stage,
+            stage_started_at: newExam.stage_started_at || prev.stage_started_at,
+            stage_ends_at: newExam.stage_ends_at !== undefined ? newExam.stage_ends_at : prev.stage_ends_at,
+            started_at: newExam.started_at || prev.started_at,
+            ended_at: newExam.ended_at || prev.ended_at,
             duration_mins: newExam.duration_mins || prev.duration_mins,
             anti_cheat_strictness: newExam.anti_cheat_strictness || prev.anti_cheat_strictness,
             reading_pdf_url: newExam.reading_pdf_url !== undefined ? newExam.reading_pdf_url : prev.reading_pdf_url,
@@ -559,6 +681,8 @@ export default function App() {
       onStudentChange: (payload) => {
         if (payload.new && (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT')) {
           const updatedStudent = payload.new;
+          if (updatedStudent.exam_id && exam?.id && updatedStudent.exam_id !== exam.id) return;
+
           setStudents(prev => {
             const exists = prev.some(s => s.id === updatedStudent.id);
             if (exists) {
@@ -574,9 +698,9 @@ export default function App() {
     });
 
     return () => {
-      if (channel) channel.unsubscribe();
+      if (channel) removeExamRealtimeChannel(channel);
     };
-  }, [exam?.pin_code, currentStudent?.id]);
+  }, [exam?.pin_code, exam?.id, currentStudent?.id]);
 
   // Auto-sync: If exam stage is active, ensure waiting candidate transitions immediately
   useEffect(() => {
@@ -609,115 +733,23 @@ export default function App() {
     }
   }, [exam.current_stage, currentStudent?.status, exam.started_at, currentStudent?.id]);
 
-  // Active Test Bot Simulator during Exam Stages
-  useEffect(() => {
-    const stage = exam.current_stage || 'listening_lobby';
-    if (!stage.endsWith('_active') && stage !== 'listening_finished' && stage !== 'reading_finished') return;
 
-    const interval = setInterval(() => {
-      setStudents(prev => {
-        return prev.map(s => {
-          if (!s.is_bot) return s;
 
-          // Auto-transition bots in intermission
-          if (stage === 'listening_finished' && s.listening_status === 'in_progress') {
-            return { ...s, listening_status: 'completed', reading_status: 'lobby', current_stage: 'reading_lobby' };
-          }
-          if (stage === 'reading_finished' && s.reading_status === 'in_progress') {
-            return { ...s, reading_status: 'completed', writing_status: 'lobby', current_stage: 'writing_lobby' };
-          }
-
-          if (s.status !== 'in_progress') return s;
-
-          // 1. Listening stage simulation (FIRST)
-          if (stage === 'listening_active') {
-            const currentLCount = Object.keys(s.answers?.listening || {}).length;
-            const targetQuestions = exam.listening?.questions || [];
-            const maxL = targetQuestions.length || 40;
-            if (currentLCount >= maxL) return s;
-
-            const nextQ = currentLCount + 1;
-            const targetQ = targetQuestions.find(q => q.questionNumber === nextQ);
-            let botAns = "harrington";
-
-            if (targetQ) {
-              if (targetQ.type === 'MULTIPLE_CHOICE') {
-                botAns = ["A", "B", "C", "D"][Math.floor(Math.random() * 4)];
-              } else {
-                botAns = Array.isArray(targetQ.acceptedAnswers) ? targetQ.acceptedAnswers[0] : "078923411";
-              }
-            }
-
-            const updatedListening = { ...(s.answers?.listening || {}), [nextQ]: botAns };
-            const updatedAnswers = { ...(s.answers || {}), listening: updatedListening };
-
-            return {
-              ...s,
-              answers: updatedAnswers,
-              answered_count: Object.keys(s.answers?.reading || {}).length + Object.keys(updatedListening).length,
-              last_seen: new Date().toISOString()
-            };
-          }
-
-          // 2. Reading stage simulation (SECOND)
-          if (stage === 'reading_active') {
-            const currentRCount = Object.keys(s.answers?.reading || {}).length;
-            const targetQuestions = exam.reading?.questions || exam.questions || [];
-            const maxR = targetQuestions.length || 40;
-            if (currentRCount >= maxR) return s;
-
-            const nextQ = currentRCount + 1;
-            const targetQ = targetQuestions.find(q => q.questionNumber === nextQ);
-            let botAns = "TRUE";
-
-            if (targetQ) {
-              if (targetQ.type === 'MULTIPLE_CHOICE') {
-                botAns = ["A", "B", "C", "D"][Math.floor(Math.random() * 4)];
-              } else if (targetQ.type === 'TRUE_FALSE_NOT_GIVEN') {
-                botAns = ["TRUE", "FALSE", "NOT GIVEN"][Math.floor(Math.random() * 3)];
-              } else if (targetQ.type === 'YES_NO_NOT_GIVEN') {
-                botAns = ["YES", "NO", "NOT GIVEN"][Math.floor(Math.random() * 3)];
-              } else {
-                botAns = Array.isArray(targetQ.acceptedAnswers) ? targetQ.acceptedAnswers[0] : "travertine";
-              }
-            }
-
-            const updatedReading = { ...(s.answers?.reading || {}), [nextQ]: botAns };
-            const updatedAnswers = { ...(s.answers || {}), reading: updatedReading };
-
-            return {
-              ...s,
-              answers: updatedAnswers,
-              answered_count: Object.keys(updatedReading).length + Object.keys(s.answers?.listening || {}).length,
-              last_seen: new Date().toISOString()
-            };
-          }
-
-          // 3. Writing stage simulation (THIRD)
-          if (stage === 'writing_active') {
-            if (!s.writing_task1_essay) {
-              return {
-                ...s,
-                writing_task1_essay: "The chart illustrates renewable energy shares across four countries...",
-                writing_task2_essay: "Artificial intelligence has brought profound transformations in contemporary medicine...",
-                last_seen: new Date().toISOString()
-              };
-            }
-            return s;
-          }
-
-          return s;
-        });
-      });
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [exam.current_stage, exam.reading, exam.listening, exam.questions]);
-
-  // Stage Controller Action
+  // Stage Controller Action with Server-Anchored Sync and Adaptive Listening Duration
   const handleSetStage = (stage) => {
-    const startedAt = new Date().toISOString();
+    const stageStartedAt = new Date().toISOString();
     const isFinished = stage === 'exam_completed' || stage === 'writing_finished';
+    const isActive = stage.endsWith('_active');
+
+    let stageEndsAt = null;
+    let durationSeconds = 0;
+    if (isActive) {
+      durationSeconds = calculateStageDurationSeconds(stage, exam);
+      stageEndsAt = new Date(Date.now() + durationSeconds * 1000).toISOString();
+    } else if (stage === 'reading_lobby' || stage === 'writing_lobby' || stage === 'listening_finished' || stage === 'reading_finished') {
+      durationSeconds = 60;
+      stageEndsAt = new Date(Date.now() + durationSeconds * 1000).toISOString();
+    }
 
     if (stage === 'listening_active') {
       setActiveAdminTab('monitor');
@@ -726,14 +758,14 @@ export default function App() {
     }
 
     setExam(prev => {
-      const isActive = stage.endsWith('_active');
       const updated = {
         ...prev,
         current_stage: stage,
-        status: isFinished ? 'finished' : isActive ? 'active' : 'lobby',
-        stage_started_at: isActive ? startedAt : prev.stage_started_at,
-        started_at: (stage === 'listening_active' && !prev.started_at) ? startedAt : prev.started_at,
-        ended_at: isFinished ? startedAt : prev.ended_at
+        status: isFinished ? 'finished' : (isActive ? 'in_progress' : 'lobby'),
+        stage_started_at: isActive ? stageStartedAt : prev.stage_started_at,
+        stage_ends_at: stageEndsAt !== undefined ? stageEndsAt : (isActive ? prev.stage_ends_at : null),
+        started_at: (stage === 'listening_active' && !prev.started_at) ? stageStartedAt : prev.started_at,
+        ended_at: isFinished ? stageStartedAt : prev.ended_at
       };
 
       if (isFinished && students.length > 0) {
@@ -745,10 +777,30 @@ export default function App() {
 
     realtimeBus.broadcast('ADMIN_SET_STAGE', {
       stage,
-      stage_started_at: startedAt
+      stage_started_at: stageStartedAt,
+      stage_ends_at: stageEndsAt,
+      duration_seconds: durationSeconds,
+      status: isFinished ? 'finished' : (isActive ? 'in_progress' : 'lobby')
     });
 
-    updateExamStage(exam.id, stage, { stage_started_at: startedAt });
+    updateExamStage(exam.id, stage, { 
+      stage_started_at: stageStartedAt,
+      stage_ends_at: stageEndsAt,
+      status: isFinished ? 'finished' : (isActive ? 'in_progress' : 'lobby')
+    });
+
+    // Unified Server-Anchored Sync: Save deadline to Supabase
+    const supabase = getSupabaseClient();
+    if (supabase && exam?.id) {
+      supabase.from('exams').update({
+        current_stage: stage,
+        stage_started_at: stageStartedAt,
+        stage_ends_at: stageEndsAt,
+        status: isFinished ? 'finished' : (isActive ? 'in_progress' : 'lobby')
+      }).eq('id', exam.id).then(({ error }) => {
+        if (error) console.warn('Supabase stage update warning:', error);
+      });
+    }
   };
 
   const handleStartExam = () => {
@@ -763,37 +815,100 @@ export default function App() {
 
   const handleOpenLobby = () => {
     setExam(prev => {
-      const updated = { ...prev, is_lobby_open: true };
+      const updated = { ...prev, is_lobby_open: true, status: 'lobby' };
       realtimeBus.broadcast('ADMIN_OPEN_LOBBY', { exam: updated });
       return updated;
     });
-    updateExamStage(exam.id, exam.current_stage || 'listening_lobby', { is_lobby_open: true });
+    updateExamStage(exam.id, exam.current_stage || 'listening_lobby', { 
+      status: 'lobby', 
+      is_lobby_open: true,
+      pin_code: exam.pin_code 
+    });
   };
 
-  const handleResetSession = () => {
+  const handleResetSession = async () => {
+    const prevExamId = exam?.id;
+    const supabase = getSupabaseClient();
+
+    // 1. Mark previous active exam in Supabase as 'finished'
+    if (prevExamId) {
+      try {
+        await updateExamStatus(prevExamId, 'finished');
+      } catch (err) {
+        console.warn('Could not mark previous exam as finished in Supabase:', err);
+      }
+    }
+
     if (students.length > 0) {
       archiveCurrentSession(exam, students);
     }
-    const randomPin = `IELTS-${Math.floor(100 + Math.random() * 900)}`;
+
+    // 2. Generate new RFC-4122 UUID v4 and new cryptographically secure PIN
+    const newExamId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+      ? crypto.randomUUID()
+      : generateUUID();
+    const randomPin = generateCryptoPin();
+
+    // 3. Create fresh exam session preserving all teacher-loaded materials
     const resetExam = {
       ...exam, // Keep all teacher-configured materials (PDFs, Audio tracks, questions, duration, passages, etc.)
+      id: newExamId,
       pin_code: randomPin,
       status: 'lobby',
       is_lobby_open: false,
       current_stage: 'listening_lobby',
       started_at: null,
       stage_started_at: null,
+      stage_ends_at: null,
       ended_at: null,
     };
+
+    // 4. Reset local student state and storage
     setExam(resetExam);
     setStudents([]);
     setCurrentStudent(null);
     setActiveAdminTab('lobby');
     localStorage.removeItem('ielts_current_student');
     localStorage.removeItem('ielts_students_list');
+
+    // 5. Broadcast reset session
     realtimeBus.broadcast('ADMIN_RESET_SESSION', { pin_code: randomPin, exam: resetExam });
-    updateExamStage(exam.id, 'listening_lobby', { status: 'lobby', is_lobby_open: false, started_at: null, stage_started_at: null, ended_at: null });
-    updateExamPinCode(exam.id, randomPin);
+
+    // 6. Persist new exam to IndexedDB and Supabase
+    savePersistentExam(resetExam).catch(err => console.warn('Could not save reset exam to IndexedDB:', err));
+
+    if (supabase) {
+      try {
+        await updateExamAssets(newExamId, {
+          title: resetExam.title || 'IELTS Academic Master Assessment 2026',
+          pin_code: randomPin,
+          status: 'lobby',
+          is_lobby_open: false,
+          current_stage: 'listening_lobby',
+          duration_mins: resetExam.duration_mins || 180,
+          anti_cheat_strictness: resetExam.anti_cheat_strictness || 'standard',
+          reading_pdf_url: resetExam.reading_pdf_url || resetExam.reading?.pdf_url || null,
+          reading_pdf_name: resetExam.reading_pdf_name || resetExam.reading?.pdf_name || null,
+          reading_passages: resetExam.reading_passages || resetExam.reading?.passages || resetExam.passages || [],
+          reading_questions: resetExam.reading_questions || resetExam.reading?.questions || resetExam.questions || [],
+          writing_pdf_url: resetExam.writing_pdf_url || resetExam.writing?.pdf_url || null,
+          writing_pdf_name: resetExam.writing_pdf_name || resetExam.writing?.pdf_name || null,
+          writing_task1: resetExam.writing_task1 || resetExam.writing?.task1 || null,
+          writing_task2: resetExam.writing_task2 || resetExam.writing?.task2 || null,
+          listening_audio_parts: resetExam.listening_audio_parts || resetExam.listening?.audio_parts || {},
+          listening_pdf_url: resetExam.listening_pdf_url || resetExam.listening?.pdf_url || null,
+          listening_pdf_name: resetExam.listening_pdf_name || resetExam.listening?.pdf_name || null,
+          listening_parts: resetExam.listening_parts || resetExam.listening?.parts || [],
+          listening_parts_data: resetExam.listening_parts_data || resetExam.listening?.parts_data || null,
+          listening_questions: resetExam.listening_questions || resetExam.listening?.questions || [],
+          started_at: null,
+          stage_started_at: null,
+          ended_at: null,
+        });
+      } catch (err) {
+        console.warn('Could not persist new exam session to Supabase:', err);
+      }
+    }
   };
 
   const handleUpdateExam = (updatedExam) => {
@@ -832,48 +947,7 @@ export default function App() {
     }
   };
 
-  const handleAddMockStudents = () => {
-    const names = [
-      "Azizbek Kobilov",
-      "Shakhzoda Karimova",
-      "Jamshid Saidov",
-      "Malika Nurmatova",
-      "Temur Abdullayev"
-    ];
-    const newBots = names.slice(0, 2).map((name, i) => ({
-      id: `bot-${Date.now()}-${i}`,
-      exam_id: exam.id,
-      name,
-      candidate_no: `UZB-${Math.floor(2000 + Math.random() * 7000)}`,
-      status: exam.current_stage?.endsWith('_active') ? 'in_progress' : 'waiting',
-      current_stage: exam.current_stage || 'listening_lobby',
-      listening_status: exam.current_stage === 'listening_active' ? 'in_progress' : 'waiting',
-      reading_status: exam.current_stage === 'reading_active' ? 'in_progress' : 'waiting',
-      writing_status: exam.current_stage === 'writing_active' ? 'in_progress' : 'waiting',
-      answers: { reading: {}, listening: {}, writing: {} },
-      answered_count: 0,
-      reading_score: null,
-      reading_band: null,
-      listening_score: null,
-      listening_band: null,
-      writing_task1_essay: "",
-      writing_task2_essay: "",
-      writing_task1_band: null,
-      writing_task2_band: null,
-      writing_band: null,
-      overall_band: null,
-      score: null,
-      band_score: null,
-      last_seen: new Date().toISOString(),
-      is_bot: true,
-      ping_ms: Math.floor(18 + Math.random() * 30),
-      warning_count: 0,
-    }));
 
-    newBots.forEach(bot => {
-      realtimeBus.broadcast('STUDENT_JOIN', { student: bot });
-    });
-  };
 
   const handleKickStudent = (studentId) => {
     realtimeBus.broadcast('ADMIN_KICK_STUDENT', { studentId });
@@ -894,6 +968,10 @@ export default function App() {
       setExam(prev => ({
         ...prev,
         ...dbExam,
+        stage_started_at: dbExam.stage_started_at || prev.stage_started_at,
+        stage_ends_at: dbExam.stage_ends_at !== undefined ? dbExam.stage_ends_at : prev.stage_ends_at,
+        status: dbExam.status || prev.status,
+        current_stage: dbExam.current_stage || prev.current_stage,
         reading: {
           ...(prev.reading || {}),
           pdf_url: dbExam.reading_pdf_url !== undefined ? dbExam.reading_pdf_url : prev.reading?.pdf_url,
@@ -914,7 +992,7 @@ export default function App() {
 
     const isStageActive = exam.current_stage?.endsWith('_active');
     const newStudent = {
-      id: `std-${Date.now()}`,
+      id: candidateInfo.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : generateUUID()),
       exam_id: candidateInfo.dbExam?.id || exam.id,
       name: candidateInfo.name,
       candidate_no: candidateInfo.candidate_no,
@@ -939,7 +1017,7 @@ export default function App() {
       band_score: null,
       last_seen: new Date().toISOString(),
       is_bot: false,
-      ping_ms: 22,
+      ping_ms: null,
       warning_count: 0,
     };
 
@@ -977,24 +1055,25 @@ export default function App() {
     task1Essay,
     task2Essay
   ) => {
-    let t1Band = currentStudent?.writing_task1_band ?? 6.5;
-    let t2Band = currentStudent?.writing_task2_band ?? 7.0;
-    let wBand = calculateWritingBand(t1Band, t2Band);
+    let t1Band = currentStudent?.writing_task1_band ?? null;
+    let t2Band = currentStudent?.writing_task2_band ?? null;
+    let wBand = (t1Band !== null && t2Band !== null) ? calculateWritingBand(t1Band, t2Band) : null;
     let oBand = calculateOverallIeltsBand(readingBand, listeningBand, wBand);
 
+    // Phase A: Complete initial submission record
     const initialUpdates = {
-      status: 'submitted',
+      status: 'completed',
       current_stage: 'exam_completed',
       reading_status: 'completed',
-      writing_status: 'completed',
       listening_status: 'completed',
+      writing_status: 'evaluating', // Status is evaluating while AI is running
       answers,
       reading_score: readingScore,
       reading_band: readingBand,
       listening_score: listeningScore,
       listening_band: listeningBand,
-      writing_task1_essay: task1Essay,
-      writing_task2_essay: task2Essay,
+      writing_task1_essay: task1Essay || '',
+      writing_task2_essay: task2Essay || '',
       writing_task1_band: t1Band,
       writing_task2_band: t2Band,
       writing_band: wBand,
@@ -1003,7 +1082,7 @@ export default function App() {
       band_score: readingBand,
     };
 
-    // Immediately reflect submitted state so candidate screen locks to Results confirmation
+    // 1. Immediately reflect submitted state so candidate screen locks to Results confirmation
     setCurrentStudent(prev => prev ? { ...prev, ...initialUpdates } : null);
     setStudents(prev => prev.map(s => s.id === studentId ? { ...s, ...initialUpdates } : s));
     realtimeBus.broadcast('STUDENT_STATUS_UPDATE', {
@@ -1012,7 +1091,22 @@ export default function App() {
     });
     if (soundEnabled) playExamTone('finish');
 
-    // Trigger Gemini AI Writing Evaluation asynchronously
+    // 2. CRITICAL PERSISTENCE (Step 1): Commit student submission to Supabase IMMEDIATELY before AI call!
+    try {
+      const studentPayload = {
+        id: studentId,
+        exam_id: currentStudent?.exam_id || exam?.id,
+        name: currentStudent?.name,
+        candidate_no: currentStudent?.candidate_no,
+        ...initialUpdates,
+      };
+      await upsertStudent(studentPayload);
+      console.info(`[handleStudentSubmit] Phase A persisted for student ${studentId} prior to AI grading.`);
+    } catch (saveErr) {
+      console.error("[handleStudentSubmit] Phase A submission persistence failed:", saveErr);
+    }
+
+    // 3. Phase B: Trigger Gemini AI Writing Evaluation asynchronously without blocking
     try {
       const task1Prompt = exam?.task_1_prompt || exam?.writing_tasks?.task1?.prompt || exam?.writing?.task1?.prompt || '';
       const task2Prompt = exam?.task_2_prompt || exam?.writing_tasks?.task2?.prompt || exam?.writing?.task2?.prompt || '';
@@ -1032,6 +1126,7 @@ export default function App() {
         oBand = calculateOverallIeltsBand(readingBand, listeningBand, wBand);
 
         const aiUpdates = {
+          writing_status: 'completed',
           writing_task1_band: t1Band,
           writing_task2_band: t2Band,
           writing_band: wBand,
@@ -1039,6 +1134,7 @@ export default function App() {
           writing_ai_evaluation: evalResult,
         };
 
+        // Update local React state and broadcast
         setCurrentStudent(prev => prev ? { ...prev, ...aiUpdates } : null);
         setStudents(prev => prev.map(s => s.id === studentId ? { ...s, ...aiUpdates } : s));
         realtimeBus.broadcast('STUDENT_STATUS_UPDATE', {
@@ -1046,23 +1142,60 @@ export default function App() {
           updates: aiUpdates
         });
 
-        // Persist to Supabase
+        // Step 2 targeted update: Save AI results
         try {
           await upsertStudent({
             id: studentId,
+            exam_id: currentStudent?.exam_id || exam?.id,
+            name: currentStudent?.name,
+            candidate_no: currentStudent?.candidate_no,
             ...initialUpdates,
             ...aiUpdates,
           });
+          console.info(`[handleStudentSubmit] Phase B AI updates persisted for student ${studentId}.`);
         } catch (sbErr) {
-          console.warn("Supabase writing AI evaluation sync failed:", sbErr);
+          console.warn("[handleStudentSubmit] Phase B Supabase writing AI evaluation sync failed:", sbErr);
         }
+      } else {
+        // AI returned null/falsy -> mark writing_status as 'completed'
+        const fallbackUpdates = { writing_status: 'completed' };
+        setCurrentStudent(prev => prev ? { ...prev, ...fallbackUpdates } : null);
+        setStudents(prev => prev.map(s => s.id === studentId ? { ...s, ...fallbackUpdates } : s));
+        try {
+          await upsertStudent({
+            id: studentId,
+            exam_id: currentStudent?.exam_id || exam?.id,
+            name: currentStudent?.name,
+            candidate_no: currentStudent?.candidate_no,
+            ...initialUpdates,
+            ...fallbackUpdates,
+          });
+        } catch (e) {}
       }
     } catch (aiErr) {
-      console.warn("AI grading failed during submission, preserved calculated band:", aiErr);
+      console.warn("[handleStudentSubmit] AI grading failed/timed out, exam safely preserved for teacher manual grading:", aiErr);
+      const fallbackUpdates = { writing_status: 'completed' };
+      setCurrentStudent(prev => prev ? { ...prev, ...fallbackUpdates } : null);
+      setStudents(prev => prev.map(s => s.id === studentId ? { ...s, ...fallbackUpdates } : s));
+      try {
+        await upsertStudent({
+          id: studentId,
+          exam_id: currentStudent?.exam_id || exam?.id,
+          name: currentStudent?.name,
+          candidate_no: currentStudent?.candidate_no,
+          ...initialUpdates,
+          ...fallbackUpdates,
+        });
+      } catch (sbFallbackErr) {
+        console.warn("[handleStudentSubmit] Fallback status update failed:", sbFallbackErr);
+      }
     }
   };
 
   const handleStudentDisqualify = (studentId, reason) => {
+    // If admin is testing/proctoring, never disqualify!
+    if (isAdminAuthenticated()) return;
+
     const updates = {
       status: 'disqualified',
       reading_score: 0,
@@ -1085,6 +1218,9 @@ export default function App() {
   };
 
   const handleStudentWarn = (studentId, reason) => {
+    // If admin is testing/proctoring, never trigger warning!
+    if (isAdminAuthenticated()) return;
+
     const newWarnCount = (currentStudent?.warning_count || 0) + 1;
     setCurrentStudent(prev => prev ? { ...prev, warning_count: newWarnCount } : null);
     realtimeBus.broadcast('STUDENT_STATUS_UPDATE', {
@@ -1097,39 +1233,55 @@ export default function App() {
     if (soundEnabled) playExamTone('warning');
   };
 
-  // 1. ROUTE: /super-admin (Protected by Supabase Auth)
-  if (route.path === '/super-admin') {
-    if (checkingSuperAdminAuth) {
+  // 0. ROUTE: /admin (Protected by Admin Password)
+  if (route.path === '/admin') {
+    if (!isAdminAuthenticated()) {
       return (
-        <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">
-          <div className="text-center space-y-3">
-            <div className="w-10 h-10 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">
-              Verifying Super-Admin Privileges...
-            </p>
-          </div>
-        </div>
+        <AdminPasswordModal
+          isOpen={true}
+          onSuccess={() => {
+            setCurrentRole('admin');
+            localStorage.setItem('ielts_active_role', 'admin');
+          }}
+          onCancel={() => navigateTo('/')}
+          title="Teacher Proctor Access"
+          description="Please enter the proctor password to open the Teacher Console."
+        />
       );
     }
+  }
 
-    if (!superAdminUser) {
+  // 1. ROUTE: /super-admin (Protected by Password & Supabase Auth)
+  if (route.path === '/super-admin') {
+    if (!isAdminAuthenticated()) {
       return (
-        <SuperAdminLogin
-          onLoginSuccess={(user) => {
-            setSuperAdminUser(user);
+        <AdminPasswordModal
+          isOpen={true}
+          onSuccess={() => {
+            setRoute(parseCurrentRoute());
           }}
-          onNavigateHome={() => navigateTo('/')}
+          onCancel={() => navigateTo('/')}
+          title="Super-Admin Access"
+          description="Enter administrative access password to proceed to Super-Admin Hub."
         />
       );
     }
 
+    const effectiveAdminUser = superAdminUser || {
+      id: 'super-admin-master',
+      email: 'admin@ielts-master.org',
+      user_metadata: { role: 'super_admin' },
+      app_metadata: { role: 'super_admin' },
+    };
+
     return (
       <SuperAdminHub
-        user={superAdminUser}
+        user={effectiveAdminUser}
         onLogout={async () => {
+          setAdminAuthenticated(false);
           await signOutSuperAdmin();
           setSuperAdminUser(null);
-          navigateTo('/super-admin/login');
+          navigateTo('/');
         }}
         onLaunchTeacherConsole={(session) => {
           if (session.raw) {
@@ -1145,11 +1297,13 @@ export default function App() {
             }));
           }
           setCurrentRole('admin');
+          localStorage.setItem('ielts_active_role', 'admin');
           setActiveAdminTab('live');
           navigateTo('/');
         }}
         onNavigateStudentView={() => {
           setCurrentRole('student');
+          localStorage.setItem('ielts_active_role', 'student');
           navigateTo('/');
         }}
       />
@@ -1158,9 +1312,14 @@ export default function App() {
 
   // 2. ROUTE: /super-admin/login
   if (route.path === '/super-admin/login') {
+    if (isAdminAuthenticated()) {
+      navigateTo('/super-admin');
+      return null;
+    }
     return (
       <SuperAdminLogin
         onLoginSuccess={(user) => {
+          setAdminAuthenticated(true);
           setSuperAdminUser(user);
           navigateTo('/super-admin');
         }}
@@ -1170,8 +1329,9 @@ export default function App() {
   }
 
   // 3. STUDENT SHORT-CIRCUIT ROUTE (/join or ?pin=...)
-  const isStudentOnlyRoute = route.path === '/join' || Boolean(route.pin);
-  const activeRoleToRender = isStudentOnlyRoute ? 'student' : currentRole;
+  const isAuthedAdmin = isAdminAuthenticated();
+  const isStudentOnlyRoute = !isAuthedAdmin && (route.path === '/join' || Boolean(route.pin) || Boolean(currentStudent));
+  const activeRoleToRender = isStudentOnlyRoute ? 'student' : (route.path === '/admin' ? 'admin' : currentRole);
 
   const isStudentInExam = activeRoleToRender === 'student' && Boolean(currentStudent) && exam.status === 'active';
 
@@ -1181,14 +1341,15 @@ export default function App() {
       {/* Top Navigation */}
       <Navbar
         currentRole={activeRoleToRender}
-        onRoleChange={setCurrentRole}
+        onRoleChange={handleRoleChange}
         exam={exam}
         student={currentStudent}
         soundEnabled={soundEnabled}
         onToggleSound={() => setSoundEnabled(prev => !prev)}
         onUpdatePinCode={handleUpdatePinCode}
         isStudentOnly={isStudentOnlyRoute}
-        onOpenSuperAdmin={() => navigateTo('/super-admin')}
+        isAdminAuthed={isAuthedAdmin}
+        onOpenSuperAdmin={handleOpenSuperAdmin}
       />
 
       {/* Main Container */}
@@ -1196,7 +1357,7 @@ export default function App() {
         {activeRoleToRender === 'admin' ? (
           <AdminDashboard
             exam={exam}
-            students={students}
+            students={students.filter(s => !s.exam_id || !exam?.id || s.exam_id === exam.id)}
             activeTab={activeAdminTab}
             onTabChange={setActiveAdminTab}
             onUpdateExam={handleUpdateExam}
@@ -1205,7 +1366,6 @@ export default function App() {
             onForceEndExam={handleForceEndExam}
             onResetSession={handleResetSession}
             onOpenLobby={handleOpenLobby}
-            onAddMockStudents={handleAddMockStudents}
             onKickStudent={handleKickStudent}
             onUnbanStudent={handleUnbanStudent}
             onWarnStudent={handleWarnStudent}
@@ -1249,6 +1409,24 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Admin Password Modal */}
+      <AdminPasswordModal
+        isOpen={passwordModalOpen}
+        onSuccess={() => {
+          setPasswordModalOpen(false);
+          if (pendingAdminAction) {
+            pendingAdminAction();
+            setPendingAdminAction(null);
+          }
+        }}
+        onCancel={() => {
+          setPasswordModalOpen(false);
+          setPendingAdminAction(null);
+        }}
+        title={passwordModalMeta.title}
+        description={passwordModalMeta.description}
+      />
     </div>
   );
 }

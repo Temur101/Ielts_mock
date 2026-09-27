@@ -34,3 +34,6 @@ dist-ssr
 repomix-output.xml
 repomix-output.*
 
+# Subagent teamwork scratch logs
+.agents/teamwork/
+

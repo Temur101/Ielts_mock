@@ -65,10 +65,10 @@ export function archiveCurrentSession(exam, students) {
     });
 
     const sessionRecord = {
-      id: `session-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
-      exam_id: exam.id || 'ielts-mock-01',
+      id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? `session-${crypto.randomUUID()}` : `session-${Date.now()}`,
+      exam_id: exam.id || ((typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : 'ielts-exam-session'),
       title: exam.title || 'IELTS Academic Master Assessment',
-      pin_code: exam.pin_code || 'IELTS-904',
+      pin_code: exam.pin_code || '',
       date: dateStr,
       started_at: startedAt,
       ended_at: endedAt,

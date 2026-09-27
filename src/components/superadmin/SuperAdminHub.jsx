@@ -30,6 +30,7 @@ import {
   calculateMasterAcademyStats, 
   signOutSuperAdmin 
 } from '../../lib/superAdminService';
+import { getSupabaseClient } from '../../lib/supabase';
 import { QrCodeModal } from './QrCodeModal';
 import { exportAcademyMasterPdfReport } from './MasterAcademyReportPdf';
 
@@ -46,23 +47,47 @@ export function SuperAdminHub({
   const [qrModalSession, setQrModalSession] = useState(null);
   const [copiedPin, setCopiedPin] = useState(null);
 
-  const loadSessions = async () => {
-    setLoading(true);
+  const loadSessions = async (showLoading = false) => {
+    if (showLoading) setLoading(true);
     try {
       const data = await fetchAllExamSessions();
       setSessions(data);
     } catch (e) {
       console.warn("Failed to load sessions:", e);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadSessions();
-    // Live refresh every 15s
-    const interval = setInterval(loadSessions, 15000);
-    return () => clearInterval(interval);
+    loadSessions(true);
+
+    const supabase = getSupabaseClient();
+    let channel = null;
+
+    if (supabase) {
+      // Realtime subscription: Listen for any changes on 'exams' table
+      channel = supabase
+        .channel('superadmin_exams_realtime')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'exams' },
+          () => {
+            loadSessions(false);
+          }
+        )
+        .subscribe();
+    }
+
+    // 30s background fallback heartbeat
+    const interval = setInterval(() => loadSessions(false), 30000);
+
+    return () => {
+      clearInterval(interval);
+      if (supabase && channel) {
+        supabase.removeChannel(channel);
+      }
+    };
   }, []);
 
   const stats = calculateMasterAcademyStats(sessions);
@@ -123,7 +148,7 @@ export function SuperAdminHub({
             {/* Quick Actions & Logout */}
             <div className="flex items-center gap-2.5">
               <button
-                onClick={loadSessions}
+                onClick={() => loadSessions(true)}
                 disabled={loading}
                 className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition text-xs font-semibold flex items-center gap-1.5"
                 title="Refresh Live Sessions"

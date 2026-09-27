@@ -13,6 +13,7 @@ import {
   determineQuestionCategory,
   groupQuestionsIntoSets,
   extractKeyPrefix,
+  extractQuestionNumbersFromTemplate,
 } from '../../lib/questionUtils';
 
 // ---------------------------------------------------------------------------
@@ -50,7 +51,7 @@ export function AnswerSheet({
   answers = {},
   flagged = {},
   activePassageId,
-  onAnswerChange,
+  onAnswerChange: rawOnAnswerChange,
   onToggleFlag,
   onJumpToPassage,
   bookletHtml = '',
@@ -59,13 +60,30 @@ export function AnswerSheet({
   currentPassage = null,
   passages = [],
   exam = null,
+  isTimeUp = false,
+  timeRemaining = 0,
   ...props
 }) {
+  const onAnswerChange = (qNum, val) => {
+    if (isTimeUp) return;
+    if (rawOnAnswerChange) rawOnAnswerChange(qNum, val);
+  };
   const [viewMode, setViewMode] = useState('sheet');
   const questionRefs = useRef({});
   const questionsContainerRef = useRef(null);
   const internalPassageRef = useRef(null);
   const passageContainerRef = externalPassageRef || internalPassageRef;
+  const scrollTimerRef = useRef(null);
+
+  // R4.7: Clear pending scroll timers on unmount to prevent memory leaks and unmounted DOM retention
+  useEffect(() => {
+    return () => {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Auto-reset vertical scroll to top when changing reading passage tabs
   useEffect(() => {
@@ -89,23 +107,6 @@ export function AnswerSheet({
       passageId: q.passageId ? Number(q.passageId) : resolveReadingPassage(q, questions, activePassageId),
     }))
     .sort((a, b) => Number(a.questionNumber || a.q_num || 0) - Number(b.questionNumber || b.q_num || 0));
-
-  // Fallback questions so student never sees an empty screen
-  if (filteredQuestions.length === 0) {
-    const activeId = Number(activePassageId) || 1;
-    const prevQuestions = questions.filter(q => resolveReadingPassage(q, questions, activeId) < activeId);
-    const maxPrevQ = prevQuestions.reduce((max, q) => Math.max(max, Number(q.questionNumber || q.q_num || 0)), 0);
-    const startQ = maxPrevQ > 0 ? maxPrevQ + 1 : (activeId - 1) * 10 + 1;
-    filteredQuestions = Array.from({ length: 10 }, (_, i) => ({
-      id: `q-${startQ + i}`,
-      questionNumber: startQ + i,
-      passageId: activeId,
-      type: 'FILL_BLANK',
-      instruction: 'Answer the question based on the reading passage.',
-      text: `Question ${startQ + i}: Complete the answer from the text`,
-      placeholder: `Type answer for Question ${startQ + i}...`
-    }));
-  }
 
   // Resolve passage reference box for active passage
   const activePassageRefBox = (() => {
@@ -144,11 +145,19 @@ export function AnswerSheet({
     targetPassage = targetPassage || activePassageId || 1;
     if (targetPassage !== activePassageId && onJumpToPassage) {
       onJumpToPassage(targetPassage);
-      setTimeout(() => {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+      }
+      scrollTimerRef.current = setTimeout(() => {
         const el = questionRefs.current[qNum];
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        scrollTimerRef.current = null;
       }, 120);
     } else {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
       const el = questionRefs.current[qNum];
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
@@ -220,10 +229,18 @@ export function AnswerSheet({
   // 1. TRUE / FALSE / NOT GIVEN & YES / NO / NOT GIVEN
   // ---------------------------------------------------------------------------
 
-  function renderTFNGGroup(gqs, category) {
+  function renderTFNGGroup(gqs, category, renderedQuestionNumbers) {
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+    }
+
     return (
       <div className="space-y-1">
-        {gqs.map(q => {
+        {remainingGqs.map(q => {
           const qNum = q.questionNumber;
           const val = answers[qNum] || '';
           const isFlagged = flagged[qNum] || false;
@@ -286,7 +303,7 @@ export function AnswerSheet({
   // 2. STRUCTURED NOTES COMPLETION
   // ---------------------------------------------------------------------------
 
-  function renderNotesGroup(gqs, group, renderedTemplateSignatures) {
+  function renderNotesGroup(gqs, group, renderedTemplateSignatures, renderedQuestionNumbers) {
     const mainTitle = group.title || gqs[0]?.title || 'Notes Completion';
 
     // Check for inline template (notes_template or summary_template with {{N}})
@@ -303,6 +320,12 @@ export function AnswerSheet({
     if (isFirstTime) {
       if (renderedTemplateSignatures) renderedTemplateSignatures.add(tplKey);
       const cleanTemplate = normalizeTemplateGaps(tplKey, gqs);
+      if (renderedQuestionNumbers) {
+        extractQuestionNumbersFromTemplate(cleanTemplate).forEach(num => renderedQuestionNumbers.add(num));
+        gqs.filter(q => cleanTemplate.includes(`{{${q.questionNumber || q.q_num}}}`)).forEach(q => {
+          renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num));
+        });
+      }
       const lines = cleanTemplate.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
       return (
@@ -416,13 +439,21 @@ export function AnswerSheet({
       );
     }
 
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+    }
+
     // Check if we have subheadings from parsed items
-    const hasParsedSubheadings = gqs.some(q => Boolean(q.subheading && String(q.subheading).trim()));
+    const hasParsedSubheadings = remainingGqs.some(q => Boolean(q.subheading && String(q.subheading).trim()));
     const sections = [];
 
-    if (gqs.length > 0) {
+    if (remainingGqs.length > 0) {
       if (hasParsedSubheadings) {
-        gqs.forEach(q => {
+        remainingGqs.forEach(q => {
           const sub = (q.subheading && String(q.subheading).trim()) || 'Notes';
           let sec = sections.find(s => s.subheading.toLowerCase() === sub.toLowerCase());
           if (!sec) {
@@ -432,7 +463,7 @@ export function AnswerSheet({
           sec.questions.push(q);
         });
       } else {
-        sections.push({ subheading: '', questions: gqs });
+        sections.push({ subheading: '', questions: remainingGqs });
       }
     }
 
@@ -443,7 +474,7 @@ export function AnswerSheet({
           {mainTitle}
         </div>
 
-        {gqs.length > 0 ? (
+        {remainingGqs.length > 0 ? (
           // Dynamic rendering grouped by parsed subheadings or natural sequence
           <div className="space-y-4">
             {sections.map((sec, sIdx) => (
@@ -582,10 +613,18 @@ export function AnswerSheet({
   // 3. MATCHING PARAGRAPHS (Q14–18)
   // ---------------------------------------------------------------------------
 
-  function renderParaMatchGroup(gqs) {
+  function renderParaMatchGroup(gqs, renderedQuestionNumbers) {
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+    }
+
     return (
       <div className="space-y-2">
-        {gqs.map(q => {
+        {remainingGqs.map(q => {
           const qNum = q.questionNumber;
           const val = (answers[qNum] || '').trim().toUpperCase();
           const isFlagged = flagged[qNum] || false;
@@ -643,10 +682,18 @@ export function AnswerSheet({
   // 3.5. MATCHING HEADINGS (List of Headings with Roman numerals i, ii, iii...)
   // ---------------------------------------------------------------------------
 
-  function renderMatchingHeadingsGroup(gqs, group) {
+  function renderMatchingHeadingsGroup(gqs, group, renderedQuestionNumbers) {
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+    }
+
     let rawRef = group.refBox || group.referenceBox || activePassageRefBox;
     if (!rawRef || (Array.isArray(rawRef) && rawRef.length === 0)) {
-      const qWithOptions = gqs.find(q => Array.isArray(q.options) && q.options.length >= 2);
+      const qWithOptions = remainingGqs.find(q => Array.isArray(q.options) && q.options.length >= 2);
       if (qWithOptions) rawRef = qWithOptions.options;
     }
 
@@ -695,7 +742,7 @@ export function AnswerSheet({
 
         {/* Questions with MatchingHeadingsSelect */}
         <div className="space-y-2 pt-1">
-          {gqs.map(q => {
+          {remainingGqs.map(q => {
             const qNum = q.questionNumber;
             const currentAnswer = answers[qNum] || '';
             const isFlagged = flagged[qNum] || false;
@@ -748,7 +795,15 @@ export function AnswerSheet({
   // 4. MATCHING RESEARCHERS / NAMES
   // ---------------------------------------------------------------------------
 
-  function renderResearcherMatchGroup(gqs, group) {
+  function renderResearcherMatchGroup(gqs, group, renderedQuestionNumbers) {
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+    }
+
     // 1. Resolve reference box from group, questions, options, or instructions
     let researchers = [];
 
@@ -756,8 +811,8 @@ export function AnswerSheet({
       group.refBox ||
       group.referenceBox ||
       activePassageRefBox ||
-      gqs.find(q => (Array.isArray(q.reference_box) && q.reference_box.length > 0) || (Array.isArray(q.referenceBox) && q.referenceBox.length > 0))?.reference_box ||
-      gqs.find(q => (Array.isArray(q.reference_box) && q.reference_box.length > 0) || (Array.isArray(q.referenceBox) && q.referenceBox.length > 0))?.referenceBox ||
+      remainingGqs.find(q => (Array.isArray(q.reference_box) && q.reference_box.length > 0) || (Array.isArray(q.referenceBox) && q.referenceBox.length > 0))?.reference_box ||
+      remainingGqs.find(q => (Array.isArray(q.reference_box) && q.reference_box.length > 0) || (Array.isArray(q.referenceBox) && q.referenceBox.length > 0))?.referenceBox ||
       null;
 
     if (Array.isArray(rawRef) && rawRef.length > 0) {
@@ -876,23 +931,29 @@ export function AnswerSheet({
       }
 
       if (researchers.length === 0) {
-        const lettersMatch = combinedInst.match(/\b[A-G]\b/g);
+        const lettersMatch = combinedInst.match(/\b[A-Z]\b/g);
         if (lettersMatch && lettersMatch.length >= 2) {
-          const unique = Array.from(new Set(lettersMatch.map(l => l.toUpperCase())));
+          // Filter to single uppercase alphabetical characters excluding Roman numerals
+          const filtered = lettersMatch
+            .map(l => l.toUpperCase())
+            .filter(l => !/^[IVXLCDM]$/i.test(l) || ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].includes(l));
+          const unique = Array.from(new Set(filtered));
           unique.sort();
-          researchers = unique.map(k => ({ key: k, label: '' }));
+          if (unique.length >= 2) {
+            researchers = unique.map(k => ({ key: k, label: '' }));
+          }
         }
       }
 
-      if (researchers.length === 0) {
-        researchers = ['A', 'B', 'C', 'D'].map(k => ({ key: k, label: '' }));
+      if (researchers.length === 0 && group.referenceBox?.length > 0) {
+        researchers = group.referenceBox;
       }
     }
 
     const hasLabels = researchers.some(r => r.label && r.label.trim().length > 0);
     const placeholder = researchers.length > 0 
-      ? `${researchers[0]?.key || 'A'}-${researchers[researchers.length - 1]?.key || 'D'}`
-      : 'A-D';
+      ? `${researchers[0]?.key || 'A'}-${researchers[researchers.length - 1]?.key || 'H'}`
+      : 'A-H';
 
     return (
       <div className="space-y-4">
@@ -933,7 +994,7 @@ export function AnswerSheet({
 
         {/* Statements */}
         <div className="space-y-2">
-          {gqs.map(q => {
+          {remainingGqs.map(q => {
             const qNum = q.questionNumber;
             const val = (answers[qNum] || '').trim().toUpperCase();
             const isFlagged = flagged[qNum] || false;
@@ -1145,9 +1206,15 @@ export function AnswerSheet({
   // HELPER: RENDER STRUCTURED NOTES FALLBACK
   // ---------------------------------------------------------------------------
 
-  function renderStructuredNotes(gqs, group) {
-    if (!gqs || gqs.length === 0) return null;
-    const summaryTitle = group.title || gqs[0]?.title || group.subheading || '';
+  function renderStructuredNotes(gqs, group, renderedQuestionNumbers) {
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+    }
+    const summaryTitle = group.title || remainingGqs[0]?.title || group.subheading || '';
 
     return (
       <div className="bg-slate-50/60 border border-slate-200 p-5 sm:p-6 mb-2">
@@ -1157,7 +1224,7 @@ export function AnswerSheet({
           </div>
         )}
         <div className="space-y-3">
-          {gqs.map((q, idx) => {
+          {remainingGqs.map((q, idx) => {
             const qNum = Number(q.questionNumber || q.q_num);
             const val = answers[qNum] || '';
             const isFlagged = flagged[qNum] || false;
@@ -1242,7 +1309,7 @@ export function AnswerSheet({
   // 5. SUMMARY COMPLETION WITH INLINE GAPS
   // ---------------------------------------------------------------------------
 
-  function renderSummaryTextGroup(gqs, group, renderedTemplateSignatures) {
+  function renderSummaryTextGroup(gqs, group, renderedTemplateSignatures, renderedQuestionNumbers) {
     if (!gqs || gqs.length === 0) return null;
 
     const summaryTitle = group.title || gqs[0]?.title || '';
@@ -1425,7 +1492,7 @@ export function AnswerSheet({
     const coversMostQuestions = gqs.length === 0 || (assignedSet.size >= Math.ceil(gqs.length / 2));
 
     if (textWithoutGaps.length < 30 || !coversMostQuestions) {
-      return renderStructuredNotes(gqs, group);
+      return renderStructuredNotes(gqs, group, renderedQuestionNumbers);
     }
 
     // -------------------------------------------------------------------------
@@ -1437,6 +1504,10 @@ export function AnswerSheet({
       .replace(/(\{\{\d+\}\})\s*\r?\n/g, '$1 ')
       .replace(/[ \t]+/g, ' ')
       .trim();
+
+    if (renderedQuestionNumbers) {
+      extractQuestionNumbersFromTemplate(cleanSummaryTemplate).forEach(num => renderedQuestionNumbers.add(num));
+    }
 
     // Split template into natural paragraphs by double newlines
     const paragraphs = cleanSummaryTemplate.split(/\n\s*\n+/);
@@ -1521,7 +1592,7 @@ export function AnswerSheet({
   // 6. SUMMARY COMPLETION WITH LIST OF WORDS
   // ---------------------------------------------------------------------------
 
-  function renderSummaryWordsGroup(gqs, group, renderedTemplateSignatures) {
+  function renderSummaryWordsGroup(gqs, group, renderedTemplateSignatures, renderedQuestionNumbers) {
     const summaryTitle = group.title || gqs[0]?.title || 'Summary';
     const refBox = group.referenceBox || group.refBox || gqs[0]?.reference_box || [];
     const tplKey = (
@@ -1540,6 +1611,14 @@ export function AnswerSheet({
     const effectiveTemplate = resolveSummaryTemplate(rawTemplate, gqs);
 
     if (!effectiveTemplate) {
+      const remainingGqs = renderedQuestionNumbers
+        ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+        : gqs;
+      if (remainingGqs.length === 0) return null;
+      if (renderedQuestionNumbers) {
+        remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+      }
+
       return (
         <div className="space-y-4">
           {refBox.length > 0 && (
@@ -1567,7 +1646,7 @@ export function AnswerSheet({
               </div>
             )}
             <div className="space-y-3">
-              {gqs.map(q => {
+              {remainingGqs.map(q => {
                 const qNum = q.questionNumber || q.q_num;
                 const val = answers[qNum] || '';
                 const isFlagged = flagged[qNum] || false;
@@ -1613,6 +1692,9 @@ export function AnswerSheet({
     }
 
     const template = normalizeTemplateGaps(effectiveTemplate, gqs);
+    if (renderedQuestionNumbers) {
+      extractQuestionNumbersFromTemplate(template).forEach(num => renderedQuestionNumbers.add(num));
+    }
     const cleanWordsTemplate = template
       .replace(/\r?\n\s*(\{\{\d+\}\})/g, ' $1')
       .replace(/(\{\{\d+\}\})\s*\r?\n/g, '$1 ')
@@ -1726,7 +1808,7 @@ export function AnswerSheet({
   // 7. MULTIPLE CHOICE (Q32–35)
   // ---------------------------------------------------------------------------
 
-  function renderMCGroup(gqs, group) {
+  function renderMCGroup(gqs, group, renderedQuestionNumbers) {
     const groupInstruction = group?.instruction || '';
 
     // Generic dual-select detection:
@@ -1767,10 +1849,12 @@ export function AnswerSheet({
     const seenInGroup = new Set();
     const uniqueGqs = gqs.filter(q => {
       const num = Number(q.questionNumber || q.q_num);
-      if (!num || seenInGroup.has(num)) return false;
+      if (!num || seenInGroup.has(num) || (renderedQuestionNumbers && renderedQuestionNumbers.has(num))) return false;
       seenInGroup.add(num);
       return true;
     });
+
+    if (uniqueGqs.length === 0) return null;
 
     const dualQuestions = [];
     const singleQuestions = [];
@@ -1809,11 +1893,15 @@ export function AnswerSheet({
       const pairRange = qB ? `Questions ${qNumA} and ${qNumB}` : `Question ${qNumA}`;
       const rawPrompt = qA.cleanPrompt || qA.prompt || qA.text || qB?.cleanPrompt || '';
       const cleanPrompt = rawPrompt.replace(/^(?:Questions?\s*)?(?:\d+\s*[-–&and\s]*\d+|\d+)[\.\:\s\-]+/i, '').trim();
+      const groupRefOpts = Array.isArray(group.referenceBox) && group.referenceBox.length >= 2
+        ? group.referenceBox
+        : (Array.isArray(group.refBox) && group.refBox.length >= 2 ? group.refBox : []);
+
       const rawOptions = (qA.options && qA.options.length >= 2) 
         ? qA.options 
         : (qB?.options && qB.options.length >= 2) 
           ? qB.options 
-          : ['A', 'B', 'C', 'D', 'E'];
+          : groupRefOpts;
       
       const valA = (answers[qNumA] || '').trim().toUpperCase();
       const valB = (answers[qNumB] || '').trim().toUpperCase();
@@ -1849,46 +1937,52 @@ export function AnswerSheet({
           <p className="text-sm font-bold text-slate-800 leading-snug">
             {cleanPrompt}
           </p>
-          <div className="grid grid-cols-1 gap-2 pt-1">
-            {rawOptions.map((opt, oIdx) => {
-              let letter = '';
-              let optText = '';
-              if (typeof opt === 'object' && opt !== null) {
-                letter = (opt.key || opt.letter || String.fromCharCode(65 + oIdx)).toUpperCase();
-                optText = (opt.text || opt.label || opt.value || '').trim();
-              } else {
-                const match = String(opt).match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
-                letter = match ? match[1].toUpperCase() : String.fromCharCode(65 + oIdx);
-                optText = match ? match[2].trim() : String(opt).trim();
-              }
-              const isSelected = valA === letter || valB === letter;
+          {rawOptions.length > 0 ? (
+            <div className="grid grid-cols-1 gap-2 pt-1">
+              {rawOptions.map((opt, oIdx) => {
+                let letter = '';
+                let optText = '';
+                if (typeof opt === 'object' && opt !== null) {
+                  letter = (opt.key || opt.letter || String.fromCharCode(65 + oIdx)).toUpperCase();
+                  optText = (opt.text || opt.label || opt.value || '').trim();
+                } else {
+                  const match = String(opt).match(/^\[?([A-Za-z0-9]+)\]?[\.\:\)\s\-]+(.*)$/);
+                  letter = match ? match[1].toUpperCase() : String.fromCharCode(65 + oIdx);
+                  optText = match ? match[2].trim() : String(opt).trim();
+                }
+                const isSelected = valA === letter || valB === letter;
 
-              return (
-                <button
-                  key={letter}
-                  type="button"
-                  onClick={() => handleDualSelect(letter)}
-                  className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
-                    isSelected
-                      ? 'border-brand-500 bg-brand-50/70 text-slate-900 font-semibold shadow-xs'
-                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
-                  }`}
-                >
-                  <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
-                    isSelected
-                      ? 'bg-brand-500 text-white shadow-xs'
-                      : 'bg-slate-100 text-slate-600 border border-slate-300'
-                  }`}>
-                    {letter}
-                  </span>
-                  <span className="flex-1 leading-snug">{optText}</span>
-                  {isSelected && (
-                    <Check className="w-4 h-4 text-brand-600 ml-auto shrink-0" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
+                return (
+                  <button
+                    key={letter}
+                    type="button"
+                    onClick={() => handleDualSelect(letter)}
+                    className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
+                      isSelected
+                        ? 'border-brand-500 bg-brand-50/70 text-slate-900 font-semibold shadow-xs'
+                        : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
+                      isSelected
+                        ? 'bg-brand-500 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 border border-slate-300'
+                    }`}>
+                      {letter}
+                    </span>
+                    <span className="flex-1 leading-snug">{optText}</span>
+                    {isSelected && (
+                      <Check className="w-4 h-4 text-brand-600 ml-auto shrink-0" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="p-3 bg-amber-50/60 border border-amber-200 rounded text-xs text-amber-800 italic">
+              Please refer to the reading passage for the available options.
+            </div>
+          )}
 
           {/* Dual Answer Slots */}
           <div className="flex flex-wrap items-center gap-4 pt-3 border-t border-slate-200 text-xs">
@@ -1947,6 +2041,18 @@ export function AnswerSheet({
         </div>
       );
     };
+
+    if (dualPairs.length === 0 && filteredSingleQuestions.length === 0) return null;
+
+    if (renderedQuestionNumbers) {
+      dualPairs.forEach(([qA, qB]) => {
+        if (qA?.questionNumber) renderedQuestionNumbers.add(Number(qA.questionNumber));
+        if (qB?.questionNumber) renderedQuestionNumbers.add(Number(qB.questionNumber));
+      });
+      filteredSingleQuestions.forEach(q => {
+        renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num));
+      });
+    }
 
     return (
       <div className="space-y-6">
@@ -2126,10 +2232,18 @@ export function AnswerSheet({
   // 8. GENERAL FILL_BLANK (FALLBACK)
   // ---------------------------------------------------------------------------
 
-  function renderFillBlankGroup(gqs) {
+  function renderFillBlankGroup(gqs, renderedQuestionNumbers) {
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+    }
+
     return (
       <div className="space-y-1">
-        {gqs.map(q => {
+        {remainingGqs.map(q => {
           const qNum = q.questionNumber;
           const val = answers[qNum] || '';
           const isFlagged = flagged[qNum] || false;
@@ -2189,16 +2303,24 @@ export function AnswerSheet({
   // 9. FLOW CHART COMPLETION
   // ---------------------------------------------------------------------------
 
-  function renderFlowChartGroup(gqs, group) {
-    const mainTitle = group.title || gqs[0]?.title || 'Flow-chart Completion';
+  function renderFlowChartGroup(gqs, group, renderedQuestionNumbers) {
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+    }
+
+    const mainTitle = group.title || remainingGqs[0]?.title || 'Flow-chart Completion';
     return (
       <div className="bg-slate-50/60 border border-slate-200 p-5 sm:p-6 mb-2">
         <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-6">
           {mainTitle}
         </div>
         <div className="flex flex-col items-center space-y-3 max-w-xl mx-auto">
-          {gqs.map((q, idx) => {
-            const isLast = idx === gqs.length - 1;
+          {remainingGqs.map((q, idx) => {
+            const isLast = idx === remainingGqs.length - 1;
             const qNum = q.questionNumber;
             const currentAnswer = answers[qNum] || '';
             const isFlagged = flagged[qNum] || false;
@@ -2250,7 +2372,7 @@ export function AnswerSheet({
   // 10. TABLE COMPLETION (MARKDOWN TABLE OR HTML ZEBRA TABLE)
   // ---------------------------------------------------------------------------
 
-  function renderTableCompletionGroup(gqs, group, renderedTemplateSignatures) {
+  function renderTableCompletionGroup(gqs, group, renderedTemplateSignatures, renderedQuestionNumbers) {
     const mainTitle = group.title || gqs[0]?.title || '';
     const tplKey = (
       group.table_template ||
@@ -2265,8 +2387,48 @@ export function AnswerSheet({
     ).trim();
 
     const hasTableMarkdown = tplKey && tplKey.includes('|');
-    if (tplKey && renderedTemplateSignatures) {
-      renderedTemplateSignatures.add(tplKey);
+    const isFirstTime = Boolean(tplKey && (!renderedTemplateSignatures || !renderedTemplateSignatures.has(tplKey)));
+
+    if (hasTableMarkdown && isFirstTime) {
+      if (renderedTemplateSignatures) {
+        renderedTemplateSignatures.add(tplKey);
+      }
+      const cleanTpl = normalizeTemplateGaps(tplKey, gqs);
+      if (renderedQuestionNumbers) {
+        extractQuestionNumbersFromTemplate(cleanTpl).forEach(num => renderedQuestionNumbers.add(num));
+        gqs.filter(q => cleanTpl.includes(`{{${q.questionNumber || q.q_num}}}`)).forEach(q => {
+          renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num));
+        });
+      }
+
+      return (
+        <div className="bg-white border-2 border-slate-300 rounded-lg p-5 sm:p-6 shadow-2xs space-y-4 mb-2">
+          {mainTitle && (
+            <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-2">
+              {mainTitle}
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <MarkdownTable
+              tableContent={cleanTpl}
+              answers={answers}
+              onAnswerChange={onAnswerChange}
+              onToggleFlag={onToggleFlag}
+              flagged={flagged}
+              questionRefs={questionRefs}
+              questions={gqs}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    const remainingGqs = renderedQuestionNumbers
+      ? gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)))
+      : gqs;
+    if (remainingGqs.length === 0) return null;
+    if (renderedQuestionNumbers) {
+      remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
     }
 
     // Dynamic non-markdown table parsing
@@ -2275,11 +2437,11 @@ export function AnswerSheet({
       group.headers || 
       group.tableColumns || 
       group.columns || 
-      gqs.find(q => Array.isArray(q.table_headers) || Array.isArray(q.headers))?.table_headers || 
-      gqs.find(q => Array.isArray(q.table_headers) || Array.isArray(q.headers))?.headers || 
+      remainingGqs.find(q => Array.isArray(q.table_headers) || Array.isArray(q.headers))?.table_headers || 
+      remainingGqs.find(q => Array.isArray(q.table_headers) || Array.isArray(q.headers))?.headers || 
       null;
 
-    const parsedRows = gqs.map((q, qIdx) => {
+    const parsedRows = remainingGqs.map((q, qIdx) => {
       const qNum = Number(q.questionNumber || q.q_num);
       const val = answers[qNum] || '';
       const isFlagged = flagged[qNum] || false;
@@ -2358,104 +2520,90 @@ export function AnswerSheet({
           </div>
         )}
 
-        {hasTableMarkdown ? (
-          <div className="overflow-x-auto">
-            <MarkdownTable
-              tableContent={normalizeTemplateGaps(tplKey, gqs)}
-              answers={answers}
-              onAnswerChange={onAnswerChange}
-              onToggleFlag={onToggleFlag}
-              flagged={flagged}
-              questionRefs={questionRefs}
-              questions={gqs}
-            />
-          </div>
-        ) : (
-          /* Alternating-row table grid with dynamic columns and inline sentence gaps */
-          <div className="border border-slate-300 rounded-md overflow-x-auto bg-white">
-            <table className="w-full border-collapse text-left text-sm">
-              <thead>
-                <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  <th className="py-2.5 px-3 w-12 text-center font-mono">#</th>
-                  {finalHeaders.map((headerText, hIdx) => (
-                    <th key={hIdx} className="py-2.5 px-4 border-l border-slate-200 first:border-l-0">
-                      {headerText}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {parsedRows.map((row, rIdx) => {
-                  const { q, qNum, val, isFlagged, rawCells, gapCellIndex } = row;
+        {/* Alternating-row table grid with dynamic columns and inline sentence gaps */}
+        <div className="border border-slate-300 rounded-md overflow-x-auto bg-white">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
+                <th className="py-2.5 px-3 w-12 text-center font-mono">#</th>
+                {finalHeaders.map((headerText, hIdx) => (
+                  <th key={hIdx} className="py-2.5 px-4 border-l border-slate-200 first:border-l-0">
+                    {headerText}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {parsedRows.map((row, rIdx) => {
+                const { q, qNum, val, isFlagged, rawCells, gapCellIndex } = row;
 
-                  return (
-                    <tr
-                      key={qNum || rIdx}
-                      ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
-                      className={`border-b border-slate-200 last:border-0 transition-colors ${
-                        isFlagged ? 'bg-amber-50/50' : rIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
-                      }`}
-                    >
-                      <td className="py-3 px-2 text-center font-mono font-bold text-brand-600 text-xs align-middle">
-                        {qNum || ''}
-                      </td>
-                      {Array.from({ length: maxCols }, (_, cIdx) => {
-                        const cellContent = rawCells[cIdx] !== undefined ? String(rawCells[cIdx]) : '';
-                        const isGapCell = cIdx === gapCellIndex;
+                return (
+                  <tr
+                    key={qNum || rIdx}
+                    ref={el => { if (qNum) questionRefs.current[qNum] = el; }}
+                    className={`border-b border-slate-200 last:border-0 transition-colors ${
+                      isFlagged ? 'bg-amber-50/50' : rIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
+                    }`}
+                  >
+                    <td className="py-3 px-2 text-center font-mono font-bold text-brand-600 text-xs align-middle">
+                      {qNum || ''}
+                    </td>
+                    {Array.from({ length: maxCols }, (_, cIdx) => {
+                      const cellContent = rawCells[cIdx] !== undefined ? String(rawCells[cIdx]) : '';
+                      const isGapCell = cIdx === gapCellIndex;
 
-                        if (isGapCell) {
-                          const { before, after, hasGap } = splitSentenceAtGap(cellContent);
-                          return (
-                            <td key={cIdx} className="py-3 px-4 border-l border-slate-200 text-[13.5px] text-slate-800 leading-snug align-middle">
-                              <span className="inline-flex items-baseline flex-wrap gap-1">
-                                {before && <span>{before}</span>}
-                                <span className="inline-flex items-center align-baseline mx-1">
-                                  <span className="w-5 h-5 rounded-full bg-brand-100 text-brand-800 text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono shrink-0">
-                                    {qNum}
-                                  </span>
-                                  <input
-                                    type="text"
-                                    value={val}
-                                    onChange={e => onAnswerChange(qNum, e.target.value)}
-                                    placeholder="..."
-                                    className={`w-28 sm:w-36 h-7 px-2 border-b-2 text-center font-semibold text-xs outline-none bg-amber-50/20 transition-colors inline-block ${
-                                      val
-                                        ? 'border-brand-500 text-brand-900 font-bold'
-                                        : isFlagged
-                                        ? 'border-amber-400 bg-amber-50'
-                                        : 'border-slate-400 focus:border-brand-500'
-                                    }`}
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() => onToggleFlag(qNum)}
-                                    className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
-                                      isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                                    }`}
-                                    title={isFlagged ? 'Remove flag' : 'Flag'}
-                                  >
-                                    <Flag className="w-3 h-3" />
-                                  </button>
-                                </span>
-                                {after && <span className="ml-1">{after}</span>}
-                              </span>
-                            </td>
-                          );
-                        }
-
+                      if (isGapCell) {
+                        const { before, after, hasGap } = splitSentenceAtGap(cellContent);
                         return (
                           <td key={cIdx} className="py-3 px-4 border-l border-slate-200 text-[13.5px] text-slate-800 leading-snug align-middle">
-                            {cellContent || '—'}
+                            <span className="inline-flex items-baseline flex-wrap gap-1">
+                              {before && <span>{before}</span>}
+                              <span className="inline-flex items-center align-baseline mx-1">
+                                <span className="w-5 h-5 rounded-full bg-brand-100 text-brand-800 text-[10px] font-bold flex items-center justify-center mr-1 select-none font-mono shrink-0">
+                                  {qNum}
+                                </span>
+                                <input
+                                  type="text"
+                                  value={val}
+                                  onChange={e => onAnswerChange(qNum, e.target.value)}
+                                  placeholder="..."
+                                  className={`w-28 sm:w-36 h-7 px-2 border-b-2 text-center font-semibold text-xs outline-none bg-amber-50/20 transition-colors inline-block ${
+                                    val
+                                      ? 'border-brand-500 text-brand-900 font-bold'
+                                      : isFlagged
+                                      ? 'border-amber-400 bg-amber-50'
+                                      : 'border-slate-400 focus:border-brand-500'
+                                  }`}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => onToggleFlag(qNum)}
+                                  className={`p-0.5 rounded cursor-pointer transition ml-0.5 ${
+                                    isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                  }`}
+                                  title={isFlagged ? 'Remove flag' : 'Flag'}
+                                >
+                                  <Flag className="w-3 h-3" />
+                                </button>
+                              </span>
+                              {after && <span className="ml-1">{after}</span>}
+                            </span>
                           </td>
                         );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                      }
+
+                      return (
+                        <td key={cIdx} className="py-3 px-4 border-l border-slate-200 text-[13.5px] text-slate-800 leading-snug align-middle">
+                          {cellContent || '—'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   }
@@ -2464,8 +2612,17 @@ export function AnswerSheet({
   // GROUP DISPATCHER
   // ---------------------------------------------------------------------------
 
-  function renderGroup(group, groupIdx, renderedTemplateSignatures) {
+  function renderGroup(group, groupIdx, renderedTemplateSignatures, renderedQuestionNumbers) {
     const { category, questions: gqs } = group;
+
+    // Check if all questions in this group are already rendered AND there's no unrendered template
+    const templateText = group.notes_template || group.table_template || group.summaryTemplate || group.notesTemplate || group.tableTemplate || '';
+    const hasTemplate = Boolean(templateText && (templateText.includes('{{') || templateText.includes('[[')));
+    const allQuestionsAlreadyRendered = Array.isArray(gqs) && gqs.length > 0 && gqs.every(q => renderedQuestionNumbers && renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+
+    if (allQuestionsAlreadyRendered && !hasTemplate) {
+      return null;
+    }
 
     const hasTableMarkdown = Boolean(
       (group.table_template && group.table_template.includes('|')) ||
@@ -2477,20 +2634,29 @@ export function AnswerSheet({
     const isTableGroup = category === 'TABLE_COMPLETION' || hasTableMarkdown;
     const hasRefBoxItems = (Array.isArray(group.refBox) && group.refBox.length > 0) || (Array.isArray(group.referenceBox) && group.referenceBox.length > 0);
 
+    const renderedContent = (() => {
+      if ((category === 'TFNG' || category === 'YNNG')) return renderTFNGGroup(gqs, category, renderedQuestionNumbers);
+      if ((category === 'NOTES' || category === 'FORM_COMPLETION') && !isTableGroup) return renderNotesGroup(gqs, group, renderedTemplateSignatures, renderedQuestionNumbers);
+      if (isTableGroup) return renderTableCompletionGroup(gqs, group, renderedTemplateSignatures, renderedQuestionNumbers);
+      if ((category === 'MATCHING_INFORMATION' || category === 'PARA_MATCH')) return renderParaMatchGroup(gqs, renderedQuestionNumbers);
+      if (category === 'MATCHING_HEADINGS') return renderMatchingHeadingsGroup(gqs, group, renderedQuestionNumbers);
+      if ((category === 'MATCHING_FEATURES' || category === 'RESEARCHER_MATCH' || category === 'MATCHING' || category === 'MAP_DIAGRAM_LABELING')) return renderResearcherMatchGroup(gqs, group, renderedQuestionNumbers);
+      if (((category === 'SUMMARY_TEXT' || category === 'SUMMARY_COMPLETION') && !isTableGroup && !hasRefBoxItems)) return renderSummaryTextGroup(gqs, group, renderedTemplateSignatures, renderedQuestionNumbers);
+      if ((category === 'SUMMARY_WORDS' || category === 'SUMMARY_MATCHING' || (((category === 'SUMMARY_COMPLETION' || category === 'SUMMARY_TEXT') && !isTableGroup) && hasRefBoxItems))) return renderSummaryWordsGroup(gqs, group, renderedTemplateSignatures, renderedQuestionNumbers);
+      if ((category === 'MC' || category === 'MULTIPLE_CHOICE' || category === 'MULTIPLE_CHOICE_MULTI')) return renderMCGroup(gqs, group, renderedQuestionNumbers);
+      if (category === 'FILL_BLANK' && !isTableGroup) return renderFillBlankGroup(gqs, renderedQuestionNumbers);
+      if (category === 'FLOW_CHART') return renderFlowChartGroup(gqs, group, renderedQuestionNumbers);
+      return null;
+    })();
+
+    if (!renderedContent) {
+      return null;
+    }
+
     return (
       <div key={groupIdx} className="mb-10 last:mb-2">
         {renderGroupHeader(group)}
-        {(category === 'TFNG' || category === 'YNNG') && renderTFNGGroup(gqs, category)}
-        {(category === 'NOTES' || category === 'FORM_COMPLETION') && !isTableGroup && renderNotesGroup(gqs, group, renderedTemplateSignatures)}
-        {isTableGroup && renderTableCompletionGroup(gqs, group, renderedTemplateSignatures)}
-        {(category === 'MATCHING_INFORMATION' || category === 'PARA_MATCH') && renderParaMatchGroup(gqs)}
-        {category === 'MATCHING_HEADINGS' && renderMatchingHeadingsGroup(gqs, group)}
-        {(category === 'MATCHING_FEATURES' || category === 'RESEARCHER_MATCH' || category === 'MATCHING' || category === 'MAP_DIAGRAM_LABELING') && renderResearcherMatchGroup(gqs, group)}
-        {((category === 'SUMMARY_TEXT' || category === 'SUMMARY_COMPLETION') && !isTableGroup && !hasRefBoxItems) && renderSummaryTextGroup(gqs, group, renderedTemplateSignatures)}
-        {(category === 'SUMMARY_WORDS' || category === 'SUMMARY_MATCHING' || (((category === 'SUMMARY_COMPLETION' || category === 'SUMMARY_TEXT') && !isTableGroup) && hasRefBoxItems)) && renderSummaryWordsGroup(gqs, group, renderedTemplateSignatures)}
-        {(category === 'MC' || category === 'MULTIPLE_CHOICE' || category === 'MULTIPLE_CHOICE_MULTI') && renderMCGroup(gqs, group)}
-        {category === 'FILL_BLANK' && !isTableGroup && renderFillBlankGroup(gqs)}
-        {category === 'FLOW_CHART' && renderFlowChartGroup(gqs, group)}
+        {renderedContent}
       </div>
     );
   }
@@ -2572,7 +2738,8 @@ export function AnswerSheet({
             )}
             {(() => {
               const renderedTemplateSignatures = new Set();
-              return groups.map((group, gIdx) => renderGroup(group, gIdx, renderedTemplateSignatures));
+              const renderedQuestionNumbers = new Set();
+              return groups.map((group, gIdx) => renderGroup(group, gIdx, renderedTemplateSignatures, renderedQuestionNumbers));
             })()}
           </div>
         )}

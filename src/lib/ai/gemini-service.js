@@ -66,11 +66,9 @@ export function getGeminiApiKeys() {
     if (process.env.GEMINI_API_KEY) {
       process.env.GEMINI_API_KEY.split(/[,;\n]/).forEach(addKey);
     }
-    // 3. Fallback and alternative keys
-    addKey(process.env.VITE_GEMINI_API_KEY_FALLBACK);
+    // 3. Fallback and alternative server-side keys
     addKey(process.env.GEMINI_API_KEY_FALLBACK);
     addKey(process.env.GEMINI_BACKUP_API_KEY);
-    addKey(process.env.VITE_GEMINI_API_KEY);
   }
 
   return keys;
@@ -299,6 +297,7 @@ export const LISTENING_EXAM_SCHEMA = {
           audio_track_index: { type: 'integer' },
           instruction: { type: 'string' },
           notes_template: { type: 'string' },
+          table_template: { type: 'string' },
           reference_box: {
             type: 'array',
             items: {
@@ -347,6 +346,7 @@ export const LISTENING_EXAM_SCHEMA = {
                   items: { type: 'string' },
                 },
                 notes_template: { type: 'string' },
+                table_template: { type: 'string' },
                 flow_step: { type: 'string' },
                 summary_template: { type: 'string' },
                 options: {
@@ -566,9 +566,9 @@ CRITICAL LAWS:
 
 3. AUTONOMOUS TASK CLASSIFICATION:
    Inspect the instructions and formatting of each group to assign the exact "type":
-   - "FORM_COMPLETION": Application, rental, booking, or registration forms with field labels and gap inputs.
-   - "NOTES_COMPLETION": Lecture/discussion notes, subheadings, and bullet points with gaps.
-   - "TABLE_COMPLETION": Multi-column tables with headers, rows, and gaps. In "notes_template", preserve the structured table layout with {{q_num}} placeholders so the UI can render rows and columns intact.
+   - "TABLE_COMPLETION": Multi-column tables with headers, rows, and gaps. In "notes_template" (on both the part and question items), you MUST generate a valid Markdown table (| Header 1 | Header 2 | ... | \n | --- | --- | ... | \n | Cell 1 | Cell 2 | ... |) containing ALL columns and ALL static non-gap rows verbatim (e.g. 'recording them', 'talking to tutor'). If multiple questions share the same row across different columns (e.g. Q25 in Col 1, Q26 in Col 3), they MUST remain together in the same row with their {{25}} and {{26}} placeholders.
+   - "FORM_COMPLETION": Application, rental, booking, or registration forms. In "notes_template" (on both the part and question items), generate the complete form text verbatim, including all section dividers/subheadings (e.g. 'Personal details'), all static informational non-gap rows (e.g. 'Name: Kevin Walker', 'Maximum rent: £650 a month'), alongside the gap lines with {{q_num}} placeholders.
+   - "NOTES_COMPLETION": Lecture/discussion notes, subheadings, and bullet points with gaps. In "notes_template", preserve all section subheadings and non-gap informational bullet points with {{q_num}} placeholders.
    - "FLOW_CHART": Step-by-step sequential processes, cycles, or flow diagrams with arrows.
    - "MATCHING": Matching items to a box of options/categories.
    - "MULTIPLE_CHOICE": Standard single questions with options A, B, C. If the instruction states "Choose TWO letters" or "Choose THREE letters", mark each question in that set as multi-select.
@@ -576,11 +576,16 @@ CRITICAL LAWS:
 
 4. COMPLETE PROMPT & CONTEXT PRESERVATION:
    - For form, note, and table completion, each question's "prompt" MUST retain the field label or sentence line with the gap (e.g. 'Address: {{1}} Road' or 'Date started: {{22}}'). DO NOT skip Question 1 if it appears on the very first line of a form!
-   - In "notes_template" on the part or group, transcribe the full page structure with all section subheadings, lecture notes, bullet points, and {{q_num}} placeholders so the UI can reconstruct the complete original layout.
+   - In "notes_template" on the part and each question, transcribe the full page structure with all section subheadings, lecture notes, bullet points, Markdown tables, and {{q_num}} placeholders so the UI can reconstruct the complete original layout verbatim.
    - For option boxes, extract all letter-label pairs into "reference_box".
 
 5. ANSWER KEYS:
-   Extract exact answers strictly from the official 'ANSWER KEY' table at the end of the booklet.`,
+   Extract exact answers strictly from the official 'ANSWER KEY' table at the end of the booklet.
+
+6. UNIVERSAL PLACEHOLDER INTEGRITY & MIXED CONTENT (ZERO HARDCODE):
+   - Every gap placeholder in "notes_template", "table_template", or "form_template" MUST strictly match the global question number in the booklet: {{q_num}} (e.g. {{25}}, {{26}}, {{31}}).
+   - NEVER use 0-based offsets ({{0}}, {{1}}), relative offsets, or reset numbering to 1 at the beginning of a section. The placeholder number must match question.q_num identically.
+   - If a section contains mixed content (such as narrative text or bullet points, followed by a table, followed by further notes or questions), unify them into a single continuous "notes_template" embedding the Markdown table in place (| Header | ... |) within the text instead of fragmenting into separate disconnected pieces.`,
   schema: LISTENING_EXAM_SCHEMA,
   config: buildUnifiedConfig(LISTENING_EXAM_SCHEMA, { maxOutputTokens: 32768 }),
 });
@@ -1802,8 +1807,12 @@ export async function parseListeningPdf({ fileBuffer, fileName = 'Listening_Book
   const prompt = `Extract the complete Cambridge IELTS Listening exam from the attached PDF document.
 Follow all rules defined in systemInstruction:
 1. Extract all 4 parts with their titles, instructions, and questions into "parts".
-2. For notes and form completion tasks (especially Part 1 and Part 4):
-   - Build a comprehensive "notes_template" on the part object retaining the FULL page verbatim: include all main titles, section subheadings (e.g. "Yoga", "Ballet", "Soccer", "Aerobics", "Background", "Benefits", "Procedures"), all non-question lecture sentences, and all bullet points. Format each gap strictly as {{q_num}} (e.g. {{1}}, {{2}}... {{31}}, {{32}}).
+2. For notes, forms, and table completion tasks (especially Parts 1, 3, and 4):
+   - Placeholders in notes_template, table_template, or form_template MUST strictly use the global question number: {{q_num}} (e.g. {{25}}, {{26}}). NEVER use 0-based offsets or reset numbering.
+   - If a section contains mixed content (text -> table -> text), unify into a single continuous "notes_template" embedding the Markdown table in place.
+   - For "TABLE_COMPLETION": Generate a valid Markdown table in "notes_template" retaining ALL columns, headers, and static context rows verbatim (e.g. 'recording them', 'talking to tutor'). If questions share the same row (e.g. Q25 in Col 1, Q26 in Col 3), keep them in the same row with {{25}} and {{26}} placeholders.
+   - For "FORM_COMPLETION": Generate the full form in "notes_template" with all section headers (e.g. 'Personal details') and non-gap lines (e.g. 'Name: Kevin Walker', 'Maximum rent: £650 a month').
+   - For "NOTES_COMPLETION": Build a comprehensive "notes_template" retaining all section subheadings, non-question sentences, and bullet points with {{q_num}} gap markers.
    - On every individual question item, assign its "subheading" and populate "context_bullets" with any surrounding informative bullet points.
 3. Classify all questions accurately according to Cambridge types, with options and reference_box.
 4. Extract all 40 answers from the official Answer Key.`;
@@ -1990,8 +1999,10 @@ export async function parseListeningPdfs({ files, apiKey = null, onProgress = nu
   const prompt = `Extract the complete Cambridge IELTS Listening exam from the attached PDF document(s).${multiSourceInstruction}
 Follow all rules defined in systemInstruction:
 1. Extract all 4 parts with their titles, instructions, and questions into "parts".
-2. For notes and form completion tasks (especially Part 1 and Part 4):
-   - Build a comprehensive "notes_template" on the part object retaining the FULL page verbatim: include all main titles, section subheadings, all non-question lecture sentences, and all bullet points. Format each gap strictly as {{q_num}}.
+2. For notes, forms, and table completion tasks (especially Parts 1, 3, and 4):
+   - For "TABLE_COMPLETION": Generate a valid Markdown table in "notes_template" retaining ALL columns, headers, and static context rows verbatim (e.g. 'recording them', 'talking to tutor'). If questions share the same row (e.g. Q25 in Col 1, Q26 in Col 3), keep them in the same row with {{25}} and {{26}} placeholders.
+   - For "FORM_COMPLETION": Generate the full form in "notes_template" with all section headers (e.g. 'Personal details') and non-gap lines (e.g. 'Name: Kevin Walker', 'Maximum rent: £650 a month').
+   - For "NOTES_COMPLETION": Build a comprehensive "notes_template" retaining all section subheadings, non-question sentences, and bullet points with {{q_num}} gap markers.
    - On every individual question item, assign its "subheading" and populate "context_bullets" with any surrounding informative bullet points.
 3. Classify all questions accurately according to Cambridge types, with options and reference_box.
 4. Extract all 40 answers from the official Answer Key of the specific source file each part came from.`;

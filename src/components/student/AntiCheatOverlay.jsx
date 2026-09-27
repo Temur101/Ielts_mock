@@ -20,14 +20,17 @@ export function AntiCheatOverlay({
   const [warningTimer, setWarningTimer] = useState(10);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  const isAdminAuthed = typeof window !== 'undefined' && sessionStorage.getItem('ielts_admin_authenticated') === 'true';
+
   // Fullscreen state listener
   useEffect(() => {
+    if (isAdminAuthed) return;
     const handleFsChange = () => {
       setIsFullscreen(Boolean(document.fullscreenElement));
     };
     document.addEventListener('fullscreenchange', handleFsChange);
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
-  }, []);
+  }, [isAdminAuthed]);
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -43,6 +46,7 @@ export function AntiCheatOverlay({
 
   // Anti-Cheat Blur & Tab-switch Event Listeners
   useEffect(() => {
+    if (isAdminAuthed) return;
     if (!isExamActive || student?.status !== 'in_progress') return;
 
     const handleViolation = (reason) => {
@@ -71,11 +75,11 @@ export function AntiCheatOverlay({
       handleViolation("Clicked outside exam window or lost focus");
     };
 
-    window.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleWindowBlur);
 
     return () => {
-      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleWindowBlur);
     };
   }, [isExamActive, student?.status, student?.warning_count, exam.anti_cheat_strictness]);
@@ -95,6 +99,11 @@ export function AntiCheatOverlay({
     }, 1000);
     return () => clearInterval(interval);
   }, [warningModalOpen]);
+
+  // If admin is testing/proctoring, bypass all anti-cheat modals and overlays
+  if (isAdminAuthed) {
+    return null;
+  }
 
   // If Student is Disqualified
   if (student?.status === 'disqualified' || student?.status === 'kicked') {
@@ -122,35 +131,11 @@ export function AntiCheatOverlay({
             Candidate: <strong>{student.name}</strong> ({student.candidate_no})
           </div>
 
-          {/* Quick Recovery & Testing Controls */}
-          <div className="pt-2 border-t border-slate-100 space-y-2">
-            <Button
-              variant="primary"
-              size="md"
-              className="w-full font-bold shadow-glow"
-              onClick={() => {
-                if (typeof window !== 'undefined') {
-                  localStorage.removeItem('ielts_current_student');
-                  window.location.reload();
-                }
-              }}
-            >
-              🔄 Войти заново / Сбросить кандидата
-            </Button>
-
-            <Button
-              variant="secondary"
-              size="md"
-              className="w-full font-bold"
-              onClick={() => {
-                if (typeof window !== 'undefined') {
-                  localStorage.setItem('ielts_active_role', 'admin');
-                  window.location.reload();
-                }
-              }}
-            >
-              👨‍🏫 Перейти в панель Учителя (Teacher View)
-            </Button>
+          {/* Official Disqualification Notice (Bypasses excised) */}
+          <div className="pt-3 border-t border-slate-100 text-center">
+            <div className="px-3.5 py-2.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] font-semibold text-rose-700">
+              Disqualification is recorded. Workstation locked until authorized by instructor.
+            </div>
           </div>
         </div>
       </div>

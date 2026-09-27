@@ -110,7 +110,7 @@ export function StudentWaitingRoom({ exam, student, onStartSolo, onLeave }) {
               <div className="text-[10px] text-slate-400 font-semibold">Realtime Ping</div>
               <div className="font-mono font-bold text-emerald-600 flex items-center justify-center gap-1">
                 <Wifi className="w-3 h-3" />
-                {student.ping_ms || 24}ms
+                {student.ping_ms ? `${student.ping_ms}ms` : '—'}
               </div>
             </div>
           </div>

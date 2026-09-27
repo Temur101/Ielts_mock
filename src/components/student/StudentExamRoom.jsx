@@ -25,6 +25,9 @@ import { ResultsScreen } from './ResultsScreen';
 import { Button } from '../common/Button';
 import { Modal } from '../common/Modal';
 import { gradeSectionExam } from '../../lib/ieltsGrading';
+import { getSealedAnswerKeys, hydrateQuestionsWithAnswers } from '../../lib/answerVault';
+import { fetchExamAnswerKeys } from '../../lib/supabase';
+import { getRemainingSeconds, formatExamTimer } from '../../lib/examTimerUtils';
 
 export function StudentExamRoom({
   exam,
@@ -36,6 +39,7 @@ export function StudentExamRoom({
   onWarnStudent,
   onExit,
 }) {
+  const isAdminAuthed = typeof window !== 'undefined' && sessionStorage.getItem('ielts_admin_authenticated') === 'true';
   const currentStage = exam.current_stage || (exam.status === 'active' ? 'listening_active' : 'listening_lobby');
 
   // Local Storage Cache Key
@@ -85,7 +89,7 @@ export function StudentExamRoom({
     ? 'writing' 
     : 'listening';
 
-  // Synchronized Countdown Timer per Stage
+  // Server-Anchored Synchronized Countdown Timer per Stage
   useEffect(() => {
     const isStageActive = currentStage.endsWith('_active');
     if (!isStageActive) {
@@ -93,26 +97,11 @@ export function StudentExamRoom({
       return;
     }
 
-    let durationMins = 35;
-    if (currentStage === 'listening_active') durationMins = exam.listening_duration_mins || 35;
-    if (currentStage === 'reading_active') durationMins = exam.reading_duration_mins || 60;
-    if (currentStage === 'writing_active') durationMins = exam.writing_duration_mins || 60;
-
-    const startedTime = exam.stage_started_at 
-      ? new Date(exam.stage_started_at).getTime() 
-      : exam.started_at 
-      ? new Date(exam.started_at).getTime() 
-      : Date.now();
-
-    const durationMs = durationMins * 60 * 1000;
-    const endTime = startedTime + durationMs;
-
     const updateTimer = () => {
-      const now = Date.now();
-      const diff = Math.max(0, Math.floor((endTime - now) / 1000));
+      const diff = getRemainingSeconds(exam, currentStage);
       setTimeRemaining(diff);
 
-      if (diff === 0 && isStageActive) {
+      if (diff <= 0 && isStageActive) {
         handleSectionTimeUp(activeSection);
       }
     };
@@ -120,7 +109,7 @@ export function StudentExamRoom({
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [currentStage, exam.stage_started_at, exam.started_at, exam.listening_duration_mins, exam.reading_duration_mins, exam.writing_duration_mins]);
+  }, [currentStage, exam?.stage_ends_at, exam?.stage_started_at, activeSection]);
 
   // Handle stage change from teacher
   useEffect(() => {
@@ -130,7 +119,7 @@ export function StudentExamRoom({
     } else if (currentStage === 'reading_finished' && lockedSectionType !== 'reading') {
       setLockedSectionType('reading');
       setShowSectionLockedModal(true);
-    } else if ((currentStage === 'writing_finished' || currentStage === 'exam_completed') && student.status !== 'submitted') {
+    } else if ((currentStage === 'writing_finished' || currentStage === 'exam_completed') && student.status !== 'submitted' && student.status !== 'completed') {
       handleSubmitFinalExam();
     }
   }, [currentStage]);
@@ -160,7 +149,7 @@ export function StudentExamRoom({
 
   // Reading Answer Change
   const handleReadingAnswerChange = (questionNumber, value) => {
-    if (currentStage !== 'reading_active' || student.status !== 'in_progress') return;
+    if (currentStage !== 'reading_active' || student.status !== 'in_progress' || timeRemaining <= 0) return;
 
     const updated = {
       ...readingAnswers,
@@ -172,7 +161,7 @@ export function StudentExamRoom({
 
   // Listening Answer Change
   const handleListeningAnswerChange = (questionNumber, value) => {
-    if (currentStage !== 'listening_active' || student.status !== 'in_progress') return;
+    if (currentStage !== 'listening_active' || student.status !== 'in_progress' || timeRemaining <= 0) return;
 
     const updated = {
       ...listeningAnswers,
@@ -184,14 +173,14 @@ export function StudentExamRoom({
 
   // Writing Essay Change
   const handleTask1Change = (text) => {
-    if (currentStage !== 'writing_active' || student.status !== 'in_progress') return;
+    if (currentStage !== 'writing_active' || student.status !== 'in_progress' || timeRemaining <= 0) return;
 
     setTask1Essay(text);
     persistAnswers(readingAnswers, listeningAnswers, { task1: text, task2: task2Essay });
   };
 
   const handleTask2Change = (text) => {
-    if (currentStage !== 'writing_active' || student.status !== 'in_progress') return;
+    if (currentStage !== 'writing_active' || student.status !== 'in_progress' || timeRemaining <= 0) return;
 
     setTask2Essay(text);
     persistAnswers(readingAnswers, listeningAnswers, { task1: task1Essay, task2: text });
@@ -214,12 +203,39 @@ export function StudentExamRoom({
     }
   };
 
-  // Submit Final Exam -> Grade server-side/locally for teacher, but DO NOT show results to student
-  const handleSubmitFinalExam = () => {
+  // Submit Final Exam -> Grade with hydrated keys from vault at final submit
+  const handleSubmitFinalExam = async () => {
     setShowSectionLockedModal(false);
 
-    const readingQs = exam.reading?.questions || exam.reading_questions || exam.parsed_questions || exam.questions || [];
-    const listeningQs = exam.listening?.questions || exam.listening_questions || exam.questions || [];
+    let readingQs = exam.reading?.questions || exam.reading_questions || exam.parsed_questions || exam.questions || [];
+    let listeningQs = exam.listening?.questions || exam.listening_questions || exam.questions || [];
+
+    // SEC-06: Retrieve answer keys from private memory vault
+    const pin = exam.pin_code || student.pin_code;
+    let keys = getSealedAnswerKeys(pin);
+
+    // Fallback: If vault was cleared on page reload, securely fetch keys from Supabase
+    if (!keys && pin) {
+      try {
+        const { data: dbKeys } = await fetchExamAnswerKeys(pin);
+        if (dbKeys) {
+          keys = {
+            readingQuestions: dbKeys.reading_questions || [],
+            listeningQuestions: dbKeys.listening_questions || [],
+            answerKeys: dbKeys.answer_keys || {}
+          };
+        }
+      } catch (err) {
+        console.warn("Failed to fetch answer keys from Supabase at submit time:", err);
+      }
+    }
+
+    // Hydrate questions with acceptedAnswers for grading
+    if (keys) {
+      readingQs = hydrateQuestionsWithAnswers(readingQs, keys.readingQuestions, keys.answerKeys);
+      listeningQs = hydrateQuestionsWithAnswers(listeningQs, keys.listeningQuestions, keys.answerKeys);
+    }
+
     const readingResult = gradeSectionExam(readingQs, readingAnswers, 'reading');
     const listeningResult = gradeSectionExam(listeningQs, listeningAnswers, 'listening');
 
@@ -242,13 +258,11 @@ export function StudentExamRoom({
   };
 
   const formatTimer = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    return formatExamTimer(seconds);
   };
 
   // STRICT PRIVACY RULE: If student is submitted or exam completed, ONLY show the ResultsScreen confirmation
-  if (student.status === 'submitted' || currentStage === 'exam_completed') {
+  if (student.status === 'submitted' || student.status === 'completed' || currentStage === 'exam_completed') {
     return (
       <ResultsScreen
         student={student}
@@ -291,7 +305,7 @@ export function StudentExamRoom({
   const isTimeCritical = timeRemaining < 300 && timeRemaining > 0;
 
   return (
-    <div className="h-full flex flex-col bg-white select-none overflow-hidden">
+    <div className={`h-full flex flex-col bg-white ${isAdminAuthed ? 'select-text [&_*]:select-text' : 'select-none'} overflow-hidden`}>
       
       {/* Top Synchronized Navigation & Stage Indicator (Max-Height: 48px) */}
       <div className="h-12 px-3 sm:px-4 bg-white border-b border-slate-200 flex items-center justify-between shadow-xs z-20 shrink-0">
@@ -363,14 +377,16 @@ export function StudentExamRoom({
             <span>{formatTimer(timeRemaining)}</span>
           </div>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => handleSectionTimeUp(activeSection)}
-            className="text-xs font-bold border-brand-200 text-brand-700 hover:bg-brand-50 h-8 px-2.5 cursor-pointer"
-          >
-            {activeSection === 'writing' ? 'Submit' : `Next Section`}
-          </Button>
+          {activeSection === 'writing' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleSectionTimeUp('writing')}
+              className="text-xs font-bold border-brand-200 text-brand-700 hover:bg-brand-50 h-8 px-2.5 cursor-pointer"
+            >
+              Submit Exam
+            </Button>
+          )}
         </div>
 
       </div>
@@ -452,6 +468,8 @@ export function StudentExamRoom({
                   passage={currentPassage}
                   passages={compiledPassages}
                   exam={exam}
+                  isTimeUp={timeRemaining <= 0}
+                  timeRemaining={timeRemaining}
                   bookletHtml={
                     exam.reading?.sections?.find(s => s.part === activePassageId)?.page_content_html ||
                     exam.reading_parts?.[`part${activePassageId}`]?.page_content_html ||
@@ -471,6 +489,8 @@ export function StudentExamRoom({
               writingData={exam.writing_tasks || exam.writing}
               task1Essay={task1Essay}
               task2Essay={task2Essay}
+              isTimeUp={timeRemaining <= 0}
+              timeRemaining={timeRemaining}
               onTask1Change={handleTask1Change}
               onTask2Change={handleTask2Change}
             />
@@ -484,6 +504,8 @@ export function StudentExamRoom({
               student={student}
               answers={listeningAnswers}
               flagged={listeningFlagged}
+              isTimeUp={timeRemaining <= 0}
+              timeRemaining={timeRemaining}
               onAnswerChange={handleListeningAnswerChange}
               onToggleFlag={(qNum) => setListeningFlagged(prev => ({ ...prev, [qNum]: !prev[qNum] }))}
             />
@@ -491,13 +513,16 @@ export function StudentExamRoom({
         )}
       </div>
 
-      {/* Anti-Cheat Background Watchdog */}
-      <AntiCheatOverlay
-        exam={exam}
-        student={student}
-        onDisqualify={onDisqualifyStudent}
-        onWarn={onWarnStudent}
-      />
+      {/* Anti-Cheat Background Watchdog - Completely omitted for authenticated teacher/admin */}
+      {!isAdminAuthed && (
+        <AntiCheatOverlay
+          exam={exam}
+          student={student}
+          isExamActive={Boolean(currentStage && currentStage.endsWith('_active'))}
+          onDisqualify={onDisqualifyStudent}
+          onWarn={onWarnStudent}
+        />
+      )}
 
       {/* Section Auto-Lock Modal */}
       {showSectionLockedModal && (

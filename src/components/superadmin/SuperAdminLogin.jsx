@@ -5,7 +5,6 @@ import {
   Mail, 
   ArrowRight, 
   AlertTriangle, 
-  Sparkles, 
   GraduationCap,
   KeyRound,
   RefreshCw
@@ -37,26 +36,6 @@ export function SuperAdminLogin({ onLoginSuccess, onNavigateHome }) {
       }
     } catch (err) {
       setError(err.message || 'Login failed. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDemoLogin = async () => {
-    setEmail('admin@ielts-master.org');
-    setPassword('SuperAdmin2026!');
-    setLoading(true);
-    setError('');
-
-    try {
-      const { user, error: authError } = await signInSuperAdmin('admin@ielts-master.org', 'SuperAdmin2026!');
-      if (authError || !user) {
-        setError(authError?.message || 'Authentication error.');
-      } else {
-        onLoginSuccess(user);
-      }
-    } catch (err) {
-      setError(err.message || 'Demo login failed.');
     } finally {
       setLoading(false);
     }
@@ -120,13 +99,14 @@ export function SuperAdminLogin({ onLoginSuccess, onNavigateHome }) {
               <KeyRound className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="password"
-                placeholder="••••••••••••"
+                placeholder="Enter access password (1234)"
                 value={password}
                 onChange={(e) => { setPassword(e.target.value); setError(''); }}
                 className="w-full pl-10 pr-4 py-2.5 text-sm rounded-xl border border-slate-300 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 font-mono"
                 required
               />
             </div>
+            <p className="text-[11px] text-slate-400 mt-1">Master Access Password: <span className="font-mono font-bold text-slate-600">1234</span></p>
           </div>
 
           <button
@@ -139,18 +119,8 @@ export function SuperAdminLogin({ onLoginSuccess, onNavigateHome }) {
           </button>
         </form>
 
-        {/* Demo Shortcut */}
-        <div className="pt-3 border-t border-slate-100 flex flex-col items-center gap-2">
-          <button
-            type="button"
-            onClick={handleDemoLogin}
-            disabled={loading}
-            className="w-full py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center gap-2 transition"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-orange-600" />
-            1-Click Demo Super-Admin Login
-          </button>
-
+        {/* Navigation Return */}
+        <div className="pt-3 border-t border-slate-100 flex flex-col items-center">
           <button
             type="button"
             onClick={onNavigateHome}

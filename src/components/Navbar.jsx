@@ -14,6 +14,8 @@ import {
   CheckCheck
 } from 'lucide-react';
 import { Badge } from './common/Badge';
+import { generateCryptoPin } from '../lib/supabase';
+import { getRemainingSeconds, formatExamTimer } from '../lib/examTimerUtils';
 
 export function Navbar({
   currentRole, // 'admin' | 'student'
@@ -25,10 +27,12 @@ export function Navbar({
   onUpdatePinCode,
   isStudentOnly = false,
   onOpenSuperAdmin,
+  isAdminAuthed: propIsAdminAuthed,
 }) {
+  const isAdminAuthed = propIsAdminAuthed ?? (typeof window !== 'undefined' && sessionStorage.getItem('ielts_admin_authenticated') === 'true');
   const [copiedPin, setCopiedPin] = useState(false);
   const [isEditingPin, setIsEditingPin] = useState(false);
-  const [pinInput, setPinInput] = useState(exam?.pin_code || 'IELTS-904');
+  const [pinInput, setPinInput] = useState(exam?.pin_code || '');
 
   React.useEffect(() => {
     if (exam?.pin_code && !isEditingPin) {
@@ -46,7 +50,7 @@ export function Navbar({
 
   const handleGeneratePin = (e) => {
     e.stopPropagation();
-    const newPin = `IELTS-${Math.floor(100 + Math.random() * 900)}`;
+    const newPin = generateCryptoPin();
     setPinInput(newPin);
     if (onUpdatePinCode) {
       onUpdatePinCode(newPin);
@@ -65,21 +69,41 @@ export function Navbar({
       handleSavePin();
     } else if (e.key === 'Escape') {
       setIsEditingPin(false);
-      setPinInput(exam?.pin_code || 'IELTS-904');
+      setPinInput(exam?.pin_code || '');
     }
   };
 
+  const [navTimer, setNavTimer] = useState(0);
+
+  React.useEffect(() => {
+    const isStageActive = exam?.current_stage?.endsWith('_active');
+    if (!isStageActive) {
+      setNavTimer(0);
+      return;
+    }
+    const update = () => {
+      setNavTimer(getRemainingSeconds(exam, exam?.current_stage));
+    };
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [exam?.current_stage, exam?.stage_ends_at, exam?.stage_started_at]);
+
   const getStatusBadge = () => {
     if (!exam) return null;
-    switch (exam.status) {
-      case 'active':
-        return <Badge variant="brand" pulse size="md">LIVE EXAM IN PROGRESS</Badge>;
-      case 'finished':
-        return <Badge variant="slate" size="md">EXAM CONCLUDED</Badge>;
-      case 'lobby':
-      default:
-        return <Badge variant="success" pulse size="md">LOBBY ACTIVE</Badge>;
+    const isStageActive = exam?.current_stage?.endsWith('_active');
+    if (exam.status === 'in_progress' || exam.status === 'active' || isStageActive) {
+      const stageName = exam.current_stage ? exam.current_stage.replace('_active', '').toUpperCase() : 'EXAM';
+      return (
+        <Badge variant="brand" pulse size="md">
+          LIVE: {stageName} • {formatExamTimer(navTimer)}
+        </Badge>
+      );
     }
+    if (exam.status === 'finished' || exam.current_stage === 'exam_completed' || exam.current_stage === 'writing_finished') {
+      return <Badge variant="slate" size="md">EXAM CONCLUDED</Badge>;
+    }
+    return <Badge variant="success" pulse size="md">LOBBY ACTIVE</Badge>;
   };
 
   return (
@@ -113,10 +137,10 @@ export function Navbar({
 
             {/* Dynamic Editable Glowing Orange Pill Badge */}
             <div className="relative flex items-center">
-              {isStudentOnly ? (
+              {isStudentOnly || (!isAdminAuthed && student) || currentRole === 'student' ? (
                 <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-orange-50 border border-brand-300 text-brand-700 font-mono font-bold text-xs shadow-xs">
                   <span className="text-[10px] font-black uppercase tracking-wider text-brand-500">EXAM PIN:</span>
-                  <span className="font-extrabold tracking-wider">{exam?.pin_code || 'IELTS-904'}</span>
+                  <span className="font-extrabold tracking-wider">{exam?.pin_code || '—'}</span>
                 </div>
               ) : isEditingPin ? (
                 <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-orange-50 border-2 border-brand-500 shadow-glow transition-all">
@@ -154,7 +178,7 @@ export function Navbar({
                     PIN
                   </span>
                   <span className="tracking-wider text-sm font-extrabold">
-                    {exam?.pin_code || 'IELTS-904'}
+                    {exam?.pin_code || '—'}
                   </span>
                   <Edit2 className="w-3 h-3 text-orange-200 group-hover:text-white transition" />
 
@@ -188,13 +212,13 @@ export function Navbar({
               {soundEnabled ? <Volume2 className="w-4 h-4 text-brand-500" /> : <VolumeX className="w-4 h-4" />}
             </button>
 
-            {/* If NOT student-only, render Super-Admin Button and Role Switcher */}
-            {!isStudentOnly && (
+            {/* Show controls ALWAYS if admin is authenticated (even while taking a test), or when not in student-only mode */}
+            {(isAdminAuthed || (!isStudentOnly && !student)) && (
               <>
                 {onOpenSuperAdmin && (
                   <button
                     onClick={onOpenSuperAdmin}
-                    className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs"
                     title="Open Super-Admin Command Center"
                   >
                     <ShieldCheck className="w-3.5 h-3.5 text-orange-400" />
@@ -224,7 +248,7 @@ export function Navbar({
                     }`}
                   >
                     <Users className="w-3.5 h-3.5" />
-                    Student View
+                    {isAdminAuthed ? 'Student (Test)' : 'Student View'}
                   </button>
                 </div>
               </>

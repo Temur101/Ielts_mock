@@ -5,33 +5,13 @@ import {
   User, 
   ShieldCheck, 
   ArrowRight, 
-  Sparkles,
   AlertTriangle,
   FileCheck,
   RefreshCw
 } from 'lucide-react';
 import { Button } from '../common/Button';
-import { fetchExamByPin, generateUUID } from '../../lib/supabase';
-
-// Strict UUID v4 generator compatible with PostgreSQL uuid type
-const generateValidUUID = () => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  if (typeof generateUUID === 'function') {
-    try {
-      const id = generateUUID();
-      if (id && typeof id === 'string') return id;
-    } catch (e) {
-      console.warn('generateUUID fallback error:', e);
-    }
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-};
+import { fetchExamByPin, generateUUID, generateCryptoPin } from '../../lib/supabase';
+import { sealAnswerKeys, sanitizeExamForCandidate } from '../../lib/answerVault';
 
 export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, examStatus = 'lobby', shortCircuitPin = '' }) {
   // Check URL query parameter ?pin=...
@@ -78,15 +58,21 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
           return;
         }
 
-        const studentUUID = generateValidUUID();
-        const finalCandidateNo = candidateNo.trim() || `CAND-${Math.floor(1000 + Math.random() * 9000)}`;
+        // SEC-06: Seal raw answer keys into private in-memory vault
+        sealAnswerKeys(cleanPin, dbExam);
+
+        // SEC-06: Strip answers from exam before storing in localStorage or state
+        const safeExam = sanitizeExamForCandidate(dbExam);
+
+        const studentUUID = generateUUID();
+        const finalCandidateNo = candidateNo.trim() || `CAND-${generateCryptoPin().slice(0, 4)}`;
         const studentData = {
           id: studentUUID,
           name: name.trim(),
           candidate_no: finalCandidateNo,
           candidate_number: finalCandidateNo,
           pin_code: cleanPin,
-          dbExam: dbExam,
+          dbExam: safeExam, // Cleaned exam: ZERO answer keys in localStorage!
         };
 
         try {
@@ -100,60 +86,14 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
 
         onJoin(studentData);
       } else {
-        // If Supabase not reachable or offline, fallback to match current local exam PIN
-        if (activeLocalPin && cleanPin === activeLocalPin) {
-          const isLobbyAccessible = (isLobbyOpen || examStatus === 'active');
-          if (!isLobbyAccessible) {
-            setError('The classroom lobby has not been opened yet by the instructor. Please wait for your instructor to start.');
-            return;
-          }
-
-          const studentUUID = generateValidUUID();
-          const finalCandidateNo = candidateNo.trim() || `CAND-${Math.floor(1000 + Math.random() * 9000)}`;
-          const studentData = {
-            id: studentUUID,
-            name: name.trim(),
-            candidate_no: finalCandidateNo,
-            candidate_number: finalCandidateNo,
-            pin_code: cleanPin,
-            dbExam: null,
-          };
-
-          try {
-            if (typeof localStorage !== 'undefined') {
-              localStorage.setItem('ielts_student', JSON.stringify(studentData));
-              localStorage.setItem('current_student', JSON.stringify(studentData));
-            }
-          } catch (storageErr) {
-            console.warn('Failed to save student session to localStorage:', storageErr);
-          }
-
-          onJoin(studentData);
-        } else {
-          setError('Invalid PIN Code. Please check the code provided by your instructor.');
-        }
+        setError('Invalid Session PIN. Please verify the PIN code with your exam supervisor.');
       }
     } catch (err) {
       console.warn("Validation error:", err);
-      setError('Invalid PIN Code. Please check the code provided by your instructor.');
+      setError('Invalid Session PIN. Please verify the PIN code with your exam supervisor.');
     } finally {
       setIsValidating(false);
     }
-  };
-
-  const handleQuickDemo = () => {
-    const demoNames = [
-      "Javohir Toshpulatov", 
-      "Dilnoza Rahimova", 
-      "Sardor Ikromov", 
-      "Nigora Yusupova",
-      "Azizbek Kobilov"
-    ];
-    const pickedName = demoNames[Math.floor(Math.random() * demoNames.length)];
-    setName(pickedName);
-    setCandidateNo(`UZB-${Math.floor(1000 + Math.random() * 9000)}`);
-    setPinCode(defaultPin || '');
-    setError('');
   };
 
   return (
@@ -254,19 +194,6 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
             {isValidating ? 'Validating PIN...' : 'ENTER EXAM WAITING ROOM'}
           </Button>
         </form>
-
-        {/* Quick Demo Button */}
-        <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-          <span className="text-xs text-slate-400">Testing candidate flow?</span>
-          <button
-            type="button"
-            onClick={handleQuickDemo}
-            className="text-xs font-bold text-brand-600 hover:text-brand-700 flex items-center gap-1 hover:underline"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            Auto-fill Test Profile
-          </button>
-        </div>
 
         {/* Strict Anti-Cheat policy banner */}
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl text-[11px] text-slate-500 flex items-start gap-2.5">

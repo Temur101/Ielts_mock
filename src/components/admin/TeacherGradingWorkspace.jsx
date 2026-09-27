@@ -52,12 +52,12 @@ export function TeacherGradingWorkspace({
   const [task1Score, setTask1Score] = useState(
     student.writing_task1_band !== null && student.writing_task1_band !== undefined 
       ? student.writing_task1_band 
-      : 7.0
+      : null
   );
   const [task2Score, setTask2Score] = useState(
     student.writing_task2_band !== null && student.writing_task2_band !== undefined 
       ? student.writing_task2_band 
-      : 7.5
+      : null
   );
 
   const [filterReadingDiff, setFilterReadingDiff] = useState('all'); // 'all' | 'incorrect' | 'correct'
@@ -76,12 +76,12 @@ export function TeacherGradingWorkspace({
       setTask1Score(
         student.writing_task1_band !== null && student.writing_task1_band !== undefined 
           ? student.writing_task1_band 
-          : 7.0
+          : null
       );
       setTask2Score(
         student.writing_task2_band !== null && student.writing_task2_band !== undefined 
           ? student.writing_task2_band 
-          : 7.5
+          : null
       );
       setAiEvaluation(student.writing_ai_evaluation || null);
       setAiError(null);
@@ -185,9 +185,8 @@ export function TeacherGradingWorkspace({
         reading_score: readingCorrectCount,
         reading_band: readingBand,
         listening_score: listeningCorrectCount,
-        listening_band: listeningBand,
-        writing_task1_band: Number(task1Score),
-        writing_task2_band: Number(task2Score),
+        writing_task1_band: task1Score !== null && task1Score !== undefined ? Number(task1Score) : null,
+        writing_task2_band: task2Score !== null && task2Score !== undefined ? Number(task2Score) : null,
         writing_band: writingBand,
         overall_band: overallBand,
         writing_ai_evaluation: aiEvaluation,
@@ -248,10 +247,10 @@ export function TeacherGradingWorkspace({
           <div className="p-3 bg-slate-800/80 rounded-xl border border-slate-700">
             <div className="text-[10px] uppercase font-bold text-slate-400">3. Writing (Manual)</div>
             <div className="text-xl font-mono font-extrabold text-emerald-400 mt-0.5">
-              Band {writingBand || '—'}
+              {writingBand !== null && writingBand !== undefined ? `Band ${writingBand}` : 'Pending'}
             </div>
             <div className="text-[11px] text-slate-400 font-mono">
-              T1: {task1Score} • T2: {task2Score}
+              T1: {task1Score !== null && task1Score !== undefined ? task1Score : '—'} • T2: {task2Score !== null && task2Score !== undefined ? task2Score : '—'}
             </div>
           </div>
 
@@ -259,7 +258,7 @@ export function TeacherGradingWorkspace({
           <div className="p-3 bg-gradient-to-br from-brand-500 to-brand-600 rounded-xl border border-orange-400 shadow-glow flex flex-col justify-center">
             <div className="text-[10px] uppercase font-bold text-orange-100">Overall IELTS Band</div>
             <div className="text-2xl font-mono font-black text-white mt-0.5">
-              Band {overallBand || '—'}
+              {overallBand !== null && overallBand !== undefined ? `Band ${overallBand}` : 'Pending'}
             </div>
             <div className="text-[10px] text-orange-100 font-medium">
               Official IELTS average
@@ -496,10 +495,11 @@ export function TeacherGradingWorkspace({
                     Task 1 Band (1/3)
                   </label>
                   <select
-                    value={task1Score}
-                    onChange={(e) => setTask1Score(Number(e.target.value))}
+                    value={task1Score ?? ''}
+                    onChange={(e) => setTask1Score(e.target.value === '' ? null : Number(e.target.value))}
                     className="px-3 py-1.5 rounded-xl border border-brand-300 font-mono font-bold text-sm text-brand-700 bg-white focus:ring-2 focus:ring-brand-500"
                   >
+                    <option value="">Ungraded</option>
                     {[9.0, 8.5, 8.0, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5, 4.0, 3.5, 3.0, 2.0, 1.0].map(b => (
                       <option key={b} value={b}>Band {b.toFixed(1)}</option>
                     ))}
@@ -512,10 +512,11 @@ export function TeacherGradingWorkspace({
                     Task 2 Band (2/3)
                   </label>
                   <select
-                    value={task2Score}
-                    onChange={(e) => setTask2Score(Number(e.target.value))}
+                    value={task2Score ?? ''}
+                    onChange={(e) => setTask2Score(e.target.value === '' ? null : Number(e.target.value))}
                     className="px-3 py-1.5 rounded-xl border border-brand-300 font-mono font-bold text-sm text-brand-700 bg-white focus:ring-2 focus:ring-brand-500"
                   >
+                    <option value="">Ungraded</option>
                     {[9.0, 8.5, 8.0, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5, 4.0, 3.5, 3.0, 2.0, 1.0].map(b => (
                       <option key={b} value={b}>Band {b.toFixed(1)}</option>
                     ))}
@@ -525,7 +526,7 @@ export function TeacherGradingWorkspace({
                 {/* Combined Writing Result */}
                 <div className="p-2.5 bg-brand-500 text-white rounded-xl text-center min-w-[100px] shadow-sm">
                   <div className="text-[10px] font-bold uppercase">Writing Band</div>
-                  <div className="text-xl font-mono font-extrabold">{writingBand || '—'}</div>
+                  <div className="text-xl font-mono font-extrabold">{writingBand !== null && writingBand !== undefined ? writingBand : '—'}</div>
                 </div>
 
                 {/* Save Button in Writing Tab */}

@@ -536,13 +536,32 @@ export function normalizeTemplateGaps(template, questions = []) {
     }
   }
 
-  let assignIdx = 0;
+  // Identify which question numbers from qNums already exist in the template
+  const alreadyPresent = new Set();
+  const explicitBraceMatches = [...template.matchAll(/\{\{\s*(\d+)\s*\}\}/g)];
+  explicitBraceMatches.forEach(m => {
+    const num = Number(m[1]);
+    if (qNums.length === 0 || qNums.includes(num)) {
+      alreadyPresent.add(num);
+    }
+  });
+
+  const bracketMatches = [...template.matchAll(/\[\s*(\d+)\s*\]/g)];
+  bracketMatches.forEach(m => {
+    const num = Number(m[1]);
+    if (qNums.includes(num)) {
+      alreadyPresent.add(num);
+    }
+  });
+
+  const unassignedNums = qNums.filter(n => !alreadyPresent.has(n));
+  let unassignedIdx = 0;
   const nextQNum = () => {
-    if (assignIdx < qNums.length) {
-      return qNums[assignIdx++];
+    if (unassignedIdx < unassignedNums.length) {
+      return unassignedNums[unassignedIdx++];
     }
     const lastNum = qNums[qNums.length - 1] || 0;
-    return lastNum + (++assignIdx - qNums.length);
+    return lastNum + (++unassignedIdx - unassignedNums.length);
   };
 
   // 1. Pre-normalize empty brackets [ ] or ( ) into [q_num]
@@ -555,10 +574,29 @@ export function normalizeTemplateGaps(template, questions = []) {
   normalized = normalized.replace(
     /(?:\{\{|\@?\[|\()(?:\#|\@)?\s*(?:q_num|blank|\d+)\s*(?:\}\}|\]|\))/gi,
     (m) => {
-      const explicitNum = parseInt(m.replace(/[^\d]/g, ''), 10);
-      if (!isNaN(explicitNum) && qNums.includes(explicitNum)) {
-        return `{{${explicitNum}}}`;
+      // 1. If it's already an explicit {{N}} placeholder
+      if (m.startsWith('{{') && m.endsWith('}}')) {
+        const num = parseInt(m.replace(/[^\d]/g, ''), 10);
+        if (!isNaN(num) && (qNums.length === 0 || qNums.includes(num))) {
+          return `{{${num}}}`;
+        }
+        if (isNaN(num)) {
+          return `{{${nextQNum()}}}`;
+        }
+        return m;
       }
+
+      // 2. If it is bracketed [N] or parenthesized (N) with an explicit number
+      const explicitNum = parseInt(m.replace(/[^\d]/g, ''), 10);
+      if (!isNaN(explicitNum)) {
+        if (qNums.includes(explicitNum)) {
+          return `{{${explicitNum}}}`;
+        }
+        // If the number is NOT in qNums (e.g. year "(1995)", measurement, or unrelated reference), PRESERVE VERBATIM!
+        return m;
+      }
+
+      // 3. Otherwise it's a generic token (@[q_num], [q_num], [blank], (blank), etc.)
       return `{{${nextQNum()}}}`;
     }
   );
@@ -581,13 +619,11 @@ export function normalizeTemplateGaps(template, questions = []) {
 
   // 4. If there are still unassigned questions in qNums, replace standalone blank lines (_{2,} or .{4,})
   normalized = normalized.replace(/(_{2,}|\.{4,})(?!\s*\{\{\d+\}\})(?<!\{\{\d+\}\}\s*)/g, (match) => {
-    if (assignIdx < qNums.length) {
-      while (assignIdx < qNums.length && new RegExp(`\\{\\{${qNums[assignIdx]}\\}\\}`, 'i').test(normalized)) {
-        assignIdx++;
-      }
-      if (assignIdx < qNums.length) {
-        return `{{${nextQNum()}}}`;
-      }
+    while (unassignedIdx < unassignedNums.length && new RegExp(`\\{\\{${unassignedNums[unassignedIdx]}\\}\\}`, 'i').test(normalized)) {
+      unassignedIdx++;
+    }
+    if (unassignedIdx < unassignedNums.length) {
+      return `{{${nextQNum()}}}`;
     }
     return match;
   });
@@ -607,24 +643,7 @@ export function normalizeTemplateGaps(template, questions = []) {
   // 6. Ensure any lingering disconnected empty brackets [ ] or ( ) are purged
   normalized = normalized.replace(/\[\s*\]|\(\s*\)/g, '');
 
-  // 7. Guarantee that for EVERY question number from qNums, a placeholder {{N}} exists in the template.
-  // First attempt to match any standalone occurrence with word boundaries
-  qNums.forEach(num => {
-    let hasPlaceholder = new RegExp(`\\{\\{${num}\\}\\}`, 'i').test(normalized);
-    if (!hasPlaceholder) {
-      const fallbackRegex = new RegExp(`\\b${num}\\b`, 'g');
-      if (fallbackRegex.test(normalized)) {
-        normalized = normalized.replace(fallbackRegex, `{{${num}}}`);
-        hasPlaceholder = true;
-      }
-    }
-    // If still missing, append as a separate line at the end so the student is guaranteed an input field
-    if (!hasPlaceholder) {
-      normalized = normalized ? `${normalized.trimEnd()}\n{{${num}}}` : `{{${num}}}`;
-    }
-  });
-
-  // 8. Deduplicate open question numbers immediately adjacent to {{N}}
+  // 7. Deduplicate open question numbers immediately adjacent to {{N}}
   // E.g. "include 25 {{25}}" -> "include {{25}}", "25. {{25}}" -> "{{25}}", "{{25}} 25" -> "{{25}}"
   qNums.forEach(num => {
     const preRegex = new RegExp(`(^|\\s)\\b${num}\\b[\\.\\:\\-\\–\\s]*(\\{\\{${num}\\}\\})`, 'gi');
@@ -637,20 +656,66 @@ export function normalizeTemplateGaps(template, questions = []) {
 }
 
 /**
+ * Извлекает массив номеров вопросов из строкового шаблона (например, {{25}}, {{26}}).
+ * Поддерживает как строки, так и объекты/массивы шаблонов.
+ */
+export function extractQuestionNumbersFromTemplate(template) {
+  if (!template) return [];
+  const str = typeof template === 'string' ? template : JSON.stringify(template);
+  const matches = str.matchAll(/\{\{\s*(\d+)\s*\}\}/g);
+  const numbers = [];
+  for (const match of matches) {
+    const num = parseInt(match[1], 10);
+    if (!isNaN(num) && !numbers.includes(num)) {
+      numbers.push(num);
+    }
+  }
+  return numbers;
+}
+
+/**
+ * Checks whether a template string contains gap tokens matching any of the specified questions.
+ * Prevents assigning completion templates to unrelated groups (such as multiple choice).
+ */
+export function templateMatchesQuestions(tpl, questionList) {
+  if (!tpl || typeof tpl !== 'string') return false;
+  if (!Array.isArray(questionList) || questionList.length === 0) return true;
+  const explicitNums = [...tpl.matchAll(/(?:\{\{|\@?\[|\()(?:\#|\@)?\s*(\d+)\s*(?:\}\}|\]|\))/g)]
+    .map(m => Number(m[1]))
+    .filter(n => !isNaN(n) && n > 0 && n <= 40);
+  if (explicitNums.length === 0) {
+    return true; // No explicit numbers, generic template
+  }
+  const qNums = questionList.map(q => Number(q.questionNumber || q.q_num));
+  return qNums.some(n => explicitNums.includes(n));
+}
+
+/**
  * Groups consecutive questions into unified instruction blocks:
  * - Extracts and deduplicates group instruction (rendered once at top of container)
  * - Associates static reference box (rendered once below instruction, above questions)
  * - Categorizes block into 'MATCHING', 'SUMMARY_MATCHING', 'MULTIPLE_CHOICE', 'TFNG', 'NOTES', 'FLOW_CHART', 'FILL_BLANK'
  */
-export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = null) {
+export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = null, contextPartOrPassage = null) {
   if (!questions || questions.length === 0) return [];
+
+  const resolvedPart = contextPartOrPassage || 
+    (partOrPassageRefBox && !Array.isArray(partOrPassageRefBox) && typeof partOrPassageRefBox === 'object' ? partOrPassageRefBox : null);
+  const rawRef = Array.isArray(partOrPassageRefBox) 
+    ? partOrPassageRefBox 
+    : (resolvedPart?.reference_box || resolvedPart?.referenceBox || null);
+  const partFallbackTemplate = resolvedPart?.notes_template || 
+    resolvedPart?.notesTemplate || 
+    resolvedPart?.table_template || 
+    resolvedPart?.tableTemplate || 
+    '';
 
   // Strictly sort questions ascending by questionNumber to guarantee chronological sequence
   const sortedQuestions = [...questions].sort(
     (a, b) => Number(a.questionNumber || a.q_num || 0) - Number(b.questionNumber || b.q_num || 0)
   );
 
-  const defaultRefBox = normalizeReferenceBox(partOrPassageRefBox);
+  const defaultRefBox = normalizeReferenceBox(rawRef);
   const groups = [];
   let currentGroup = null;
 
@@ -923,9 +988,11 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         } else if (category === 'MATCHING_FEATURES') {
           groupInstruction = 'Look at the following statements and the list of options below. Match each statement with the correct option.';
         } else if (category === 'MATCHING_INFORMATION') {
-          groupInstruction = 'Which paragraph contains the following information? Write the correct letter, A-H, in boxes on your answer sheet.';
+          const lastKey = effectiveRefBox[effectiveRefBox.length - 1]?.key || 'H';
+          groupInstruction = `Which paragraph contains the following information? Write the correct letter, A–${lastKey}, in boxes on your answer sheet.`;
         } else if (category === 'SUMMARY_MATCHING') {
-          groupInstruction = 'Complete the summary using the list of words below. Write the correct letter, A–J, in the spaces provided.';
+          const lastKey = effectiveRefBox[effectiveRefBox.length - 1]?.key || 'J';
+          groupInstruction = `Complete the summary using the list of words below. Write the correct letter, A–${lastKey}, in the spaces provided.`;
         } else if (category === 'SUMMARY_COMPLETION') {
           groupInstruction = 'Complete the summary below. Choose NO MORE THAN TWO WORDS from the passage for each answer.';
         } else if (category === 'TABLE_COMPLETION') {
@@ -943,9 +1010,13 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
             groupInstruction = 'Match each item with the correct letter from the options.';
           }
         } else if (category === 'MULTIPLE_CHOICE' || category === 'MULTIPLE_CHOICE_MULTI') {
-          groupInstruction = category === 'MULTIPLE_CHOICE_MULTI'
-            ? 'Choose the correct letters.'
-            : 'Choose the correct letter, A, B, C, or D.';
+          if (category === 'MULTIPLE_CHOICE_MULTI') {
+            groupInstruction = 'Choose the correct letters.';
+          } else {
+            const optCount = Array.isArray(q.options) && q.options.length > 0 ? q.options.length : effectiveRefBox.length;
+            const letters = optCount === 3 ? 'A, B, or C' : optCount === 5 ? 'A, B, C, D, or E' : 'A, B, C, or D';
+            groupInstruction = `Choose the correct letter, ${letters}.`;
+          }
         } else if (category === 'NOTES') {
           groupInstruction = 'Complete the notes below. Write ONE WORD AND/OR A NUMBER for each answer.';
         } else {
@@ -953,6 +1024,20 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         }
       }
 
+      const isCompletionCategory = (cat) => 
+        cat === 'TABLE_COMPLETION' ||
+        cat === 'FORM_COMPLETION' ||
+        cat === 'NOTES' ||
+        cat === 'SUMMARY_COMPLETION' ||
+        cat === 'SUMMARY_WORDS' ||
+        cat === 'SUMMARY_TEXT' ||
+        cat === 'FILL_BLANK';
+
+      const candidateFallback = (isCompletionCategory(category) && templateMatchesQuestions(partFallbackTemplate, [questionItem]))
+        ? partFallbackTemplate
+        : null;
+
+      const groupTpl = q.summary_template || q.notes_template || q.table_template || candidateFallback || null;
       currentGroup = {
         id: `group-${qNum}`,
         startQ: qNum,
@@ -961,8 +1046,9 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
         instruction: groupInstruction,
         title: q.title || '',
         subheading: q.subheading || '',
-        summaryTemplate: q.summary_template || q.notes_template || null,
-        notes_template: q.notes_template || q.summary_template || null,
+        summaryTemplate: groupTpl,
+        notes_template: groupTpl,
+        table_template: q.table_template || (category === 'TABLE_COMPLETION' ? candidateFallback : null),
         category,
         referenceBox: effectiveRefBox,
         refBox: effectiveRefBox,
@@ -972,9 +1058,23 @@ export function groupQuestionsIntoSets(questions = [], partOrPassageRefBox = nul
       if (!currentGroup.title && q.title) {
         currentGroup.title = q.title;
       }
-      if (!currentGroup.summaryTemplate && (q.summary_template || q.notes_template)) {
-        currentGroup.summaryTemplate = q.summary_template || q.notes_template;
-        currentGroup.notes_template = q.notes_template || q.summary_template;
+      const isCompletion = currentGroup.category === 'TABLE_COMPLETION' ||
+        currentGroup.category === 'FORM_COMPLETION' ||
+        currentGroup.category === 'NOTES' ||
+        currentGroup.category === 'SUMMARY_COMPLETION' ||
+        currentGroup.category === 'SUMMARY_WORDS' ||
+        currentGroup.category === 'SUMMARY_TEXT' ||
+        currentGroup.category === 'FILL_BLANK';
+
+      const candidateFallback = (isCompletion && templateMatchesQuestions(partFallbackTemplate, [...currentGroup.questions, questionItem]))
+        ? partFallbackTemplate
+        : null;
+
+      if (!currentGroup.summaryTemplate && (q.summary_template || q.notes_template || q.table_template || candidateFallback)) {
+        const groupTpl = q.summary_template || q.notes_template || q.table_template || candidateFallback;
+        currentGroup.summaryTemplate = groupTpl;
+        currentGroup.notes_template = groupTpl;
+        currentGroup.table_template = q.table_template || (currentGroup.category === 'TABLE_COMPLETION' ? candidateFallback : null);
       }
       if ((!currentGroup.referenceBox || currentGroup.referenceBox.length === 0) && effectiveRefBox.length > 0) {
         currentGroup.referenceBox = effectiveRefBox;

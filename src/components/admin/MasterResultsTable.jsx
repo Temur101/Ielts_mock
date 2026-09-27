@@ -72,10 +72,10 @@ export function MasterResultsTable({
       lBand = calculateIeltsListeningBand(lScore, lQuestions.length || 40);
     }
 
-    const t1Band = s.writing_task1_band ?? 6.5;
-    const t2Band = s.writing_task2_band ?? 7.0;
-    const wBand = s.writing_band ?? calculateWritingBand(t1Band, t2Band);
-    const oBand = s.overall_band ?? calculateOverallIeltsBand(rBand, lBand, wBand);
+    const t1Band = s.writing_task1_band ?? null;
+    const t2Band = s.writing_task2_band ?? null;
+    const wBand = s.writing_band ?? (t1Band !== null && t2Band !== null ? calculateWritingBand(t1Band, t2Band) : null);
+    const oBand = s.overall_band ?? (wBand !== null ? calculateOverallIeltsBand(rBand, lBand, wBand) : null);
 
     return {
       ...s,
@@ -88,14 +88,20 @@ export function MasterResultsTable({
     };
   });
 
-  // Averages
-  const totalGraded = gradedStudents.length || 1;
-  const avgReadingScore = (gradedStudents.reduce((acc, s) => acc + (s.computed_reading_score || 0), 0) / totalGraded).toFixed(1);
-  const avgReadingBand = (gradedStudents.reduce((acc, s) => acc + (s.computed_reading_band || 0), 0) / totalGraded).toFixed(1);
-  const avgListeningScore = (gradedStudents.reduce((acc, s) => acc + (s.computed_listening_score || 0), 0) / totalGraded).toFixed(1);
-  const avgListeningBand = (gradedStudents.reduce((acc, s) => acc + (s.computed_listening_band || 0), 0) / totalGraded).toFixed(1);
-  const avgWritingBand = (gradedStudents.reduce((acc, s) => acc + (s.computed_writing_band || 0), 0) / totalGraded).toFixed(1);
-  const avgOverallBand = (gradedStudents.reduce((acc, s) => acc + (s.computed_overall_band || 0), 0) / totalGraded).toFixed(1);
+  // Averages (filter out null/undefined)
+  const readingScores = gradedStudents.map(s => s.computed_reading_score).filter(v => v !== null && v !== undefined);
+  const readingBands = gradedStudents.map(s => s.computed_reading_band).filter(v => v !== null && v !== undefined);
+  const listeningScores = gradedStudents.map(s => s.computed_listening_score).filter(v => v !== null && v !== undefined);
+  const listeningBands = gradedStudents.map(s => s.computed_listening_band).filter(v => v !== null && v !== undefined);
+  const writingBands = gradedStudents.map(s => s.computed_writing_band).filter(v => v !== null && v !== undefined);
+  const overallBands = gradedStudents.map(s => s.computed_overall_band).filter(v => v !== null && v !== undefined);
+
+  const avgReadingScore = readingScores.length ? (readingScores.reduce((a, b) => a + b, 0) / readingScores.length).toFixed(1) : '—';
+  const avgReadingBand = readingBands.length ? (readingBands.reduce((a, b) => a + b, 0) / readingBands.length).toFixed(1) : '—';
+  const avgListeningScore = listeningScores.length ? (listeningScores.reduce((a, b) => a + b, 0) / listeningScores.length).toFixed(1) : '—';
+  const avgListeningBand = listeningBands.length ? (listeningBands.reduce((a, b) => a + b, 0) / listeningBands.length).toFixed(1) : '—';
+  const avgWritingBand = writingBands.length ? (writingBands.reduce((a, b) => a + b, 0) / writingBands.length).toFixed(1) : '—';
+  const avgOverallBand = overallBands.length ? (overallBands.reduce((a, b) => a + b, 0) / overallBands.length).toFixed(1) : '—';
 
   const handlePrintPDF = () => {
     window.print();
@@ -155,13 +161,17 @@ export function MasterResultsTable({
 
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm text-center">
           <div className="text-[10px] uppercase font-bold text-amber-600">Writing Avg</div>
-          <div className="text-xl font-mono font-extrabold text-amber-600 mt-1">Band {avgWritingBand}</div>
+          <div className="text-xl font-mono font-extrabold text-amber-600 mt-1">
+            {avgWritingBand === '—' ? 'Pending' : `Band ${avgWritingBand}`}
+          </div>
           <div className="text-[10px] font-mono text-slate-400">T1 & T2 Evaluation</div>
         </div>
 
         <div className="bg-gradient-to-br from-brand-500 to-brand-600 text-white p-4 rounded-2xl shadow-sm text-center col-span-2 sm:col-span-2">
           <div className="text-[10px] uppercase font-bold text-brand-100">Overall Class Average</div>
-          <div className="text-2xl font-mono font-extrabold mt-1">IELTS Band {avgOverallBand}</div>
+          <div className="text-2xl font-mono font-extrabold mt-1">
+            {avgOverallBand === '—' ? 'Pending' : `IELTS Band ${avgOverallBand}`}
+          </div>
           <div className="text-[10px] text-brand-100 font-mono">Official IELTS 0.5 Rounding</div>
         </div>
       </div>
@@ -175,7 +185,7 @@ export function MasterResultsTable({
             <p className="text-xs text-slate-400 mt-1">Exam: {exam.title} • PIN: {exam.pin_code} • Date: {new Date().toLocaleDateString()}</p>
           </div>
           <div className="text-right text-xs text-slate-400">
-            <div>Examiner ID: EXAM-IELTS-ADMIN</div>
+            <div>Examiner: {exam.teacher_name || exam.teacher?.name || 'Authorized Examiner'}</div>
             <div>Generated: {new Date().toLocaleTimeString()}</div>
           </div>
         </div>
@@ -295,7 +305,7 @@ export function MasterResultsTable({
                     <td className="py-4 px-3 text-center">
                       <div className="flex items-center justify-center gap-1.5">
                         <span className="font-mono font-extrabold text-sm text-amber-600">
-                          Band {wBand}
+                          {wBand !== null && wBand !== undefined ? `Band ${wBand}` : 'Pending'}
                         </span>
                         {student.writing_ai_evaluation && (
                           <span 
@@ -309,14 +319,14 @@ export function MasterResultsTable({
                         )}
                       </div>
                       <div className="text-[10px] font-mono text-slate-400">
-                        T1: {t1Words}w ({t1Band}) • T2: {t2Words}w ({t2Band})
+                        T1: {t1Words}w ({t1Band !== null && t1Band !== undefined ? t1Band : '—'}) • T2: {t2Words}w ({t2Band !== null && t2Band !== undefined ? t2Band : '—'})
                       </div>
                     </td>
 
                     {/* Overall IELTS Band */}
                     <td className="py-4 px-4 text-center">
                       <span className="inline-block px-3 py-1 rounded-xl bg-gradient-to-r from-brand-500 to-brand-600 text-white font-mono font-extrabold text-sm shadow-sm">
-                        Band {overallBand}
+                        {overallBand !== null && overallBand !== undefined ? `Band ${overallBand}` : 'Pending'}
                       </span>
                     </td>
 

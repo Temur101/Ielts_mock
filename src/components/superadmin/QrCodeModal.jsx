@@ -21,7 +21,7 @@ export function QrCodeModal({ session, onClose }) {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const modalRef = useRef(null);
 
-  const pinCode = session?.pin_code || 'IELTS-904';
+  const pinCode = session?.pin_code || '';
   const joinUrl = typeof window !== 'undefined' 
     ? `${window.location.origin}/join?pin=${pinCode}`
     : `https://exam.domain.com/join?pin=${pinCode}`;

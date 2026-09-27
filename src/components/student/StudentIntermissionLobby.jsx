@@ -185,7 +185,7 @@ export function StudentIntermissionLobby({
               <div className="text-[10px] uppercase font-bold text-slate-400">Connection</div>
               <div className="flex items-center gap-1 font-mono font-bold text-emerald-600 mt-0.5">
                 <Wifi className="w-3.5 h-3.5" />
-                <span>{student.ping_ms || 24}ms (Active)</span>
+                <span>{student.ping_ms ? `${student.ping_ms}ms (Active)` : 'Connected'}</span>
               </div>
             </div>
           </div>

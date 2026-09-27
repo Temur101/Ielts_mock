@@ -101,17 +101,35 @@ export function isUuid(val) {
 }
 
 /**
- * Generates a valid standard RFC4122 v4 UUID
+ * Generates a valid standard RFC4122 v4 UUID using Web Cryptography API
  */
 export function generateUUID() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10xx
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return '00000000-0000-4000-8000-000000000000';
+}
+
+/**
+ * Generates a cryptographically secure 6-character uppercase exam Session PIN
+ * Excludes easily confusable characters (0, O, 1, I)
+ */
+export function generateCryptoPin() {
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, b => chars[b % chars.length]).join('');
+  }
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
 /**
@@ -251,6 +269,27 @@ export async function fetchExamByPin(pinCode) {
 }
 
 /**
+ * Securely fetches exam answer keys by Session PIN strictly at final submission
+ */
+export async function fetchExamAnswerKeys(pinCode) {
+  const supabase = getSupabaseClient();
+  if (!supabase || !pinCode) return { data: null, error: new Error("No client or PIN") };
+
+  try {
+    const { data, error } = await supabase
+      .from("exams")
+      .select("id, pin_code, answer_keys, reading_questions, listening_questions")
+      .eq("pin_code", pinCode.trim().toUpperCase())
+      .maybeSingle();
+
+    return { data, error };
+  } catch (err) {
+    console.warn("fetchExamAnswerKeys error:", err);
+    return { data: null, error: err };
+  }
+}
+
+/**
  * Safely updates an exam record by ID or PIN, or inserts if no existing record is found.
  * Avoids HTTP 409 Conflict on primary key or unique pin_code constraints.
  */
@@ -356,8 +395,11 @@ export async function updateExamStage(examId, currentStage, meta = {}) {
     };
 
     if (currentStage.endsWith('_active')) {
-      payload.status = 'active';
+      payload.status = meta.status || 'in_progress';
       payload.stage_started_at = meta.stage_started_at || new Date().toISOString();
+      if (meta.stage_ends_at) {
+        payload.stage_ends_at = meta.stage_ends_at;
+      }
       if (!meta.started_at && currentStage === 'listening_active') {
         payload.started_at = payload.stage_started_at;
       }
@@ -554,6 +596,7 @@ export async function updateExamPinCode(examId, newPin) {
 
 /**
  * Upserts a student participant in the exam room with resilient schema adaptation
+ * Guarantees persistence of reading, listening, writing essays, bands, and stage statuses.
  */
 export async function upsertStudent(student) {
   const supabase = getSupabaseClient();
@@ -567,9 +610,26 @@ export async function upsertStudent(student) {
       student_name: student.student_name || student.name,
       candidate_no: student.candidate_no,
       status: student.status || "waiting",
+      current_stage: student.current_stage || "exam_completed",
+      reading_status: student.reading_status || "completed",
+      listening_status: student.listening_status || "completed",
+      writing_status: student.writing_status || "completed",
       answers: student.answers || {},
       answered_count: student.answered_count || 0,
       warning_count: student.warning_count || 0,
+      reading_score: student.reading_score ?? null,
+      reading_band: student.reading_band ?? null,
+      listening_score: student.listening_score ?? null,
+      listening_band: student.listening_band ?? null,
+      writing_task1_essay: student.writing_task1_essay ?? "",
+      writing_task2_essay: student.writing_task2_essay ?? "",
+      writing_task1_band: student.writing_task1_band ?? null,
+      writing_task2_band: student.writing_task2_band ?? null,
+      writing_band: student.writing_band ?? null,
+      overall_band: student.overall_band ?? null,
+      score: student.score ?? student.reading_score ?? null,
+      band_score: student.band_score ?? student.reading_band ?? null,
+      ...(student.writing_ai_evaluation !== undefined ? { writing_ai_evaluation: student.writing_ai_evaluation } : {}),
       last_seen: new Date().toISOString(),
     };
 
@@ -583,6 +643,7 @@ export async function upsertStudent(student) {
 
     return { data: res?.data || student, error: res?.error || null };
   } catch (err) {
+    console.error("[upsertStudent] Error persisting student submission:", err);
     return { data: student, error: err };
   }
 }
@@ -644,7 +705,7 @@ export function subscribeToExamRealtime(pinCode, callbacks = {}) {
   if (!supabase) return null;
 
   const channel = supabase
-    .channel(`exam_room_${pinCode}_${Date.now()}`)
+    .channel(`exam_room_${pinCode}`)
     .on(
       "postgres_changes",
       { event: "*", schema: "public", table: "exams" },
@@ -670,6 +731,19 @@ export function subscribeToExamRealtime(pinCode, callbacks = {}) {
     });
 
   return channel;
+}
+
+/**
+ * Completely removes and destroys a Supabase Realtime Channel from client memory
+ */
+export function removeExamRealtimeChannel(channel) {
+  if (!channel) return;
+  const supabase = getSupabaseClient();
+  if (supabase && typeof supabase.removeChannel === 'function') {
+    supabase.removeChannel(channel);
+  } else if (typeof channel.unsubscribe === 'function') {
+    channel.unsubscribe();
+  }
 }
 
 /**

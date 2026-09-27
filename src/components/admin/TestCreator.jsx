@@ -27,7 +27,7 @@ import {
   Image as ImageIcon
 } from 'lucide-react';
 import { Button } from '../common/Button';
-import { getSupabaseClient, updateExamAssets, persistExamAndSections, isValidUUID, generateUUID } from '../../lib/supabase';
+import { getSupabaseClient, updateExamAssets, persistExamAndSections, isValidUUID, generateUUID, generateCryptoPin } from '../../lib/supabase';
 import { 
   savePersistentExam, 
   setIndexedDBItem, 
@@ -36,7 +36,7 @@ import {
 } from '../../lib/persistentStorage';
 import { apiParseExamPdf, apiParseExamSection } from '../../lib/ai/gemini-client';
 
-export const createEmptyExam = (examId, pinCode = 'IELTS-904') => ({
+export const createEmptyExam = (examId, pinCode = '') => ({
   id: examId,
   title: 'IELTS Academic Master Assessment',
   pin_code: pinCode,
@@ -99,7 +99,7 @@ const isRateLimitError = (err) => {
 export function TestCreator({ exam, onUpdateExam }) {
   // Global Exam Settings
   const [title, setTitle] = useState(exam.title || 'IELTS Academic Master Assessment 2026');
-  const [pinCode, setPinCode] = useState(exam.pin_code || 'IELTS-904');
+  const [pinCode, setPinCode] = useState(exam.pin_code || '');
   const [duration, setDuration] = useState(exam.duration_mins || 60);
   const [strictness, setStrictness] = useState(exam.anti_cheat_strictness || 'strict');
 
@@ -581,8 +581,7 @@ export function TestCreator({ exam, onUpdateExam }) {
 
   // Generate PIN
   const generateNewPin = () => {
-    const rand = Math.floor(100 + Math.random() * 900);
-    setPinCode(`IELTS-${rand}`);
+    setPinCode(generateCryptoPin());
   };
 
   // =========================================================================
@@ -941,41 +940,32 @@ export function TestCreator({ exam, onUpdateExam }) {
         },
       } : (exam.writing_tasks || exam.writing || {});
 
-      // Build structured Listening parts
-      const listeningPartsPayload = [
-        { 
-          partId: 1, 
-          title: listeningParsed?.sections?.[0]?.title || 'Part 1: Social Dialogue', 
-          audio_name: listeningAudios.part1.name, 
-          audio_url: listeningAudios.part1.url, 
-          duration: listeningAudios.part1.duration,
-          page_content_html: listeningParsed?.sections?.[0]?.page_content_html || '',
-        },
-        { 
-          partId: 2, 
-          title: listeningParsed?.sections?.[1]?.title || 'Part 2: Community Guide', 
-          audio_name: listeningAudios.part2.name, 
-          audio_url: listeningAudios.part2.url, 
-          duration: listeningAudios.part2.duration,
-          page_content_html: listeningParsed?.sections?.[1]?.page_content_html || '',
-        },
-        { 
-          partId: 3, 
-          title: listeningParsed?.sections?.[2]?.title || 'Part 3: Academic Tutorial', 
-          audio_name: listeningAudios.part3.name, 
-          audio_url: listeningAudios.part3.url, 
-          duration: listeningAudios.part3.duration,
-          page_content_html: listeningParsed?.sections?.[2]?.page_content_html || '',
-        },
-        { 
-          partId: 4, 
-          title: listeningParsed?.sections?.[3]?.title || 'Part 4: University Lecture', 
-          audio_name: listeningAudios.part4.name, 
-          audio_url: listeningAudios.part4.url, 
-          duration: listeningAudios.part4.duration,
-          page_content_html: listeningParsed?.sections?.[3]?.page_content_html || '',
-        },
-      ];
+      // Build structured Listening parts with full template, instruction, and reference box propagation
+      const resolveListeningPartSource = (idx) => {
+        return listeningParsed?.parts?.[idx] || listeningParsed?.sections?.[idx] || {};
+      };
+
+      const listeningPartsPayload = [1, 2, 3, 4].map((partNum) => {
+        const idx = partNum - 1;
+        const partSrc = resolveListeningPartSource(idx);
+        const audioKey = `part${partNum}`;
+        const audioObj = listeningAudios[audioKey] || {};
+
+        return {
+          partId: partNum,
+          part: partNum,
+          title: partSrc.title || `Part ${partNum}`,
+          audio_name: audioObj.name || '',
+          audio_url: audioObj.url || '',
+          duration: audioObj.duration || '',
+          instruction: partSrc.instruction || '',
+          notes_template: partSrc.notes_template || partSrc.notesTemplate || '',
+          table_template: partSrc.table_template || partSrc.tableTemplate || '',
+          reference_box: partSrc.reference_box || partSrc.referenceBox || null,
+          referenceBox: partSrc.reference_box || partSrc.referenceBox || null,
+          page_content_html: partSrc.page_content_html || '',
+        };
+      });
 
       const listeningAudioParts = {
         part1: listeningAudios.part1.url,
@@ -998,7 +988,25 @@ export function TestCreator({ exam, onUpdateExam }) {
         part4: listeningAudios.part4.duration,
       };
 
-      const listeningQuestions = listeningParsed?.questions || exam.listening_questions || exam.listening?.questions || [];
+      const rawListeningQuestions = listeningParsed?.questions || exam.listening_questions || exam.listening?.questions || [];
+      const listeningQuestions = rawListeningQuestions.map((q) => {
+        const pId = Number(q.partId || q.part || 1);
+        const parentPart = listeningPartsPayload.find((p) => p.partId === pId) || resolveListeningPartSource(pId - 1);
+        const inheritedNotesTemplate = q.notes_template || q.summary_template || parentPart.notes_template || '';
+        const inheritedTableTemplate = q.table_template || parentPart.table_template || '';
+        const inheritedInstruction = q.instruction || parentPart.instruction || '';
+        const inheritedRefBox = q.reference_box || q.referenceBox || parentPart.reference_box || null;
+
+        return {
+          ...q,
+          instruction: inheritedInstruction,
+          notes_template: inheritedNotesTemplate,
+          summary_template: inheritedNotesTemplate,
+          table_template: inheritedTableTemplate,
+          reference_box: inheritedRefBox,
+          referenceBox: inheritedRefBox,
+        };
+      });
 
       const targetExamId = (exam?.id && isValidUUID(exam.id))
         ? exam.id
@@ -1009,7 +1017,7 @@ export function TestCreator({ exam, onUpdateExam }) {
         ...exam,
         id: targetExamId,
         title,
-        pin_code: pinCode || (exam?.id && !isValidUUID(exam.id) ? exam.id : 'IELTS-904'),
+        pin_code: pinCode || exam.pin_code || generateCryptoPin(),
         duration_mins: Number(duration),
         anti_cheat_strictness: strictness,
         task_1_prompt: extractedTask1Prompt,
@@ -1146,11 +1154,12 @@ export function TestCreator({ exam, onUpdateExam }) {
     }
   };
 
-  const handleResetToDefault = async () => {
-    if (!window.confirm("Вы уверены, что хотите сбросить тест к стандартному исходному тесту? Все загруженные файлы будут сброшены.")) {
+  const handleResetToDefault = () => {
+    if (!window.confirm("Вы уверены, что хотите очистить черновик формы создания теста? Несохраненные загруженные файлы и параметры формы будут сброшены.")) {
       return;
     }
-    await purgeAllExamData();
+
+    // Reset local drafts in TestCreator without purging active database rooms or wiping exam state
     setListeningPdfs([]);
     setListeningMapImage({ name: '', url: '', file: null });
     setReadingPdfs([]);
@@ -1162,23 +1171,23 @@ export function TestCreator({ exam, onUpdateExam }) {
       part4: { partId: 4, title: 'Part 4: University Lecture', name: '', url: '', duration: '08:30' },
     });
 
+    if (listeningPdfRef.current) listeningPdfRef.current.value = '';
+    if (readingPdfRef.current) readingPdfRef.current.value = '';
+    if (writingPdfRef.current) writingPdfRef.current.value = '';
+    if (listeningMapImageRef.current) listeningMapImageRef.current.value = '';
+    Object.values(listeningAudioFileRefs).forEach(ref => {
+      if (ref?.current) ref.current.value = '';
+    });
+
     try { localStorage.removeItem('ielts_listening_pdf'); } catch (e) {}
     try { localStorage.removeItem('ielts_listening_map_image'); } catch (e) {}
     try { localStorage.removeItem('ielts_reading_pdf'); } catch (e) {}
     try { localStorage.removeItem('ielts_writing_pdf'); } catch (e) {}
 
-    const newExamId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
-      ? crypto.randomUUID()
-      : (typeof generateUUID === 'function' ? generateUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-          const r = (Math.random() * 16) | 0;
-          const v = c === 'x' ? r : (r & 0x3) | 0x8;
-          return v.toString(16);
-        }));
-
-    const cleanExam = createEmptyExam(newExamId, pinCode || exam.pin_code || 'IELTS-904');
-    await savePersistentExam(cleanExam);
-    onUpdateExam(cleanExam);
-    window.location.reload();
+    setTitle(exam.title || 'IELTS Academic Master Assessment 2026');
+    setDuration(exam.duration_mins || 60);
+    setStrictness(exam.anti_cheat_strictness || 'strict');
+    setPinCode(exam.pin_code || '');
   };
 
   return (
@@ -1294,7 +1303,6 @@ export function TestCreator({ exam, onUpdateExam }) {
               onChange={(e) => setDuration(e.target.value)}
               className="w-full px-3.5 py-2 text-xs rounded-xl border border-slate-200 focus:ring-2 focus:ring-brand-500 font-semibold text-slate-900 bg-white"
             >
-              <option value={15}>15 Minutes (Demo)</option>
               <option value={30}>30 Minutes</option>
               <option value={60}>60 Minutes (Standard)</option>
               <option value={120}>120 Minutes (Full Battery)</option>

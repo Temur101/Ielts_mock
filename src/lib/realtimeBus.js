@@ -7,28 +7,31 @@ class RealtimeBus {
     this.subscribers = new Set();
     this.channel = null;
 
-    if (typeof window !== "undefined" && "BroadcastChannel" in window) {
-      try {
-        this.channel = new BroadcastChannel(CHANNEL_NAME);
-        this.channel.onmessage = (event) => {
-          this.notifySubscribers(event.data);
-        };
-      } catch (err) {
-        console.warn("BroadcastChannel error, falling back to storage events:", err);
-      }
-    }
-
     if (typeof window !== "undefined") {
-      window.addEventListener("storage", (e) => {
-        if (e.key === "ielts_event_bus" && e.newValue) {
-          try {
-            const data = JSON.parse(e.newValue);
-            this.notifySubscribers(data);
-          } catch (err) {
-            console.error("Failed to parse storage event:", err);
-          }
+      if ("BroadcastChannel" in window) {
+        try {
+          this.channel = new BroadcastChannel(CHANNEL_NAME);
+          this.channel.onmessage = (event) => {
+            this.notifySubscribers(event.data);
+          };
+        } catch (err) {
+          console.warn("BroadcastChannel error, falling back to storage events:", err);
         }
-      });
+      }
+
+      // Attach storage listener ONLY as a fallback if BroadcastChannel is not supported or failed
+      if (!this.channel) {
+        window.addEventListener("storage", (e) => {
+          if (e.key === "ielts_event_bus" && e.newValue) {
+            try {
+              const data = JSON.parse(e.newValue);
+              this.notifySubscribers(data);
+            } catch (err) {
+              console.error("Failed to parse storage event:", err);
+            }
+          }
+        });
+      }
     }
   }
 
@@ -65,10 +68,8 @@ class RealtimeBus {
       } catch (err) {
         console.warn("Failed to broadcast via channel:", err);
       }
-    }
-
-    // 3. Fallback sync via localStorage
-    if (typeof window !== "undefined") {
+    } else if (typeof window !== "undefined") {
+      // 3. Fallback sync via localStorage only if BroadcastChannel is not active
       try {
         localStorage.setItem("ielts_event_bus", JSON.stringify(message));
       } catch (err) {

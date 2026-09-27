@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { 
   Users, 
   Play, 
-  UserPlus, 
   Wifi, 
   ShieldAlert, 
   Clock, 
@@ -19,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
+import { calculateStageDurationSeconds, formatExamTimer } from '../../lib/examTimerUtils';
 
 export function LiveLobby({ 
   exam, 
@@ -28,7 +28,6 @@ export function LiveLobby({
   onSetStage,
   onResetSession,
   onOpenMasterResults,
-  onAddMockStudents, 
   onKickStudent 
 }) {
   const [copiedPin, setCopiedPin] = useState(false);
@@ -44,7 +43,13 @@ export function LiveLobby({
   const isExamConcluded = currentStage === 'exam_completed' || currentStage === 'writing_finished' || exam.status === 'finished';
   const isLobbyOpen = exam.is_lobby_open || false;
 
-  const waitingCount = students.filter(s => {
+  // Filter candidates strictly for current exam session
+  const examStudents = (students || []).filter(s => {
+    if (!exam?.id) return true;
+    return !s.exam_id || s.exam_id === exam.id;
+  });
+
+  const waitingCount = examStudents.filter(s => {
     if (isExamConcluded) return false;
     if (currentStage === 'reading_lobby') return s.reading_status === 'lobby' || s.listening_status === 'completed';
     if (currentStage === 'writing_lobby') return s.writing_status === 'lobby' || s.reading_status === 'completed';
@@ -63,6 +68,9 @@ export function LiveLobby({
     }
   };
 
+  const listeningDurationSec = calculateStageDurationSeconds('listening_active', exam);
+  const listeningDurationMins = Math.round(listeningDurationSec / 60);
+
   return (
     <div className="space-y-6">
 
@@ -77,7 +85,9 @@ export function LiveLobby({
                 <Badge variant="brand" pulse size="sm">
                   STAGE 1: LISTENING CLASSROOM LOBBY
                 </Badge>
-                <span className="text-xs font-mono text-slate-500 font-semibold">Duration: {exam.listening_duration_mins || 35} mins</span>
+                <span className="text-xs font-mono text-slate-500 font-semibold">
+                  Duration: {listeningDurationMins} mins ({formatExamTimer(listeningDurationSec)})
+                </span>
               </div>
               
               <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900">
@@ -113,7 +123,7 @@ export function LiveLobby({
                 onClick={handleStartListeningClick}
                 className="py-4 text-base font-extrabold shadow-glow-lg whitespace-nowrap bg-brand-500 hover:bg-brand-600 text-white"
               >
-                START LISTENING FOR ALL ({students.length})
+                START LISTENING FOR ALL ({examStudents.length})
               </Button>
             </div>
           </div>
@@ -128,7 +138,7 @@ export function LiveLobby({
           </div>
           <div>
             <h3 className="text-sm font-bold text-slate-900">
-              Connected Candidates ({students.length})
+              Connected Candidates ({examStudents.length})
             </h3>
             <p className="text-xs text-slate-500">
               Real-time WebSocket / Broadcast heartbeat active
@@ -137,32 +147,22 @@ export function LiveLobby({
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            icon={UserPlus}
-            onClick={onAddMockStudents}
-          >
-            + Add 2 Test Student Bots
-          </Button>
+          {/* Bot test button excised */}
         </div>
       </div>
 
       {/* Student Cards Grid */}
-      {students.length === 0 ? (
+      {examStudents.length === 0 ? (
         <div className="bg-white rounded-2xl border-2 border-dashed border-slate-200 p-12 text-center space-y-3">
           <Users className="w-10 h-10 text-slate-300 mx-auto" />
           <h4 className="text-base font-bold text-slate-700">No Candidates in Waiting Room</h4>
           <p className="text-xs text-slate-500 max-w-md mx-auto">
-            Tell students to enter PIN <strong className="font-mono text-brand-600">{exam.pin_code}</strong> on the Student View, or click the button below to add test bots.
+            Direct candidates to enter Session PIN <strong className="font-mono text-brand-600">{exam.pin_code}</strong> on the candidate portal to join the waiting room.
           </p>
-          <Button variant="primary" size="sm" icon={UserPlus} onClick={onAddMockStudents}>
-            Add Simulated Candidates
-          </Button>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {students.map((student, sIdx) => {
+          {examStudents.map((student, sIdx) => {
             if (!student) return null;
             const isReadyInLobby = (currentStage === 'reading_lobby' && (student.reading_status === 'lobby' || student.listening_status === 'completed')) ||
                                   (currentStage === 'writing_lobby' && (student.writing_status === 'lobby' || student.reading_status === 'completed')) ||
@@ -198,7 +198,7 @@ export function LiveLobby({
                 <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
                   <div className="flex items-center gap-1 text-[11px] font-mono text-emerald-600">
                     <Wifi className="w-3 h-3" />
-                    <span>{student.ping_ms || 28}ms</span>
+                    <span>{student.ping_ms ? `${student.ping_ms}ms` : '—'}</span>
                   </div>
 
                   <button

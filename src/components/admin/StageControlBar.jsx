@@ -22,6 +22,7 @@ import {
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
 import { Modal } from '../common/Modal';
+import { getRemainingSeconds, formatExamTimer } from '../../lib/examTimerUtils';
 
 export function StageControlBar({
   exam,
@@ -51,7 +52,7 @@ export function StageControlBar({
   // Active stage countdown timer
   const [timeRemaining, setTimeRemaining] = useState(0);
 
-  // Sync active section countdown timer
+  // Sync active section countdown timer with Server-Anchored stage_ends_at
   useEffect(() => {
     const isStageActive = currentStage.endsWith('_active');
     if (!isStageActive) {
@@ -59,26 +60,11 @@ export function StageControlBar({
       return;
     }
 
-    let durationMins = 35;
-    if (currentStage === 'listening_active') durationMins = exam.listening_duration_mins || 35;
-    if (currentStage === 'reading_active') durationMins = exam.reading_duration_mins || 60;
-    if (currentStage === 'writing_active') durationMins = exam.writing_duration_mins || 60;
-
-    const startedTime = exam.stage_started_at 
-      ? new Date(exam.stage_started_at).getTime() 
-      : exam.started_at 
-      ? new Date(exam.started_at).getTime() 
-      : Date.now();
-
-    const durationMs = durationMins * 60 * 1000;
-    const endTime = startedTime + durationMs;
-
     const updateTimer = () => {
-      const now = Date.now();
-      const diff = Math.max(0, Math.floor((endTime - now) / 1000));
+      const diff = getRemainingSeconds(exam, currentStage);
       setTimeRemaining(diff);
 
-      if (diff === 0 && isStageActive) {
+      if (diff <= 0 && isStageActive) {
         if (currentStage === 'listening_active') onSetStage('listening_finished');
         else if (currentStage === 'reading_active') onSetStage('reading_finished');
         else if (currentStage === 'writing_active') onSetStage('exam_completed');
@@ -88,7 +74,7 @@ export function StageControlBar({
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [currentStage, exam.stage_started_at, exam.started_at, exam.listening_duration_mins, exam.reading_duration_mins, exam.writing_duration_mins]);
+  }, [currentStage, exam?.stage_ends_at, exam?.stage_started_at]);
 
   // Handle 60s Break Countdown for Reading (after Listening)
   useEffect(() => {
@@ -100,18 +86,19 @@ export function StageControlBar({
 
     if (isReadingBreakSkipped) return;
 
-    const interval = setInterval(() => {
-      setReadingBreakSeconds((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    const updateBreak = () => {
+      if (exam?.stage_ends_at) {
+        const diff = getRemainingSeconds(exam, currentStage);
+        setReadingBreakSeconds(diff);
+      } else {
+        setReadingBreakSeconds((prev) => Math.max(0, prev - 1));
+      }
+    };
 
+    updateBreak();
+    const interval = setInterval(updateBreak, 1000);
     return () => clearInterval(interval);
-  }, [currentStage, isReadingBreakSkipped]);
+  }, [currentStage, exam?.stage_ends_at, isReadingBreakSkipped]);
 
   // Handle 60s Break Countdown for Writing (after Reading)
   useEffect(() => {
@@ -123,23 +110,22 @@ export function StageControlBar({
 
     if (isWritingBreakSkipped) return;
 
-    const interval = setInterval(() => {
-      setWritingBreakSeconds((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    const updateBreak = () => {
+      if (exam?.stage_ends_at) {
+        const diff = getRemainingSeconds(exam, currentStage);
+        setWritingBreakSeconds(diff);
+      } else {
+        setWritingBreakSeconds((prev) => Math.max(0, prev - 1));
+      }
+    };
 
+    updateBreak();
+    const interval = setInterval(updateBreak, 1000);
     return () => clearInterval(interval);
-  }, [currentStage, isWritingBreakSkipped]);
+  }, [currentStage, exam?.stage_ends_at, isWritingBreakSkipped]);
 
   const formatSeconds = (sec) => {
-    const mins = Math.floor(sec / 60);
-    const secs = sec % 60;
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    return formatExamTimer(sec);
   };
 
   // Determine stage status
@@ -417,15 +403,6 @@ export function StageControlBar({
                 {readingBreakSeconds > 0 && !isReadingBreakSkipped ? (
                   <>
                     <Button
-                      variant="outline"
-                      size="sm"
-                      icon={FastForward}
-                      onClick={() => setIsReadingBreakSkipped(true)}
-                      className="text-xs font-bold text-slate-700 border-slate-300"
-                    >
-                      Skip Break
-                    </Button>
-                    <Button
                       variant="primary"
                       size="md"
                       icon={Play}
@@ -548,15 +525,6 @@ export function StageControlBar({
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 {writingBreakSeconds > 0 && !isWritingBreakSkipped ? (
                   <>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      icon={FastForward}
-                      onClick={() => setIsWritingBreakSkipped(true)}
-                      className="text-xs font-bold text-slate-700 border-slate-300"
-                    >
-                      Skip Break
-                    </Button>
                     <Button
                       variant="primary"
                       size="md"

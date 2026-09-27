@@ -1,5 +1,6 @@
 import { getSupabaseClient } from './supabase';
 import { getSessionHistory } from './sessionHistory';
+import { TEACHER_ACCESS_PASSWORD } from '../components/admin/AdminPasswordModal';
 
 const SUPER_ADMIN_STORAGE_KEY = 'ielts_super_admin_session';
 
@@ -9,40 +10,34 @@ const SUPER_ADMIN_STORAGE_KEY = 'ielts_super_admin_session';
 export function isSuperAdmin(user) {
   if (!user) return false;
   const metaRole = user.user_metadata?.role || user.app_metadata?.role;
-  if (metaRole === 'super_admin' || metaRole === 'admin') return true;
-  // Also recognize demo super-admin email
-  if (user.email === 'admin@ielts-master.org' || user.email?.includes('superadmin')) return true;
-  return false;
+  return metaRole === 'super_admin' || metaRole === 'admin';
 }
 
 /**
- * Sign in super-admin via Supabase Auth with fallback demo capability
+ * Sign in super-admin via master password (1234) or Supabase Auth
  */
 export async function signInSuperAdmin(email, password) {
-  const supabase = getSupabaseClient();
   const cleanEmail = email.trim().toLowerCase();
 
-  // Handle Demo Super-Admin Quick Login
-  if (cleanEmail === 'admin@ielts-master.org' && password === 'SuperAdmin2026!') {
-    const demoUser = {
-      id: 'super-admin-master-001',
-      email: 'admin@ielts-master.org',
-      user_metadata: {
-        role: 'super_admin',
-        full_name: 'Academy Chief Proctor',
-        title: 'Master Superintendent'
-      }
+  // Unified master password access (1234)
+  if (password === '1234' || (TEACHER_ACCESS_PASSWORD && password === TEACHER_ACCESS_PASSWORD)) {
+    const adminUser = {
+      id: 'super-admin-master',
+      email: cleanEmail || 'admin@ielts-master.org',
+      user_metadata: { role: 'super_admin' },
+      app_metadata: { role: 'super_admin' },
     };
     localStorage.setItem(SUPER_ADMIN_STORAGE_KEY, JSON.stringify({
-      user: demoUser,
-      token: 'demo-superadmin-token-' + Date.now(),
-      expiresAt: Date.now() + 86400000
+      user: adminUser,
+      session: { access_token: 'local-admin-token' }
     }));
-    return { user: demoUser, error: null };
+    return { user: adminUser, error: null };
   }
 
+  const supabase = getSupabaseClient();
+
   if (!supabase) {
-    return { user: null, error: new Error("Supabase is not initialized. Use demo credentials or verify API keys.") };
+    return { user: null, error: new Error("Supabase authentication is not configured. Please configure environment credentials.") };
   }
 
   try {
@@ -119,16 +114,6 @@ export async function signOutSuperAdmin() {
 }
 
 /**
- * Default mock teachers for session assignment
- */
-const DEFAULT_TEACHERS = [
-  { name: 'Dr. Alisher Vakhidov', title: 'Head of IELTS Academic', room: 'Auditorium 1' },
-  { name: 'Malika Karimova, M.Ed.', title: 'Senior IELTS Proctor', room: 'Lab 204' },
-  { name: 'James Thornton, DELTA', title: 'IDP Examiner & Trainer', room: 'Hall B' },
-  { name: 'Nodira Azimova', title: 'Language Testing Specialist', room: 'Digital Lab 1' },
-];
-
-/**
  * Fetch all exam sessions across Supabase and local archive
  */
 export async function fetchAllExamSessions() {
@@ -153,11 +138,11 @@ export async function fetchAllExamSessions() {
   const localHistory = getSessionHistory();
   const map = new Map();
 
-  dbExams.forEach((exam, index) => {
-    const assignedTeacher = DEFAULT_TEACHERS[index % DEFAULT_TEACHERS.length];
+  dbExams.forEach((exam) => {
+    const teacher = exam.teacher || (exam.teacher_name ? { name: exam.teacher_name, title: 'Exam Proctor' } : { name: 'Assigned Proctor', title: 'IELTS Proctor' });
     map.set(exam.pin_code || exam.id, {
       id: exam.id,
-      pin_code: exam.pin_code || 'IELTS-904',
+      pin_code: exam.pin_code || '',
       title: exam.title || 'IELTS Academic Master Assessment',
       status: exam.status || 'lobby',
       current_stage: exam.current_stage || 'listening_lobby',
@@ -165,7 +150,7 @@ export async function fetchAllExamSessions() {
       started_at: exam.started_at,
       ended_at: exam.ended_at,
       duration_mins: exam.duration_mins || 60,
-      teacher: assignedTeacher,
+      teacher,
       total_candidates: 0,
       active_candidates: 0,
       submitted_candidates: 0,
@@ -174,10 +159,10 @@ export async function fetchAllExamSessions() {
     });
   });
 
-  localHistory.forEach((hist, index) => {
+  localHistory.forEach((hist) => {
     const key = hist.pin_code || hist.id;
     const existing = map.get(key);
-    const assignedTeacher = DEFAULT_TEACHERS[(index + 1) % DEFAULT_TEACHERS.length];
+    const teacher = hist.teacher || (hist.teacher_name ? { name: hist.teacher_name, title: 'Exam Proctor' } : { name: 'Assigned Proctor', title: 'IELTS Proctor' });
 
     if (!existing) {
       map.set(key, {
@@ -190,7 +175,7 @@ export async function fetchAllExamSessions() {
         started_at: hist.started_at,
         ended_at: hist.ended_at,
         duration_mins: hist.duration_mins || 60,
-        teacher: assignedTeacher,
+        teacher,
         total_candidates: hist.total_candidates || (hist.students?.length || 0),
         active_candidates: 0,
         submitted_candidates: hist.submitted_count || (hist.students?.length || 0),
@@ -262,20 +247,7 @@ export async function fetchAllExamSessions() {
 
   // Fallback defaults if empty
   if (map.size === 0) {
-    map.set('IELTS-904', {
-      id: 'ielts-mock-master',
-      pin_code: 'IELTS-904',
-      title: 'IELTS Academic Master Assessment',
-      status: 'lobby',
-      current_stage: 'listening_lobby',
-      created_at: new Date().toISOString(),
-      duration_mins: 60,
-      teacher: DEFAULT_TEACHERS[0],
-      total_candidates: 12,
-      active_candidates: 12,
-      submitted_candidates: 0,
-      source: 'default'
-    });
+    return [];
   }
 
   return Array.from(map.values());
@@ -316,20 +288,20 @@ export function calculateMasterAcademyStats(sessions) {
     }
   });
 
-  const avg = (arr, fallback = 6.5) => {
-    if (!arr.length) return fallback;
+  const avg = (arr) => {
+    if (!arr.length) return null;
     return +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1);
   };
 
   return {
-    totalCandidates: totalCandidates > 0 ? totalCandidates : 12,
+    totalCandidates: totalCandidates,
     activeSessions,
     finishedSessions,
     totalSessions: sessions.length,
-    avgOverall: avg(overallBands, 6.5),
-    avgReading: avg(readingBands, 6.5),
-    avgListening: avg(listeningBands, 6.5),
-    avgWriting: avg(writingBands, 6.0),
-    topBand: overallBands.length ? Math.max(...overallBands) : 8.5
+    avgOverall: avg(overallBands),
+    avgReading: avg(readingBands),
+    avgListening: avg(listeningBands),
+    avgWriting: avg(writingBands),
+    topBand: overallBands.length ? Math.max(...overallBands) : null
   };
 }

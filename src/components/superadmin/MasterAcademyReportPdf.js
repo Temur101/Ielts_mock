@@ -20,7 +20,7 @@ export function exportAcademyMasterPdfReport(stats, sessions) {
   const sessionRows = sessions.map((s, idx) => `
     <tr style="border-bottom: 1px solid #e2e8f0; font-size: 13px;">
       <td style="padding: 10px 12px; font-weight: 600; color: #1e293b;">${idx + 1}</td>
-      <td style="padding: 10px 12px; font-family: monospace; font-weight: 700; color: #ea580c;">${s.pin_code || 'IELTS-904'}</td>
+      <td style="padding: 10px 12px; font-family: monospace; font-weight: 700; color: #ea580c;">${s.pin_code || '—'}</td>
       <td style="padding: 10px 12px; color: #334155;">${s.title || 'IELTS Academic Master Assessment'}</td>
       <td style="padding: 10px 12px; color: #475569;">${s.teacher?.name || 'Assigned Proctor'}</td>
       <td style="padding: 10px 12px; text-align: center; font-weight: 700; color: #0f172a;">${s.total_candidates || 0}</td>

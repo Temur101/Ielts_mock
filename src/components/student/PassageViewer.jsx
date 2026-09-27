@@ -20,8 +20,8 @@ function parsePassageIntoParagraphs(content) {
   const text = content.trim();
   if (!text) return [];
 
-  // 1. Detect sequential lettered paragraph markers A, B, C, D, E, F, G, H...
-  const candidateLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'];
+  // 1. Detect sequential lettered paragraph markers A through Z dynamically
+  const candidateLetters = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
   const markers = [];
   let lastSearchPos = 0;
 

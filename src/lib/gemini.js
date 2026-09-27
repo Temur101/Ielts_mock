@@ -8,7 +8,7 @@
  * Official IELTS Band rounding helper: rounds to nearest 0.5
  */
 export function roundToIeltsHalfBand(score) {
-  if (score === null || score === undefined || isNaN(score)) return 6.0;
+  if (score === null || score === undefined || isNaN(score)) return null;
   const clamped = Math.max(0, Math.min(9, Number(score)));
   return Math.round(clamped * 2) / 2;
 }

@@ -26,6 +26,7 @@ import {
   normalizeTemplateGaps,
   cleanGapArtifacts,
   splitSentenceAtGap,
+  extractQuestionNumbersFromTemplate,
 } from '../../lib/questionUtils';
 
 /**
@@ -398,6 +399,8 @@ export function ListeningSection({
   flagged = {},
   onAnswerChange,
   onToggleFlag,
+  isTimeUp = false,
+  timeRemaining = 0,
 }) {
   const currentExam = exam || {};
   const currentListening = exam?.listening || listeningData || {};
@@ -447,6 +450,41 @@ export function ListeningSection({
   const audioRefs = useRef({});
   const questionRefs = useRef({});
 
+  // R4.6: Unmount cleanup for audio elements to release media pipeline and prevent ghost playback
+  useEffect(() => {
+    return () => {
+      [1, 2, 3, 4].forEach(partId => {
+        const audio = audioRefs.current[partId];
+        if (audio) {
+          try {
+            audio.pause();
+            audio.removeAttribute('src');
+            audio.load();
+          } catch (e) {
+            // ignore
+          }
+        }
+      });
+    };
+  }, []);
+
+  // Server-Anchored sync: auto-pause all audio if stage time expires
+  useEffect(() => {
+    if (isTimeUp) {
+      [1, 2, 3, 4].forEach(partId => {
+        const audio = audioRefs.current[partId];
+        if (audio && !audio.paused) {
+          try {
+            audio.pause();
+          } catch (e) {
+            // ignore
+          }
+        }
+      });
+      setPlayingPartId(null);
+    }
+  }, [isTimeUp]);
+
   const currentPart = parts.find(p => p.partId === activePartId) || parts[0];
 
   let partQuestions = questions.filter(q => resolveListeningPart(q) === Number(activePartId));
@@ -477,6 +515,7 @@ export function ListeningSection({
 
   // Play / Pause handler with Single-Play and Scrub Enforcement
   const togglePlayAudio = (partId) => {
+    if (isTimeUp) return;
     const audio = audioRefs.current[partId];
     if (!audio) return;
 
@@ -769,8 +808,9 @@ export function ListeningSection({
                         );
                       }
 
-                      const questionGroups = groupQuestionsIntoSets(partQuestions, currentPart?.reference_box);
+                      const questionGroups = groupQuestionsIntoSets(partQuestions, currentPart?.reference_box, currentPart);
                       const renderedTemplateSignatures = new Set();
+                      const renderedQuestionNumbers = new Set();
 
                       return questionGroups.map((group, gIdx) => {
                         const category = group.category;
@@ -780,6 +820,24 @@ export function ListeningSection({
                         const rangeStr = group.qRange || (firstQ?.questionNumber ? `Questions ${firstQ.questionNumber}–${lastQ?.questionNumber || firstQ.questionNumber}` : '');
                         const instructionStr = group.instruction || currentPart?.instruction || 'Answer the questions below.';
                         const groupTitle = group.title || (gIdx === 0 ? currentPart?.title : '') || '';
+
+                        // Anti-duplication pre-check: If all questions in this group are already rendered, and no unrendered template exists, skip!
+                        const hasUnrenderedQuestions = gqs.some(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+                        const tplCheck = (
+                          group.summaryTemplate || 
+                          group.notes_template || 
+                          group.table_template || 
+                          group.tableTemplate || 
+                          group.form_template || 
+                          group.formTemplate || 
+                          gqs.find(q => q.notes_template || q.summary_template || q.table_template || q.form_template)?.notes_template ||
+                          ''
+                        ).trim();
+                        const hasUnrenderedTpl = Boolean(tplCheck && !renderedTemplateSignatures.has(tplCheck));
+
+                        if (!hasUnrenderedQuestions && !hasUnrenderedTpl) {
+                          return null;
+                        }
 
                         return (
                           <div key={group.id || gIdx} className="space-y-4">
@@ -799,7 +857,7 @@ export function ListeningSection({
                             {(category === 'NOTES' || category === 'FILL_BLANK' || category === 'SUMMARY_COMPLETION') && (() => {
                               const tplKey = (
                                 group.summaryTemplate || 
-                                group.notes_template ||
+                                group.notes_template || 
                                 gqs.find(q => q.notes_template || q.summary_template)?.notes_template ||
                                 gqs.find(q => q.summary_template)?.summary_template ||
                                 currentPart?.notes_template ||
@@ -817,6 +875,52 @@ export function ListeningSection({
                               const hasSufficientCoverage = coveredGapsCount >= Math.ceil(gqs.length / 2);
                               const shouldUseTemplate = isFirstTime && Boolean(tplKey) && hasSufficientCoverage;
 
+                              let notesBody = null;
+                              if (shouldUseTemplate) {
+                                const cleanTpl = normalizeTemplateGaps(tplKey, gqs);
+                                extractQuestionNumbersFromTemplate(cleanTpl).forEach(num => renderedQuestionNumbers.add(num));
+                                const remainingGqs = gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+                                remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+
+                                notesBody = (
+                                  <>
+                                    {renderNotesTemplate(cleanTpl, {
+                                      answers,
+                                      flagged,
+                                      onAnswerChange,
+                                      onToggleFlag,
+                                      questionRefs,
+                                      questions: gqs,
+                                    })}
+                                    {remainingGqs.length > 0 && (
+                                      <div className="mt-6 pt-4 border-t border-slate-200">
+                                        {renderStructuredNotes({
+                                          items: remainingGqs,
+                                          answers,
+                                          flagged,
+                                          onAnswerChange,
+                                          onToggleFlag,
+                                          questionRefs,
+                                        })}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              } else {
+                                const remainingGqs = gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+                                if (remainingGqs.length === 0) return null;
+                                remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+
+                                notesBody = renderStructuredNotes({
+                                  items: remainingGqs,
+                                  answers,
+                                  flagged,
+                                  onAnswerChange,
+                                  onToggleFlag,
+                                  questionRefs,
+                                });
+                              }
+
                               return (
                                 <div className="bg-slate-50/70 border border-slate-200 p-6 sm:p-8">
                                   {groupTitle && (
@@ -824,25 +928,7 @@ export function ListeningSection({
                                       {groupTitle}
                                     </div>
                                   )}
-                                  {shouldUseTemplate ? (
-                                    renderNotesTemplate(tplKey, {
-                                      answers,
-                                      flagged,
-                                      onAnswerChange,
-                                      onToggleFlag,
-                                      questionRefs,
-                                      questions: gqs,
-                                    })
-                                  ) : (
-                                    renderStructuredNotes({
-                                      items: gqs,
-                                      answers,
-                                      flagged,
-                                      onAnswerChange,
-                                      onToggleFlag,
-                                      questionRefs,
-                                    })
-                                  )}
+                                  {notesBody}
                                 </div>
                               );
                             })()}
@@ -869,6 +955,200 @@ export function ListeningSection({
                                 renderedTemplateSignatures.add(tplKey);
                               }
 
+                              const renderFallbackRows = (items) => {
+                                if (!items || items.length === 0) return null;
+                                return (
+                                  <div className="border border-slate-300 rounded-md overflow-hidden bg-white">
+                                    <table className="w-full border-collapse text-left text-sm">
+                                      <thead>
+                                        <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                          <th className="py-2.5 px-4 w-16 text-center font-mono">#</th>
+                                          <th className="py-2.5 px-4">{group.subheading || 'Information / Context'}</th>
+                                          <th className="py-2.5 px-4 w-44 sm:w-56 text-center">Answer</th>
+                                          <th className="w-10"></th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {items.map((q, qIdx) => {
+                                          const qNum = q.questionNumber || q.q_num;
+                                          const isQuestion = Boolean(
+                                            qNum &&
+                                            (typeof qNum === 'number' || (!isNaN(Number(qNum)) && Number(qNum) > 0)) &&
+                                            String(q.type || '').toLowerCase() !== 'context' &&
+                                            !q.is_context &&
+                                            !q.isContext
+                                          );
+                                          const val = isQuestion ? (answers[qNum] || '') : '';
+                                          const isFlagged = isQuestion ? (flagged[qNum] || false) : false;
+                                          const rawText = (q.cleanPrompt || q.text || q.prompt || '').trim();
+                                          const { before: splitBefore, after: splitAfter } = splitSentenceAtGap(rawText);
+                                          const before = q.before || splitBefore || '';
+                                          const after = q.after || splitAfter || '';
+
+                                          const isGeneric = (str) => !str || !str.trim() || /^(?:(?:questions?|q)[\s#.:-]*\d*[\s.:-]*|\d+[\s.:-]*)$/i.test(str.trim());
+                                          const cleanedRaw = cleanGapArtifacts(rawText);
+                                          const cBullets = (Array.isArray(q.context_bullets) ? q.context_bullets : Array.isArray(q.bullets) ? q.bullets : [])
+                                            .map(b => (typeof b === 'object' && b !== null ? (b.text || b.prompt || '') : String(b || '')))
+                                            .map(s => cleanGapArtifacts(s).trim())
+                                            .filter(s => !isGeneric(s));
+                                          const contextBulletsText = cBullets.join(' • ');
+                                          const rowDesc = q.description || q.row_context || q.rowContext || q.context || q.parent_context || '';
+                                          const validRowDesc = !isGeneric(rowDesc) ? cleanGapArtifacts(rowDesc).trim() : '';
+
+                                          let labelCandidate = '';
+                                          if (!isGeneric(before)) {
+                                            labelCandidate = before;
+                                          } else if (!isGeneric(cleanedRaw)) {
+                                            labelCandidate = cleanedRaw;
+                                          } else {
+                                            labelCandidate = 
+                                              (!isGeneric(q.subheading) ? q.subheading.trim() : '') ||
+                                              (!isGeneric(q.title) ? q.title.trim() : '') ||
+                                              contextBulletsText ||
+                                              validRowDesc ||
+                                              (group.subheading && !isGeneric(group.subheading) ? `${group.subheading} (${qNum})` : '') ||
+                                              (group.title && !isGeneric(group.title) ? `${group.title} (${qNum})` : '');
+                                          }
+                                          const labelText = labelCandidate || (isQuestion ? `Question ${qNum}` : 'Information');
+
+                                          const qSubheading = (q.subheading || q.section_heading || q.category || '').trim();
+                                          const prevQ = qIdx > 0 ? items[qIdx - 1] : null;
+                                          const prevSubheading = (prevQ?.subheading || prevQ?.section_heading || prevQ?.category || '').trim();
+                                          const showSubheading = qSubheading && qSubheading.toLowerCase() !== prevSubheading.toLowerCase();
+
+                                          return (
+                                            <React.Fragment key={q.id || qNum || qIdx}>
+                                              {showSubheading && (
+                                                <tr className="bg-slate-100 border-y border-slate-300">
+                                                  <td colSpan={4} className="py-2 px-4 text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                                                    {qSubheading}
+                                                  </td>
+                                                </tr>
+                                              )}
+                                              <tr
+                                                ref={el => { if (isQuestion && qNum) questionRefs.current[qNum] = el; }}
+                                                className={`border-b border-slate-200 last:border-0 transition-colors ${
+                                                  isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
+                                                }`}
+                                              >
+                                                <td className="py-3 px-4 text-center font-mono font-bold text-amber-600 text-xs">
+                                                  {isQuestion ? qNum : '—'}
+                                                </td>
+                                                <td className="py-3 px-4 text-[13.5px] text-slate-800 leading-snug">
+                                                  {labelText}
+                                                  {after && <span className="ml-1 text-slate-600">{cleanGapArtifacts(after)}</span>}
+                                                  {validRowDesc && validRowDesc !== labelCandidate && (
+                                                    <div className="text-xs text-slate-500 mt-1 italic">{validRowDesc}</div>
+                                                  )}
+                                                  {cBullets.length > 0 && !contextBulletsText.includes(labelCandidate) && (
+                                                    <ul className="mt-1 space-y-0.5 pl-4 list-disc text-xs text-slate-600">
+                                                      {cBullets.map((bText, bIdx) => (
+                                                        <li key={bIdx}>{bText}</li>
+                                                      ))}
+                                                    </ul>
+                                                  )}
+                                                  {q.prefilled && (
+                                                    <div className="text-xs text-slate-600 bg-slate-50 px-2 py-0.5 rounded mt-1 border border-slate-200 inline-block font-mono">
+                                                      Prefilled: {cleanGapArtifacts(typeof q.prefilled === 'object' ? q.prefilled.text : String(q.prefilled))}
+                                                    </div>
+                                                  )}
+                                                </td>
+                                                <td className="py-3 px-4 text-center">
+                                                  {isQuestion ? (
+                                                    <div className="flex items-center justify-center gap-1.5">
+                                                      <input
+                                                        type="text"
+                                                        value={val}
+                                                        onChange={e => onAnswerChange(qNum, e.target.value)}
+                                                        placeholder="..."
+                                                        className={`w-full max-w-[180px] h-9 px-2.5 border-2 text-center font-medium text-sm rounded outline-none transition-colors ${
+                                                          val
+                                                            ? 'border-brand-500 bg-orange-50/30 text-slate-900'
+                                                            : isFlagged
+                                                            ? 'border-amber-400 bg-amber-50'
+                                                            : 'border-slate-300 focus:border-brand-500'
+                                                        }`}
+                                                      />
+                                                    </div>
+                                                  ) : (
+                                                    <span className="inline-block text-xs font-semibold text-slate-700 bg-slate-100 px-3 py-1.5 rounded border border-slate-200">
+                                                      {cleanGapArtifacts(q.value || q.prefilled || q.answer || q.example || 'Information')}
+                                                    </span>
+                                                  )}
+                                                </td>
+                                                <td className="pr-3 text-center">
+                                                  {isQuestion ? (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => onToggleFlag(qNum)}
+                                                      className={`p-1 rounded cursor-pointer transition ${
+                                                        isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                                      }`}
+                                                      title={isFlagged ? 'Remove flag' : 'Flag'}
+                                                    >
+                                                      <Flag className="w-3.5 h-3.5" />
+                                                    </button>
+                                                  ) : null}
+                                                </td>
+                                              </tr>
+                                            </React.Fragment>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                );
+                              };
+
+                              let tableElement = null;
+                              if (hasTableMarkdown && isFirstTime) {
+                                const cleanTpl = normalizeTemplateGaps(tplKey, gqs);
+                                extractQuestionNumbersFromTemplate(cleanTpl).forEach(num => renderedQuestionNumbers.add(num));
+                                const remainingGqs = gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+                                remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+
+                                tableElement = (
+                                  <div className="space-y-4">
+                                    <div className="overflow-x-auto">
+                                      <MarkdownTable
+                                        tableContent={cleanTpl}
+                                        answers={answers}
+                                        onAnswerChange={onAnswerChange}
+                                        onToggleFlag={onToggleFlag}
+                                        flagged={flagged}
+                                        questionRefs={questionRefs}
+                                        questions={gqs}
+                                      />
+                                    </div>
+                                    {remainingGqs.length > 0 && renderFallbackRows(remainingGqs)}
+                                  </div>
+                                );
+                              } else if (tplKey && isFirstTime) {
+                                const cleanTpl = normalizeTemplateGaps(tplKey, gqs);
+                                extractQuestionNumbersFromTemplate(cleanTpl).forEach(num => renderedQuestionNumbers.add(num));
+                                const remainingGqs = gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+                                remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+
+                                tableElement = (
+                                  <div className="space-y-4">
+                                    {renderNotesTemplate(cleanTpl, {
+                                      answers,
+                                      flagged,
+                                      onAnswerChange,
+                                      onToggleFlag,
+                                      questionRefs,
+                                      questions: gqs,
+                                    })}
+                                    {remainingGqs.length > 0 && renderFallbackRows(remainingGqs)}
+                                  </div>
+                                );
+                              } else {
+                                const remainingGqs = gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+                                if (remainingGqs.length === 0) return null;
+                                remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+                                tableElement = renderFallbackRows(remainingGqs);
+                              }
+
                               return (
                                 <div className="bg-white border-2 border-slate-300 rounded-lg p-5 sm:p-6 shadow-2xs space-y-4">
                                   {groupTitle && (
@@ -876,163 +1156,7 @@ export function ListeningSection({
                                       {groupTitle}
                                     </div>
                                   )}
-
-                                  {hasTableMarkdown ? (
-                                    isFirstTime ? (
-                                      <div className="overflow-x-auto">
-                                        <MarkdownTable
-                                          tableContent={normalizeTemplateGaps(tplKey, gqs)}
-                                          answers={answers}
-                                          onAnswerChange={onAnswerChange}
-                                          onToggleFlag={onToggleFlag}
-                                          flagged={flagged}
-                                          questionRefs={questionRefs}
-                                          questions={gqs}
-                                        />
-                                      </div>
-                                    ) : null
-                                  ) : (
-                                    /* Alternating-row table grid when markdown table | is absent */
-                                    <div className="border border-slate-300 rounded-md overflow-hidden bg-white">
-                                      <table className="w-full border-collapse text-left text-sm">
-                                        <thead>
-                                          <tr className="bg-slate-100 border-b border-slate-300 text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                            <th className="py-2.5 px-4 w-16 text-center font-mono">#</th>
-                                            <th className="py-2.5 px-4">{group.subheading || 'Information / Context'}</th>
-                                            <th className="py-2.5 px-4 w-44 sm:w-56 text-center">Answer</th>
-                                            <th className="w-10"></th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {gqs.map((q, qIdx) => {
-                                            const qNum = q.questionNumber || q.q_num;
-                                            const isQuestion = Boolean(
-                                              qNum &&
-                                              (typeof qNum === 'number' || (!isNaN(Number(qNum)) && Number(qNum) > 0)) &&
-                                              String(q.type || '').toLowerCase() !== 'context' &&
-                                              !q.is_context &&
-                                              !q.isContext
-                                            );
-                                            const val = isQuestion ? (answers[qNum] || '') : '';
-                                            const isFlagged = isQuestion ? (flagged[qNum] || false) : false;
-                                            const rawText = (q.cleanPrompt || q.text || q.prompt || '').trim();
-                                            const { before: splitBefore, after: splitAfter } = splitSentenceAtGap(rawText);
-                                            const before = q.before || splitBefore || '';
-                                            const after = q.after || splitAfter || '';
-
-                                            const isGeneric = (str) => !str || !str.trim() || /^(?:(?:questions?|q)[\s#.:-]*\d*[\s.:-]*|\d+[\s.:-]*)$/i.test(str.trim());
-                                            const cleanedRaw = cleanGapArtifacts(rawText);
-                                            const cBullets = (Array.isArray(q.context_bullets) ? q.context_bullets : Array.isArray(q.bullets) ? q.bullets : [])
-                                              .map(b => (typeof b === 'object' && b !== null ? (b.text || b.prompt || '') : String(b || '')))
-                                              .map(s => cleanGapArtifacts(s).trim())
-                                              .filter(s => !isGeneric(s));
-                                            const contextBulletsText = cBullets.join(' • ');
-                                            const rowDesc = q.description || q.row_context || q.rowContext || q.context || q.parent_context || '';
-                                            const validRowDesc = !isGeneric(rowDesc) ? cleanGapArtifacts(rowDesc).trim() : '';
-
-                                            let labelCandidate = '';
-                                            if (!isGeneric(before)) {
-                                              labelCandidate = before;
-                                            } else if (!isGeneric(cleanedRaw)) {
-                                              labelCandidate = cleanedRaw;
-                                            } else {
-                                              labelCandidate = 
-                                                (!isGeneric(q.subheading) ? q.subheading.trim() : '') ||
-                                                (!isGeneric(q.title) ? q.title.trim() : '') ||
-                                                contextBulletsText ||
-                                                validRowDesc ||
-                                                (group.subheading && !isGeneric(group.subheading) ? `${group.subheading} (${qNum})` : '') ||
-                                                (group.title && !isGeneric(group.title) ? `${group.title} (${qNum})` : '');
-                                            }
-                                            const labelText = labelCandidate || (isQuestion ? `Question ${qNum}` : 'Information');
-
-                                            const qSubheading = (q.subheading || q.section_heading || q.category || '').trim();
-                                            const prevQ = qIdx > 0 ? gqs[qIdx - 1] : null;
-                                            const prevSubheading = (prevQ?.subheading || prevQ?.section_heading || prevQ?.category || '').trim();
-                                            const showSubheading = qSubheading && qSubheading.toLowerCase() !== prevSubheading.toLowerCase();
-
-                                            return (
-                                              <React.Fragment key={q.id || qNum || qIdx}>
-                                                {showSubheading && (
-                                                  <tr className="bg-slate-100 border-y border-slate-300">
-                                                    <td colSpan={4} className="py-2 px-4 text-xs font-extrabold text-slate-800 uppercase tracking-wider">
-                                                      {qSubheading}
-                                                    </td>
-                                                  </tr>
-                                                )}
-                                                <tr
-                                                  ref={el => { if (isQuestion && qNum) questionRefs.current[qNum] = el; }}
-                                                  className={`border-b border-slate-200 last:border-0 transition-colors ${
-                                                    isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'
-                                                  }`}
-                                                >
-                                                  <td className="py-3 px-4 text-center font-mono font-bold text-amber-600 text-xs">
-                                                    {isQuestion ? qNum : '—'}
-                                                  </td>
-                                                  <td className="py-3 px-4 text-[13.5px] text-slate-800 leading-snug">
-                                                    {labelText}
-                                                    {after && <span className="ml-1 text-slate-600">{cleanGapArtifacts(after)}</span>}
-                                                    {validRowDesc && validRowDesc !== labelCandidate && (
-                                                      <div className="text-xs text-slate-500 mt-1 italic">{validRowDesc}</div>
-                                                    )}
-                                                    {cBullets.length > 0 && !contextBulletsText.includes(labelCandidate) && (
-                                                      <ul className="mt-1 space-y-0.5 pl-4 list-disc text-xs text-slate-600">
-                                                        {cBullets.map((bText, bIdx) => (
-                                                          <li key={bIdx}>{bText}</li>
-                                                        ))}
-                                                      </ul>
-                                                    )}
-                                                    {q.prefilled && (
-                                                      <div className="text-xs text-slate-600 bg-slate-50 px-2 py-0.5 rounded mt-1 border border-slate-200 inline-block font-mono">
-                                                        Prefilled: {cleanGapArtifacts(typeof q.prefilled === 'object' ? q.prefilled.text : String(q.prefilled))}
-                                                      </div>
-                                                    )}
-                                                  </td>
-                                                  <td className="py-3 px-4 text-center">
-                                                    {isQuestion ? (
-                                                      <div className="flex items-center justify-center gap-1.5">
-                                                        <input
-                                                          type="text"
-                                                          value={val}
-                                                          onChange={e => onAnswerChange(qNum, e.target.value)}
-                                                          placeholder="..."
-                                                          className={`w-full max-w-[180px] h-9 px-2.5 border-2 text-center font-medium text-sm rounded outline-none transition-colors ${
-                                                            val
-                                                              ? 'border-brand-500 bg-orange-50/30 text-slate-900'
-                                                              : isFlagged
-                                                              ? 'border-amber-400 bg-amber-50'
-                                                              : 'border-slate-300 focus:border-brand-500'
-                                                          }`}
-                                                        />
-                                                      </div>
-                                                    ) : (
-                                                      <span className="inline-block text-xs font-semibold text-slate-700 bg-slate-100 px-3 py-1.5 rounded border border-slate-200">
-                                                        {cleanGapArtifacts(q.value || q.prefilled || q.answer || q.example || 'Information')}
-                                                      </span>
-                                                    )}
-                                                  </td>
-                                                  <td className="pr-3 text-center">
-                                                    {isQuestion ? (
-                                                      <button
-                                                        type="button"
-                                                        onClick={() => onToggleFlag(qNum)}
-                                                        className={`p-1 rounded cursor-pointer transition ${
-                                                          isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                                                        }`}
-                                                        title={isFlagged ? 'Remove flag' : 'Flag'}
-                                                      >
-                                                        <Flag className="w-3.5 h-3.5" />
-                                                      </button>
-                                                    ) : null}
-                                                  </td>
-                                                </tr>
-                                              </React.Fragment>
-                                            );
-                                          })}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                  )}
+                                  {tableElement}
                                 </div>
                               );
                             })()}
@@ -1058,6 +1182,156 @@ export function ListeningSection({
                                 renderedTemplateSignatures.add(tplKey);
                               }
 
+                              const renderFallbackForm = (items) => {
+                                if (!items || items.length === 0) return null;
+                                return (
+                                  <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden">
+                                    {items.map((q, qIdx) => {
+                                      const qNum = q.questionNumber || q.q_num;
+                                      const isQuestion = Boolean(
+                                        qNum &&
+                                        (typeof qNum === 'number' || (!isNaN(Number(qNum)) && Number(qNum) > 0)) &&
+                                        String(q.type || '').toLowerCase() !== 'context' &&
+                                        !q.is_context &&
+                                        !q.isContext
+                                      );
+                                      const val = isQuestion ? (answers[qNum] || '') : '';
+                                      const isFlagged = isQuestion ? (flagged[qNum] || false) : false;
+                                      const rawText = q.cleanPrompt || q.prompt || q.text || '';
+                                      const { before, after } = splitSentenceAtGap(rawText);
+                                      const labelText = before || cleanGapArtifacts(rawText) || (isQuestion ? `Field ${qNum}` : 'Information');
+
+                                      const qSubheading = (q.subheading || q.section_heading || q.category || '').trim();
+                                      const prevQ = qIdx > 0 ? items[qIdx - 1] : null;
+                                      const prevSubheading = (prevQ?.subheading || prevQ?.section_heading || prevQ?.category || '').trim();
+                                      const showSubheading = qSubheading && qSubheading.toLowerCase() !== prevSubheading.toLowerCase();
+
+                                      const cBullets = (Array.isArray(q.context_bullets) ? q.context_bullets : Array.isArray(q.bullets) ? q.bullets : [])
+                                        .map(b => (typeof b === 'object' && b !== null ? (b.text || b.prompt || '') : String(b || '')))
+                                        .map(s => cleanGapArtifacts(s).trim())
+                                        .filter(Boolean);
+
+                                      const staticContexts = [
+                                        q.parent_context,
+                                        q.context,
+                                        q.context_text,
+                                        q.description,
+                                      ].filter(Boolean);
+
+                                      return (
+                                        <React.Fragment key={q.id || qNum || qIdx}>
+                                          {showSubheading && (
+                                            <div className="bg-slate-100/90 px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 border-b border-slate-200">
+                                              {qSubheading}
+                                            </div>
+                                          )}
+                                          <div
+                                            ref={el => { if (isQuestion && qNum) questionRefs.current[qNum] = el; }}
+                                            className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 gap-3 transition-colors ${
+                                              isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'
+                                            }`}
+                                          >
+                                            <div className="sm:w-1/2 text-sm font-semibold text-slate-800">
+                                              {labelText}
+                                              {staticContexts.map((ctx, cIdx) => {
+                                                const text = typeof ctx === 'object' && ctx !== null ? (ctx.text || ctx.prompt || '') : String(ctx || '');
+                                                const cleaned = cleanGapArtifacts(text).trim();
+                                                if (!cleaned || cleaned === labelText) return null;
+                                                return (
+                                                  <div key={cIdx} className="text-xs text-slate-500 font-normal mt-0.5 italic">
+                                                    {cleaned}
+                                                  </div>
+                                                );
+                                              })}
+                                              {cBullets.length > 0 && (
+                                                <ul className="mt-1.5 space-y-0.5 pl-4 list-disc text-xs text-slate-500 font-normal">
+                                                  {cBullets.map((bText, bIdx) => (
+                                                    <li key={bIdx}>{bText}</li>
+                                                  ))}
+                                                </ul>
+                                              )}
+                                              {q.prefilled && isQuestion && (
+                                                <div className="text-xs text-slate-500 italic mt-0.5">
+                                                  Prefilled: {cleanGapArtifacts(typeof q.prefilled === 'object' ? q.prefilled.text : String(q.prefilled))}
+                                                </div>
+                                              )}
+                                            </div>
+                                            <div className="sm:w-1/2 flex items-center gap-2">
+                                              {isQuestion ? (
+                                                <>
+                                                  <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0 font-mono select-none">
+                                                    {qNum}
+                                                  </span>
+                                                  <input
+                                                    type="text"
+                                                    value={val}
+                                                    onChange={e => onAnswerChange(qNum, e.target.value)}
+                                                    placeholder="Type answer..."
+                                                    className={`flex-1 h-9 px-3 border-2 text-sm font-medium rounded outline-none transition-colors ${
+                                                      val
+                                                        ? 'border-brand-500 bg-orange-50/30 text-slate-900'
+                                                        : isFlagged
+                                                        ? 'border-amber-400 bg-amber-50'
+                                                        : 'border-slate-300 focus:border-brand-500'
+                                                    }`}
+                                                  />
+                                                  {after && <span className="text-xs text-slate-600 font-medium">{cleanGapArtifacts(after)}</span>}
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => onToggleFlag(qNum)}
+                                                    className={`p-1 rounded cursor-pointer transition shrink-0 ${
+                                                      isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                                    }`}
+                                                    title={isFlagged ? 'Remove flag' : 'Flag'}
+                                                  >
+                                                    <Flag className="w-3.5 h-3.5" />
+                                                  </button>
+                                                </>
+                                              ) : (
+                                                <span className="text-sm font-medium text-slate-700 bg-slate-100 px-3 py-1.5 rounded border border-slate-200">
+                                                  {cleanGapArtifacts(q.value || q.prefilled || q.answer || q.example || after || 'Information')}
+                                                </span>
+                                              )}
+                                            </div>
+                                          </div>
+                                        </React.Fragment>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              };
+
+                              let formBody = null;
+                              if (tplKey && isFirstTime) {
+                                const cleanTpl = normalizeTemplateGaps(tplKey, gqs);
+                                extractQuestionNumbersFromTemplate(cleanTpl).forEach(num => renderedQuestionNumbers.add(num));
+                                const remainingGqs = gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+                                remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+
+                                formBody = (
+                                  <>
+                                    {renderNotesTemplate(cleanTpl, {
+                                      answers,
+                                      flagged,
+                                      onAnswerChange,
+                                      onToggleFlag,
+                                      questionRefs,
+                                      questions: gqs,
+                                    })}
+                                    {remainingGqs.length > 0 && (
+                                      <div className="mt-6 pt-4 border-t border-slate-200">
+                                        {renderFallbackForm(remainingGqs)}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              } else {
+                                const remainingGqs = gqs.filter(q => !renderedQuestionNumbers.has(Number(q.questionNumber || q.q_num)));
+                                if (remainingGqs.length === 0) return null;
+                                remainingGqs.forEach(q => renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num)));
+                                formBody = renderFallbackForm(remainingGqs);
+                              }
+
                               return (
                                 <div className="bg-white border-2 border-slate-300 rounded-xl p-6 sm:p-8 shadow-xs space-y-5">
                                   {groupTitle && (
@@ -1065,131 +1339,7 @@ export function ListeningSection({
                                       {groupTitle}
                                     </div>
                                   )}
-
-                                  {tplKey && isFirstTime ? (
-                                    renderNotesTemplate(tplKey, {
-                                      answers,
-                                      flagged,
-                                      onAnswerChange,
-                                      onToggleFlag,
-                                      questionRefs,
-                                      questions: gqs,
-                                    })
-                                  ) : (
-                                    <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden">
-                                      {gqs.map((q, qIdx) => {
-                                        const qNum = q.questionNumber || q.q_num;
-                                        const isQuestion = Boolean(
-                                          qNum &&
-                                          (typeof qNum === 'number' || (!isNaN(Number(qNum)) && Number(qNum) > 0)) &&
-                                          String(q.type || '').toLowerCase() !== 'context' &&
-                                          !q.is_context &&
-                                          !q.isContext
-                                        );
-                                        const val = isQuestion ? (answers[qNum] || '') : '';
-                                        const isFlagged = isQuestion ? (flagged[qNum] || false) : false;
-                                        const rawText = q.cleanPrompt || q.prompt || q.text || '';
-                                        const { before, after } = splitSentenceAtGap(rawText);
-                                        const labelText = before || cleanGapArtifacts(rawText) || (isQuestion ? `Field ${qNum}` : 'Information');
-
-                                        const qSubheading = (q.subheading || q.section_heading || q.category || '').trim();
-                                        const prevQ = qIdx > 0 ? gqs[qIdx - 1] : null;
-                                        const prevSubheading = (prevQ?.subheading || prevQ?.section_heading || prevQ?.category || '').trim();
-                                        const showSubheading = qSubheading && qSubheading.toLowerCase() !== prevSubheading.toLowerCase();
-
-                                        const cBullets = (Array.isArray(q.context_bullets) ? q.context_bullets : Array.isArray(q.bullets) ? q.bullets : [])
-                                          .map(b => (typeof b === 'object' && b !== null ? (b.text || b.prompt || '') : String(b || '')))
-                                          .map(s => cleanGapArtifacts(s).trim())
-                                          .filter(Boolean);
-
-                                        const staticContexts = [
-                                          q.parent_context,
-                                          q.context,
-                                          q.context_text,
-                                          q.description,
-                                        ].filter(Boolean);
-
-                                        return (
-                                          <React.Fragment key={q.id || qNum || qIdx}>
-                                            {showSubheading && (
-                                              <div className="bg-slate-100/90 px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 border-b border-slate-200">
-                                                {qSubheading}
-                                              </div>
-                                            )}
-                                            <div
-                                              ref={el => { if (isQuestion && qNum) questionRefs.current[qNum] = el; }}
-                                              className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 gap-3 transition-colors ${
-                                                isFlagged ? 'bg-amber-50/50' : qIdx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'
-                                              }`}
-                                            >
-                                              <div className="sm:w-1/2 text-sm font-semibold text-slate-800">
-                                                {labelText}
-                                                {staticContexts.map((ctx, cIdx) => {
-                                                  const text = typeof ctx === 'object' && ctx !== null ? (ctx.text || ctx.prompt || '') : String(ctx || '');
-                                                  const cleaned = cleanGapArtifacts(text).trim();
-                                                  if (!cleaned || cleaned === labelText) return null;
-                                                  return (
-                                                    <div key={cIdx} className="text-xs text-slate-500 font-normal mt-0.5 italic">
-                                                      {cleaned}
-                                                    </div>
-                                                  );
-                                                })}
-                                                {cBullets.length > 0 && (
-                                                  <ul className="mt-1.5 space-y-0.5 pl-4 list-disc text-xs text-slate-500 font-normal">
-                                                    {cBullets.map((bText, bIdx) => (
-                                                      <li key={bIdx}>{bText}</li>
-                                                    ))}
-                                                  </ul>
-                                                )}
-                                                {q.prefilled && isQuestion && (
-                                                  <div className="text-xs text-slate-500 italic mt-0.5">
-                                                    Prefilled: {cleanGapArtifacts(typeof q.prefilled === 'object' ? q.prefilled.text : String(q.prefilled))}
-                                                  </div>
-                                                )}
-                                              </div>
-                                              <div className="sm:w-1/2 flex items-center gap-2">
-                                                {isQuestion ? (
-                                                  <>
-                                                    <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0 font-mono select-none">
-                                                      {qNum}
-                                                    </span>
-                                                    <input
-                                                      type="text"
-                                                      value={val}
-                                                      onChange={e => onAnswerChange(qNum, e.target.value)}
-                                                      placeholder="Type answer..."
-                                                      className={`flex-1 h-9 px-3 border-2 text-sm font-medium rounded outline-none transition-colors ${
-                                                        val
-                                                          ? 'border-brand-500 bg-orange-50/30 text-slate-900'
-                                                          : isFlagged
-                                                          ? 'border-amber-400 bg-amber-50'
-                                                          : 'border-slate-300 focus:border-brand-500'
-                                                      }`}
-                                                    />
-                                                    {after && <span className="text-xs text-slate-600 font-medium">{cleanGapArtifacts(after)}</span>}
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => onToggleFlag(qNum)}
-                                                      className={`p-1 rounded cursor-pointer transition shrink-0 ${
-                                                        isFlagged ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
-                                                      }`}
-                                                      title={isFlagged ? 'Remove flag' : 'Flag'}
-                                                    >
-                                                      <Flag className="w-3.5 h-3.5" />
-                                                    </button>
-                                                  </>
-                                                ) : (
-                                                  <span className="text-sm font-medium text-slate-700 bg-slate-100 px-3 py-1.5 rounded border border-slate-200">
-                                                    {cleanGapArtifacts(q.value || q.prefilled || q.answer || q.example || after || 'Information')}
-                                                  </span>
-                                                )}
-                                              </div>
-                                            </div>
-                                          </React.Fragment>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
+                                  {formBody}
                                 </div>
                               );
                             })()}
@@ -1234,11 +1384,13 @@ export function ListeningSection({
                               // Deduplicate by questionNumber to ensure each question appears strictly once
                               const seenInGroup = new Set();
                               const uniqueGqs = gqs.filter(q => {
-                                const num = Number(q.questionNumber);
-                                if (!num || seenInGroup.has(num)) return false;
+                                const num = Number(q.questionNumber || q.q_num);
+                                if (!num || seenInGroup.has(num) || renderedQuestionNumbers.has(num)) return false;
                                 seenInGroup.add(num);
                                 return true;
                               });
+
+                              if (uniqueGqs.length === 0) return null;
 
                               const dualQuestions = [];
                               const singleQuestions = [];
@@ -1270,6 +1422,16 @@ export function ListeningSection({
                                 q => !dualNumSet.has(Number(q.questionNumber || q.q_num))
                               );
 
+                              if (dualPairs.length === 0 && filteredSingleQuestions.length === 0) return null;
+
+                              dualPairs.forEach(([qA, qB]) => {
+                                if (qA?.questionNumber) renderedQuestionNumbers.add(Number(qA.questionNumber));
+                                if (qB?.questionNumber) renderedQuestionNumbers.add(Number(qB.questionNumber));
+                              });
+                              filteredSingleQuestions.forEach(q => {
+                                renderedQuestionNumbers.add(Number(q.questionNumber || q.q_num));
+                              });
+
                               return (
                                 <div className="space-y-6">
                                   {/* Render Dual-Select Pairs (e.g. Questions 11-12 and 13-14) */}
@@ -1280,11 +1442,15 @@ export function ListeningSection({
                                     const pairRange = qB ? `Questions ${qNumA} and ${qNumB}` : `Question ${qNumA}`;
                                     const rawPrompt = qA.cleanPrompt || qA.prompt || qA.text || qB?.cleanPrompt || '';
                                     const cleanPrompt = rawPrompt.replace(/^(?:Questions?\s*)?(?:\d+\s*[-–&and\s]*\d+|\d+)[\.\:\s\-]+/i, '').trim();
+                                    const groupRefOpts = Array.isArray(group.referenceBox) && group.referenceBox.length >= 2
+                                      ? group.referenceBox
+                                      : (Array.isArray(group.refBox) && group.refBox.length >= 2 ? group.refBox : []);
+
                                     const rawOptions = (qA.options && qA.options.length >= 2) 
                                       ? qA.options 
                                       : (qB?.options && qB.options.length >= 2) 
                                         ? qB.options 
-                                        : ['A', 'B', 'C', 'D', 'E'];
+                                        : groupRefOpts;
                                     
                                     const handleDualSelect = (letter) => {
                                       const valA = (answers[qNumA] || '').toUpperCase();
@@ -1320,36 +1486,43 @@ export function ListeningSection({
                                         <p className="text-sm font-bold text-slate-800 leading-snug">
                                           {cleanPrompt}
                                         </p>
-                                        <div className="grid grid-cols-1 gap-2 pt-1">
-                                          {rawOptions.map((opt, oIdx) => {
-                                            const match = String(opt).match(/^\[?([A-Z])\]?[\.\:\)\s\-]+(.*)$/i);
-                                            const letter = (match ? match[1] : String.fromCharCode(65 + oIdx)).toUpperCase();
-                                            const optText = match ? match[2].trim() : String(opt).trim();
-                                            const isSelected = valA === letter || valB === letter;
+                                        {rawOptions.length > 0 ? (
+                                          <div className="grid grid-cols-1 gap-2 pt-1">
+                                            {rawOptions.map((opt, oIdx) => {
+                                              const optStr = typeof opt === 'object' && opt !== null ? `${opt.key}. ${opt.label}` : String(opt);
+                                              const match = optStr.match(/^\[?([A-Z])\]?[\.\:\)\s\-]+(.*)$/i);
+                                              const letter = (opt?.key || (match ? match[1] : String.fromCharCode(65 + oIdx))).toUpperCase();
+                                              const optText = opt?.label !== undefined ? opt.label : (match ? match[2].trim() : String(opt).trim());
+                                              const isSelected = valA === letter || valB === letter;
 
-                                            return (
-                                              <button
-                                                key={letter}
-                                                type="button"
-                                                onClick={() => handleDualSelect(letter)}
-                                                className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
-                                                  isSelected
-                                                    ? 'border-amber-500 bg-amber-50/70 text-slate-900 font-semibold shadow-xs'
-                                                    : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
-                                                }`}
-                                              >
-                                                <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
-                                                  isSelected
-                                                    ? 'bg-amber-500 text-white shadow-xs'
-                                                    : 'bg-slate-100 text-slate-600 border border-slate-300'
-                                                }`}>
-                                                  {letter}
-                                                </span>
-                                                <span className="flex-1 leading-snug">{optText}</span>
-                                              </button>
-                                            );
-                                          })}
-                                        </div>
+                                              return (
+                                                <button
+                                                  key={letter}
+                                                  type="button"
+                                                  onClick={() => handleDualSelect(letter)}
+                                                  className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
+                                                    isSelected
+                                                      ? 'border-amber-500 bg-amber-50/70 text-slate-900 font-semibold shadow-xs'
+                                                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                                                  }`}
+                                                >
+                                                  <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
+                                                    isSelected
+                                                      ? 'bg-amber-500 text-white shadow-xs'
+                                                      : 'bg-slate-100 text-slate-600 border border-slate-300'
+                                                  }`}>
+                                                    {letter}
+                                                  </span>
+                                                  <span className="flex-1 leading-snug">{optText}</span>
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                        ) : (
+                                          <div className="p-3 bg-amber-50/60 border border-amber-200 rounded text-xs text-amber-800 italic">
+                                            Please refer to the exam booklet or audio recording for the available options.
+                                          </div>
+                                        )}
 
                                         {/* Dual Answer Slots */}
                                         <div className="flex items-center gap-4 pt-3 border-t border-slate-200 text-xs">
@@ -1415,7 +1588,13 @@ export function ListeningSection({
                                     const val = (answers[qNum] || '').toUpperCase();
                                     const isFlagged = flagged[qNum] || false;
                                     const promptText = q.cleanPrompt || q.prompt || q.text || group.instruction || instructionStr || `Question ${qNum}`;
-                                    const rawOptions = (q.options && q.options.length > 0) ? q.options : ['A', 'B', 'C', 'D', 'E'];
+                                    const groupRefOpts = Array.isArray(group.referenceBox) && group.referenceBox.length > 0
+                                      ? group.referenceBox
+                                      : (Array.isArray(group.refBox) && group.refBox.length > 0 ? group.refBox : []);
+
+                                    const rawOptions = (Array.isArray(q.options) && q.options.length > 0)
+                                      ? q.options
+                                      : groupRefOpts;
 
                                     return (
                                       <div
@@ -1446,36 +1625,43 @@ export function ListeningSection({
                                           </button>
                                         </div>
 
-                                        <div className="grid grid-cols-1 gap-2 pt-1 pl-8">
-                                          {rawOptions.map((opt, oIdx) => {
-                                            const match = String(opt).match(/^\[?([A-Z])\]?[\.\:\)\s\-]+(.*)$/i);
-                                            const letter = (match ? match[1] : String.fromCharCode(65 + oIdx)).toUpperCase();
-                                            const optText = match ? match[2].trim() : String(opt).trim();
-                                            const isSelected = val === letter;
+                                        {rawOptions.length > 0 ? (
+                                          <div className="grid grid-cols-1 gap-2 pt-1 pl-8">
+                                            {rawOptions.map((opt, oIdx) => {
+                                              const optStr = typeof opt === 'object' && opt !== null ? `${opt.key}. ${opt.label}` : String(opt);
+                                              const match = optStr.match(/^\[?([A-Z])\]?[\.\:\)\s\-]+(.*)$/i);
+                                              const letter = (opt?.key || (match ? match[1] : String.fromCharCode(65 + oIdx))).toUpperCase();
+                                              const optText = opt?.label !== undefined ? opt.label : (match ? match[2].trim() : String(opt).trim());
+                                              const isSelected = val === letter;
 
-                                            return (
-                                              <button
-                                                key={letter}
-                                                type="button"
-                                                onClick={() => onAnswerChange(qNum, letter)}
-                                                className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
-                                                  isSelected
-                                                    ? 'border-amber-500 bg-amber-50/70 text-slate-900 font-semibold shadow-xs'
-                                                    : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
-                                                }`}
-                                              >
-                                                <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
-                                                  isSelected
-                                                    ? 'bg-amber-500 text-white shadow-xs'
-                                                    : 'bg-slate-100 text-slate-600 border border-slate-300'
-                                                }`}>
-                                                  {letter}
-                                                </span>
-                                                <span className="flex-1 leading-snug">{optText}</span>
-                                              </button>
-                                            );
-                                          })}
-                                        </div>
+                                              return (
+                                                <button
+                                                  key={letter}
+                                                  type="button"
+                                                  onClick={() => onAnswerChange(qNum, letter)}
+                                                  className={`flex items-center gap-3 p-2.5 rounded text-left text-sm transition-colors border cursor-pointer ${
+                                                    isSelected
+                                                      ? 'border-amber-500 bg-amber-50/70 text-slate-900 font-semibold shadow-xs'
+                                                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                                                  }`}
+                                                >
+                                                  <span className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs shrink-0 font-mono transition-colors ${
+                                                    isSelected
+                                                      ? 'bg-amber-500 text-white shadow-xs'
+                                                      : 'bg-slate-100 text-slate-600 border border-slate-300'
+                                                  }`}>
+                                                    {letter}
+                                                  </span>
+                                                  <span className="flex-1 leading-snug">{optText}</span>
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                        ) : (
+                                          <div className="p-3 bg-amber-50/60 border border-amber-200 rounded text-xs text-amber-800 italic ml-8">
+                                            Please refer to the exam booklet or audio recording for the available options.
+                                          </div>
+                                        )}
                                       </div>
                                     );
                                   })}
@@ -1485,6 +1671,10 @@ export function ListeningSection({
 
                             {/* 3. MATCHING & MAP / DIAGRAM LABELING TABLE */}
                             {(category === 'MATCHING' || category === 'MATCHING_FEATURES' || category === 'MAP_DIAGRAM_LABELING' || category === 'MAP_LABELLING' || category === 'MAP_LABELING' || category === 'DIAGRAM_LABEL') && (() => {
+                              const remainingGqs = gqs.filter(item => !renderedQuestionNumbers.has(Number(item.questionNumber || item.q_num)));
+                              if (remainingGqs.length === 0) return null;
+                              remainingGqs.forEach(item => renderedQuestionNumbers.add(Number(item.questionNumber || item.q_num)));
+
                               const isMapQuestion =
                                 category === 'MAP_DIAGRAM_LABELING' ||
                                 category === 'MAP_LABELLING' ||
@@ -1620,7 +1810,7 @@ export function ListeningSection({
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {gqs.map((item, idx) => {
+                                        {remainingGqs.map((item, idx) => {
                                           const qNum = item.questionNumber;
                                           const rawName = item.cleanPrompt || item.text || item.prompt || `Question ${qNum}`;
                                           const cleanName = cleanGapArtifacts(rawName.replace(/^\d+[\.\:\s\-]+/, ''));
@@ -1687,10 +1877,14 @@ export function ListeningSection({
 
                             {/* 4. FLOW CHART */}
                             {category === 'FLOW_CHART' && (() => {
+                              const remainingGqs = gqs.filter(step => !renderedQuestionNumbers.has(Number(step.questionNumber || step.q_num)));
+                              if (remainingGqs.length === 0) return null;
+                              remainingGqs.forEach(step => renderedQuestionNumbers.add(Number(step.questionNumber || step.q_num)));
+
                               const rawFlowRefBox = group.referenceBox && group.referenceBox.length > 0
                                 ? group.referenceBox
                                 : (() => {
-                                    const qWithOpts = gqs.find(q => Array.isArray(q.options) && q.options.length > 0);
+                                    const qWithOpts = remainingGqs.find(q => Array.isArray(q.options) && q.options.length > 0);
                                     if (!qWithOpts) return [];
                                     return qWithOpts.options.map((opt, idx) => {
                                       if (typeof opt === 'object' && opt !== null) {
@@ -1735,8 +1929,8 @@ export function ListeningSection({
                                       </div>
                                     )}
                                     <div className="flex flex-col items-center space-y-2 max-w-xl mx-auto">
-                                      {gqs.map((step, idx) => {
-                                        const isLast = idx === gqs.length - 1;
+                                      {remainingGqs.map((step, idx) => {
+                                        const isLast = idx === remainingGqs.length - 1;
                                         const qNum = step.questionNumber;
                                         const val = answers[qNum] || '';
                                         const isFlagged = flagged[qNum] || false;
@@ -1794,6 +1988,10 @@ export function ListeningSection({
 
                             {/* 5. SUMMARY MATCHING */}
                             {category === 'SUMMARY_MATCHING' && (() => {
+                              const remainingGqs = gqs.filter(item => !renderedQuestionNumbers.has(Number(item.questionNumber || item.q_num)));
+                              if (remainingGqs.length === 0) return null;
+                              remainingGqs.forEach(item => renderedQuestionNumbers.add(Number(item.questionNumber || item.q_num)));
+
                               const refBox = group.referenceBox || [];
                               return (
                                 <div className="space-y-4">
@@ -1820,7 +2018,7 @@ export function ListeningSection({
                                       </div>
                                     )}
                                     {renderStructuredNotes({
-                                      items: gqs,
+                                      items: remainingGqs,
                                       answers,
                                       flagged,
                                       onAnswerChange,
@@ -1837,23 +2035,29 @@ export function ListeningSection({
                               'NOTES', 'FILL_BLANK', 'SUMMARY_COMPLETION',
                               'TABLE_COMPLETION', 'FORM_COMPLETION',
                               'MULTIPLE_CHOICE', 'MULTIPLE_CHOICE_MULTI', 'MATCHING', 'MATCHING_FEATURES', 'MATCHING_HEADINGS', 'FLOW_CHART', 'SUMMARY_MATCHING', 'MAP_DIAGRAM_LABELING'
-                            ].includes(category) && (
-                              <div className="bg-slate-50/70 border border-slate-200 p-6 sm:p-8">
-                                {groupTitle && (
-                                  <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-5">
-                                    {groupTitle}
-                                  </div>
-                                )}
-                                {renderStructuredNotes({
-                                  items: gqs,
-                                  answers,
-                                  flagged,
-                                  onAnswerChange,
-                                  onToggleFlag,
-                                  questionRefs,
-                                })}
-                              </div>
-                            )}
+                            ].includes(category) && (() => {
+                              const remainingGqs = gqs.filter(item => !renderedQuestionNumbers.has(Number(item.questionNumber || item.q_num)));
+                              if (remainingGqs.length === 0) return null;
+                              remainingGqs.forEach(item => renderedQuestionNumbers.add(Number(item.questionNumber || item.q_num)));
+
+                              return (
+                                <div className="bg-slate-50/70 border border-slate-200 p-6 sm:p-8">
+                                  {groupTitle && (
+                                    <div className="text-center font-extrabold text-sm sm:text-base text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-3 mb-5">
+                                      {groupTitle}
+                                    </div>
+                                  )}
+                                  {renderStructuredNotes({
+                                    items: remainingGqs,
+                                    answers,
+                                    flagged,
+                                    onAnswerChange,
+                                    onToggleFlag,
+                                    questionRefs,
+                                  })}
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       });

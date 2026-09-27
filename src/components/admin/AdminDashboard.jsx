@@ -33,7 +33,6 @@ export function AdminDashboard({
   onOpenLobby,
   onForceEndExam,
   onResetSession,
-  onAddMockStudents,
   onKickStudent,
   onUnbanStudent,
   onWarnStudent,
@@ -184,7 +183,6 @@ export function AdminDashboard({
             onSetStage={onSetStage}
             onResetSession={onResetSession}
             onOpenMasterResults={() => setTab('master')}
-            onAddMockStudents={onAddMockStudents}
             onKickStudent={onKickStudent}
           />
         )}

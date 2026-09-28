@@ -513,32 +513,32 @@ export function ListeningSection({
     }));
   }
 
-  // Play / Pause handler with Single-Play and Scrub Enforcement
+  // Play handler with Single-Play Enforcement (CD-IELTS Rule: Once started, audio CANNOT be paused)
   const togglePlayAudio = (partId) => {
     if (isTimeUp) return;
     const audio = audioRefs.current[partId];
     if (!audio) return;
 
+    // Strict Cambridge CD-IELTS Rule: Pausing audio is completely prohibited once started
     if (playingPartId === partId) {
-      audio.pause();
-      setPlayingPartId(null);
-    } else {
-      if (audioSettings.single_play_enforcement && playedParts[partId]) {
-        alert("In accordance with IELTS Listening examination rules, audio tracks may only be played once.");
-        return;
-      }
-
-      // Pause any other playing part
-      if (playingPartId && audioRefs.current[playingPartId]) {
-        audioRefs.current[playingPartId].pause();
-      }
-
-      audio.play().then(() => {
-        setPlayingPartId(partId);
-      }).catch(err => {
-        console.warn("Audio play blocked:", err);
-      });
+      return;
     }
+
+    if (audioSettings.single_play_enforcement && playedParts[partId]) {
+      alert("In accordance with IELTS Listening examination rules, audio tracks may only be played once.");
+      return;
+    }
+
+    // Pause any other playing part if switching
+    if (playingPartId && audioRefs.current[playingPartId]) {
+      audioRefs.current[playingPartId].pause();
+    }
+
+    audio.play().then(() => {
+      setPlayingPartId(partId);
+    }).catch(err => {
+      console.warn("Audio play blocked:", err);
+    });
   };
 
   const handleTimeUpdate = (partId) => {
@@ -650,24 +650,33 @@ export function ListeningSection({
         <div className="flex items-center gap-2 sm:gap-3">
           <button
             type="button"
-            onClick={() => togglePlayAudio(playingPartId ? playingPartId : activePartId)}
-            className={`h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+            onClick={() => togglePlayAudio(activePartId)}
+            disabled={Boolean(playingPartId) || Boolean(playedParts[activePartId] && audioSettings.single_play_enforcement)}
+            className={`h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
               playingPartId
-                ? 'bg-amber-500 text-white shadow-xs hover:bg-amber-600'
+                ? 'bg-emerald-600 text-white shadow-xs cursor-default'
                 : playedParts[activePartId] && audioSettings.single_play_enforcement
                   ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
-                  : 'bg-brand-500 hover:bg-brand-600 text-white shadow-xs'
+                  : 'bg-brand-500 hover:bg-brand-600 text-white shadow-xs cursor-pointer'
             }`}
+            title={
+              playingPartId
+                ? `Playing Part ${playingPartId} - audio cannot be paused during exam`
+                : playedParts[activePartId] && audioSettings.single_play_enforcement
+                  ? `Part ${activePartId} audio has already been played`
+                  : `Play Part ${activePartId} audio`
+            }
           >
             {playingPartId ? (
               <>
-                <Pause className="w-3.5 h-3.5" />
-                <span>Pause (Part {playingPartId})</span>
+                <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                <Volume2 className="w-3.5 h-3.5 animate-bounce" />
+                <span>Playing Part {playingPartId}...</span>
               </>
             ) : playedParts[activePartId] && audioSettings.single_play_enforcement ? (
               <>
                 <Lock className="w-3.5 h-3.5" />
-                <span>Part {activePartId} Locked</span>
+                <span>Part {activePartId} Played</span>
               </>
             ) : (
               <>

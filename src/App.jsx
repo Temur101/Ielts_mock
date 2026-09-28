@@ -173,6 +173,11 @@ export default function App() {
           duration_mins: parsedMeta.duration_mins || DEFAULT_IELTS_EXAM.duration_mins,
           current_stage: parsedMeta.current_stage || DEFAULT_IELTS_EXAM.current_stage,
           status: parsedMeta.status || DEFAULT_IELTS_EXAM.status,
+          stage_started_at: parsedMeta.stage_started_at || null,
+          stage_ends_at: parsedMeta.stage_ends_at || null,
+          started_at: parsedMeta.started_at || null,
+          ended_at: parsedMeta.ended_at || null,
+          is_lobby_open: Boolean(parsedMeta.is_lobby_open),
         };
       }
     } catch (e) {}
@@ -623,6 +628,28 @@ export default function App() {
             started_at: remoteExam.started_at || prev.started_at,
             ended_at: remoteExam.ended_at || prev.ended_at,
           }));
+
+          // Align current candidate with active room stage on reconnection
+          if (remoteExam.current_stage?.endsWith('_active')) {
+            setCurrentStudent(prev => {
+              if (!prev || prev.status === 'completed' || prev.status === 'disqualified') return prev;
+              const activeStage = remoteExam.current_stage;
+              const updates = {
+                status: 'in_progress',
+                current_stage: activeStage,
+              };
+              if (activeStage === 'listening_active') {
+                updates.listening_status = 'in_progress';
+                updates.reading_status = prev.reading_status === 'lobby' ? 'waiting' : prev.reading_status;
+              } else if (activeStage === 'reading_active') {
+                updates.reading_status = 'in_progress';
+                updates.writing_status = prev.writing_status === 'lobby' ? 'waiting' : prev.writing_status;
+              } else if (activeStage === 'writing_active') {
+                updates.writing_status = 'in_progress';
+              }
+              return { ...prev, ...updates };
+            });
+          }
         }
       });
     }
@@ -990,17 +1017,18 @@ export default function App() {
       }));
     }
 
-    const isStageActive = exam.current_stage?.endsWith('_active');
+    const activeStage = candidateInfo.dbExam?.current_stage || exam.current_stage || 'listening_lobby';
+    const isStageActive = Boolean(activeStage?.endsWith('_active'));
     const newStudent = {
       id: candidateInfo.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : generateUUID()),
       exam_id: candidateInfo.dbExam?.id || exam.id,
       name: candidateInfo.name,
       candidate_no: candidateInfo.candidate_no,
       status: isStageActive ? 'in_progress' : 'waiting',
-      current_stage: exam.current_stage || 'listening_lobby',
-      listening_status: exam.current_stage === 'listening_active' ? 'in_progress' : 'waiting',
-      reading_status: exam.current_stage === 'reading_active' ? 'in_progress' : 'waiting',
-      writing_status: exam.current_stage === 'writing_active' ? 'in_progress' : 'waiting',
+      current_stage: activeStage,
+      listening_status: activeStage === 'listening_active' ? 'in_progress' : (activeStage.startsWith('reading') || activeStage.startsWith('writing') ? 'completed' : 'waiting'),
+      reading_status: activeStage === 'reading_active' ? 'in_progress' : (activeStage.startsWith('writing') ? 'completed' : 'waiting'),
+      writing_status: activeStage === 'writing_active' ? 'in_progress' : 'waiting',
       answers: { reading: {}, listening: {}, writing: {} },
       answered_count: 0,
       reading_score: null,
@@ -1333,7 +1361,10 @@ export default function App() {
   const isStudentOnlyRoute = !isAuthedAdmin && (route.path === '/join' || Boolean(route.pin) || Boolean(currentStudent));
   const activeRoleToRender = isStudentOnlyRoute ? 'student' : (route.path === '/admin' ? 'admin' : currentRole);
 
-  const isStudentInExam = activeRoleToRender === 'student' && Boolean(currentStudent) && exam.status === 'active';
+  const isStudentInExam = 
+    activeRoleToRender === 'student' && 
+    Boolean(currentStudent) && 
+    (exam.status === 'active' || exam.status === 'in_progress' || Boolean(exam.current_stage?.endsWith('_active')));
 
   return (
     <div className={`${isStudentInExam ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-[#fafbfc] flex flex-col font-sans selection:bg-brand-500 selection:text-white`}>
@@ -1353,7 +1384,7 @@ export default function App() {
       />
 
       {/* Main Container */}
-      <main className={`flex-1 ${isStudentInExam ? 'overflow-hidden flex flex-col' : ''}`}>
+      <main className={`flex-1 ${isStudentInExam ? 'min-h-0 overflow-hidden flex flex-col' : ''}`}>
         {activeRoleToRender === 'admin' ? (
           <AdminDashboard
             exam={exam}
@@ -1372,7 +1403,7 @@ export default function App() {
             onSaveGrades={handleSaveGrades}
           />
         ) : (
-          <div className={isStudentInExam ? 'flex-1 overflow-hidden' : ''}>
+          <div className={isStudentInExam ? 'flex-1 min-h-0 overflow-hidden flex flex-col' : ''}>
             {!currentStudent ? (
               <StudentJoin
                 onJoin={handleStudentJoin}

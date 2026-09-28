@@ -141,6 +141,12 @@ export function getRemainingSeconds(exam, currentStage = '') {
     return Math.max(0, diff);
   }
 
+  // Graceful buffer during initial mount/reconnect before server timestamps arrive:
+  // If stage is active, return standard duration instead of 0 to prevent premature section auto-lock
+  if (effectiveStage.endsWith('_active')) {
+    return calculateStageDurationSeconds(effectiveStage, exam);
+  }
+
   return 0;
 }
 

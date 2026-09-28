@@ -154,6 +154,11 @@ export async function savePersistentExam(exam) {
       duration_mins: exam.duration_mins,
       current_stage: exam.current_stage,
       status: exam.status,
+      stage_started_at: exam.stage_started_at || null,
+      stage_ends_at: exam.stage_ends_at || null,
+      started_at: exam.started_at || null,
+      ended_at: exam.ended_at || null,
+      is_lobby_open: Boolean(exam.is_lobby_open),
     };
     localStorage.setItem('ielts_exam_meta', JSON.stringify(meta));
   } catch (err) {

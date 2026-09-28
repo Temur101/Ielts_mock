@@ -209,7 +209,7 @@ export function PassageViewer({
   }
 
   return (
-    <div className="h-full flex flex-col bg-white">
+    <div className="h-full min-h-0 flex flex-col bg-white overflow-hidden">
       
       {/* Ultra-Compact Passage Tab Bar & Tools Header (max-height: 42px) */}
       <div className="h-11 px-3 border-b border-slate-200 bg-slate-50/90 flex items-center justify-between gap-2 shrink-0">
@@ -313,7 +313,7 @@ export function PassageViewer({
       {/* Main Extracted Formatted Passage Body (Independent Vertical Scroll) */}
       <div 
         ref={passageContainerRef}
-        className="flex-1 p-5 sm:p-6 overflow-y-auto select-text font-serif text-slate-900"
+        className="flex-1 min-h-0 p-5 sm:p-6 overflow-y-auto select-text font-serif text-slate-900"
       >
         {/* Compact Title & Header */}
         <div className="border-b border-slate-200 pb-3 mb-4 font-sans">

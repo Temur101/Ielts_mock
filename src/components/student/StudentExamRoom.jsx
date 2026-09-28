@@ -40,7 +40,7 @@ export function StudentExamRoom({
   onExit,
 }) {
   const isAdminAuthed = typeof window !== 'undefined' && sessionStorage.getItem('ielts_admin_authenticated') === 'true';
-  const currentStage = exam.current_stage || (exam.status === 'active' ? 'listening_active' : 'listening_lobby');
+  const currentStage = exam.current_stage || ((exam.status === 'active' || exam.status === 'in_progress') ? 'listening_active' : 'listening_lobby');
 
   // Local Storage Cache Key
   const storageKey = `ielts_student_answers_${exam.id}_${student.id}`;
@@ -78,7 +78,7 @@ export function StudentExamRoom({
   // Section Auto-Lock & Intermission Modal State
   const [showSectionLockedModal, setShowSectionLockedModal] = useState(false);
   const [lockedSectionType, setLockedSectionType] = useState(null); // 'listening' | 'reading' | 'writing'
-  const [timeRemaining, setTimeRemaining] = useState(0);
+  const [timeRemaining, setTimeRemaining] = useState(() => getRemainingSeconds(exam, currentStage));
 
   // Determine current active section from exam.current_stage: Listening -> Reading -> Writing
   const activeSection = currentStage.startsWith('listening') 
@@ -98,10 +98,12 @@ export function StudentExamRoom({
     }
 
     const updateTimer = () => {
+      const hasDeadline = Boolean(exam?.stage_ends_at || exam?.stage_started_at);
       const diff = getRemainingSeconds(exam, currentStage);
       setTimeRemaining(diff);
 
-      if (diff <= 0 && isStageActive) {
+      // Only lock section if timestamps have been verified and deadline actually passed
+      if (hasDeadline && diff <= 0 && isStageActive) {
         handleSectionTimeUp(activeSection);
       }
     };
@@ -273,7 +275,11 @@ export function StudentExamRoom({
   }
 
   // Intermission Lobby Screens between sections
-  if (currentStage === 'reading_lobby' || student.current_stage === 'reading_lobby' || student.reading_status === 'lobby') {
+  // Strictly respect the exam's current stage: while listening_active is running, candidate stays in listening
+  if (
+    currentStage === 'reading_lobby' ||
+    (currentStage !== 'listening_active' && (student.current_stage === 'reading_lobby' || student.reading_status === 'lobby'))
+  ) {
     return (
       <StudentIntermissionLobby
         student={student}
@@ -284,7 +290,10 @@ export function StudentExamRoom({
     );
   }
 
-  if (currentStage === 'writing_lobby' || student.current_stage === 'writing_lobby' || student.writing_status === 'lobby') {
+  if (
+    currentStage === 'writing_lobby' ||
+    (currentStage !== 'reading_active' && currentStage !== 'listening_active' && (student.current_stage === 'writing_lobby' || student.writing_status === 'lobby'))
+  ) {
     return (
       <StudentIntermissionLobby
         student={student}
@@ -392,7 +401,7 @@ export function StudentExamRoom({
       </div>
 
       {/* Main Workspace Body */}
-      <div className="flex-1 overflow-hidden relative">
+      <div className="flex-1 min-h-0 overflow-hidden relative">
         {activeSection === 'reading' && (() => {
           const currentPartKey = `part${activePassageId}`;
           const currentPartData = exam.reading_parts?.[currentPartKey];
@@ -446,8 +455,8 @@ export function StudentExamRoom({
           const currentPassage = compiledPassages[activePassageId - 1];
 
           return (
-            <div className="h-full flex flex-col md:flex-row overflow-hidden">
-              <div className="w-full md:w-3/5 h-1/2 md:h-full border-b md:border-b-0 md:border-r border-slate-200 overflow-hidden">
+            <div className="h-full min-h-0 flex flex-col md:flex-row overflow-hidden">
+              <div className="w-full md:w-3/5 h-1/2 md:h-full min-h-0 border-b md:border-b-0 md:border-r border-slate-200 overflow-hidden flex flex-col">
                 <PassageViewer
                   passages={compiledPassages}
                   activePassageId={activePassageId}
@@ -456,7 +465,7 @@ export function StudentExamRoom({
                   pdfName={currentPartPdfName}
                 />
               </div>
-              <div className="w-full md:w-2/5 h-1/2 md:h-full overflow-hidden bg-slate-50/50">
+              <div className="w-full md:w-2/5 h-1/2 md:h-full min-h-0 overflow-hidden bg-slate-50/50 flex flex-col">
                 <AnswerSheet
                   questions={exam.reading?.questions || exam.reading_questions || exam.parsed_questions || exam.questions || []}
                   answers={readingAnswers}
@@ -504,7 +513,7 @@ export function StudentExamRoom({
               student={student}
               answers={listeningAnswers}
               flagged={listeningFlagged}
-              isTimeUp={timeRemaining <= 0}
+              isTimeUp={Boolean(exam?.stage_ends_at || exam?.stage_started_at) && timeRemaining <= 0}
               timeRemaining={timeRemaining}
               onAnswerChange={handleListeningAnswerChange}
               onToggleFlag={(qNum) => setListeningFlagged(prev => ({ ...prev, [qNum]: !prev[qNum] }))}

@@ -2671,7 +2671,7 @@ export function AnswerSheet({
   }));
 
   return (
-    <div className="h-full flex flex-col bg-slate-100">
+    <div className="h-full min-h-0 flex flex-col bg-slate-100 overflow-hidden">
       {/* Compact Top Header (~44px) */}
       <div className="h-11 px-4 border-b border-slate-200 bg-white flex items-center justify-between shrink-0">
         <div className="flex items-center gap-1.5">
@@ -2714,7 +2714,7 @@ export function AnswerSheet({
       </div>
 
       {/* Continuous Examination Paper Sheet */}
-      <div ref={questionsContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-6">
+      <div ref={questionsContainerRef} className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6">
         {bookletHtml && viewMode === 'booklet' ? (
           <div className="bg-white border border-slate-200 shadow-sm rounded p-4">
             <div className="border-b pb-2 mb-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex justify-between">

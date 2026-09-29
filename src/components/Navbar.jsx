@@ -111,128 +111,113 @@ export function Navbar({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           
-          {/* Logo & Title */}
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center text-white shadow-glow shadow-brand-500/30">
-              <GraduationCap className="w-6 h-6" />
+          {/* Left: Logo & Clean Title (No subtitle/badges) */}
+          <div className="flex items-center gap-2.5 shrink-0 min-w-[140px]">
+            <div className="w-9 h-9 rounded-xl bg-slate-100 text-slate-700 border border-slate-200 flex items-center justify-center shadow-2xs">
+              <GraduationCap className="w-5 h-5 text-slate-700" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-extrabold text-lg tracking-tight text-slate-900">
-                  IELTS<span className="text-brand-500">Sync</span>
-                </span>
-                <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-md bg-orange-100 text-brand-700 border border-brand-200 shadow-xs">
-                  Proctor Suite
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium">
-                Full-Stack Real-Time Assessment Platform
-              </p>
-            </div>
+            <span className="font-extrabold text-base tracking-tight text-slate-700">
+              IELTS<span className="text-slate-700">Sync</span>
+            </span>
           </div>
 
-          {/* Center: Session Status & Glowing Orange Session PIN Badge */}
-          <div className="hidden md:flex items-center gap-4">
-            {getStatusBadge()}
-
-            {/* Dynamic Editable Glowing Orange Pill Badge */}
-            <div className="relative flex items-center">
-              {isStudentOnly || (!isAdminAuthed && student) || currentRole === 'student' ? (
-                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-orange-50 border border-brand-300 text-brand-700 font-mono font-bold text-xs shadow-xs">
-                  <span className="text-[10px] font-black uppercase tracking-wider text-brand-500">EXAM PIN:</span>
-                  <span className="font-extrabold tracking-wider">{exam?.pin_code || '—'}</span>
+          {/* Center: Exactly Centered Test Code / PIN */}
+          <div className="flex-1 flex items-center justify-center px-2">
+            {isStudentOnly || (!isAdminAuthed && student) || currentRole === 'student' ? (
+              exam?.pin_code ? (
+                <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 font-mono text-xs shadow-2xs">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">EXAM PIN:</span>
+                  <span className="font-extrabold tracking-widest text-slate-700 text-sm">{exam.pin_code}</span>
                 </div>
-              ) : isEditingPin ? (
-                <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-orange-50 border-2 border-brand-500 shadow-glow transition-all">
-                  <span className="text-[11px] font-extrabold text-brand-700 uppercase tracking-wider">PIN:</span>
-                  <input
-                    type="text"
-                    value={pinInput}
-                    onChange={(e) => setPinInput(e.target.value.toUpperCase())}
-                    onKeyDown={handleKeyDown}
-                    autoFocus
-                    className="w-24 bg-white border border-brand-300 rounded-lg px-2 py-0.5 font-mono font-extrabold text-sm text-brand-600 uppercase focus:outline-none focus:ring-2 focus:ring-brand-500 text-center"
-                  />
-                  <button
-                    onClick={handleSavePin}
-                    className="p-1 text-emerald-600 hover:text-emerald-700 rounded-md hover:bg-emerald-50 transition"
-                    title="Save PIN (Immediate Realtime Sync)"
-                  >
-                    <CheckCheck className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={handleGeneratePin}
-                    className="p-1 text-slate-500 hover:text-brand-600 rounded-md hover:bg-orange-100 transition"
-                    title="Generate Random PIN"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ) : (
-                <div 
-                  onClick={() => setIsEditingPin(true)}
-                  className="group flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-orange-500 to-brand-600 text-white font-mono font-bold text-xs shadow-glow hover:shadow-glow-lg border border-orange-400 cursor-pointer transition-all transform hover:-translate-y-0.5"
-                  title="Click to edit Session PIN (Instant update across candidates)"
+              ) : null
+            ) : isEditingPin ? (
+              <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white border-2 border-slate-400 shadow-xs transition-all">
+                <span className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider">PIN:</span>
+                <input
+                  type="text"
+                  value={pinInput}
+                  onChange={(e) => setPinInput(e.target.value.toUpperCase())}
+                  onKeyDown={handleKeyDown}
+                  autoFocus
+                  className="w-24 bg-slate-50 border border-slate-300 rounded-lg px-2 py-0.5 font-mono font-extrabold text-sm text-slate-700 uppercase focus:outline-none focus:ring-2 focus:ring-slate-400 text-center"
+                />
+                <button
+                  onClick={handleSavePin}
+                  className="p-1 text-emerald-600 hover:text-emerald-700 rounded-md hover:bg-emerald-50 transition"
+                  title="Save PIN (Immediate Realtime Sync)"
                 >
-                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-orange-100">
-                    PIN
-                  </span>
-                  <span className="tracking-wider text-sm font-extrabold">
-                    {exam?.pin_code || '—'}
-                  </span>
-                  <Edit2 className="w-3 h-3 text-orange-200 group-hover:text-white transition" />
+                  <CheckCheck className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={handleGeneratePin}
+                  className="p-1 text-slate-500 hover:text-slate-900 rounded-md hover:bg-slate-100 transition"
+                  title="Generate Random PIN"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div 
+                onClick={() => setIsEditingPin(true)}
+                className="group flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 text-slate-700 font-mono font-bold text-xs shadow-2xs hover:bg-slate-200/80 border border-slate-200 cursor-pointer transition-all transform hover:-translate-y-0.5"
+                title="Click to edit Session PIN (Instant update across candidates)"
+              >
+                <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">
+                  PIN
+                </span>
+                <span className="tracking-wider text-sm font-extrabold text-slate-700">
+                  {exam?.pin_code || '—'}
+                </span>
+                <Edit2 className="w-3 h-3 text-slate-400 group-hover:text-slate-700 transition" />
 
-                  <span className="w-px h-3.5 bg-orange-400/80 mx-0.5" />
+                <span className="w-px h-3.5 bg-slate-300 mx-0.5" />
 
-                  <button
-                    type="button"
-                    onClick={handleCopyPin}
-                    className="text-orange-200 hover:text-white transition p-0.5"
-                    title="Copy PIN"
-                  >
-                    {copiedPin ? (
-                      <Check className="w-3.5 h-3.5 text-white" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                </div>
-              )}
-            </div>
+                <button
+                  type="button"
+                  onClick={handleCopyPin}
+                  className="text-slate-500 hover:text-slate-800 transition p-0.5"
+                  title="Copy PIN"
+                >
+                  {copiedPin ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* Right: Role Switcher & Utilities */}
-          <div className="flex items-center gap-2.5">
-            {/* Audio Toggle */}
-            <button
-              onClick={onToggleSound}
-              className="p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition"
-              title={soundEnabled ? "Mute sounds" : "Enable exam audio alerts"}
-            >
-              {soundEnabled ? <Volume2 className="w-4 h-4 text-brand-500" /> : <VolumeX className="w-4 h-4" />}
-            </button>
-
-            {/* Show controls ALWAYS if admin is authenticated (even while taking a test), or when not in student-only mode */}
-            {(isAdminAuthed || (!isStudentOnly && !student)) && (
+          {/* Right: Only for Teacher / Admin, Clean Spacer for Students */}
+          <div className="flex items-center justify-end gap-2.5 shrink-0 min-w-[140px]">
+            {isAdminAuthed ? (
               <>
+                <button
+                  onClick={onToggleSound}
+                  className="p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition"
+                  title={soundEnabled ? "Mute sounds" : "Enable exam audio alerts"}
+                >
+                  {soundEnabled ? <Volume2 className="w-4 h-4 text-slate-700" /> : <VolumeX className="w-4 h-4" />}
+                </button>
+
                 {onOpenSuperAdmin && (
                   <button
                     onClick={onOpenSuperAdmin}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition border border-slate-300 shadow-2xs"
                     title="Open Super-Admin Command Center"
                   >
-                    <ShieldCheck className="w-3.5 h-3.5 text-orange-400" />
+                    <ShieldCheck className="w-3.5 h-3.5 text-slate-600" />
                     Super-Admin
                   </button>
                 )}
 
-                {/* Role Switcher Pill */}
+                {/* Role Switcher Pill for Admin */}
                 <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
                   <button
                     onClick={() => onRoleChange('admin')}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                       currentRole === 'admin'
-                        ? 'bg-white text-brand-600 shadow-sm'
+                        ? 'bg-white text-slate-900 border border-slate-200 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
@@ -243,16 +228,16 @@ export function Navbar({
                     onClick={() => onRoleChange('student')}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                       currentRole === 'student'
-                        ? 'bg-white text-brand-600 shadow-sm'
+                        ? 'bg-white text-slate-900 border border-slate-200 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     <Users className="w-3.5 h-3.5" />
-                    {isAdminAuthed ? 'Student (Test)' : 'Student View'}
+                    Student View
                   </button>
                 </div>
               </>
-            )}
+            ) : null}
           </div>
 
         </div>

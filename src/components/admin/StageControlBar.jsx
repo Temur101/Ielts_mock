@@ -241,8 +241,8 @@ export function StageControlBar({
               isListeningDone
                 ? 'bg-emerald-600 text-white'
                 : isListeningActive
-                ? 'bg-brand-500 text-white shadow-glow shadow-brand-500/30 animate-pulse'
-                : 'bg-orange-100 text-brand-800'
+                ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-2xs animate-pulse'
+                : 'bg-slate-100 text-slate-800 border border-slate-200'
             }`}>
               {isListeningDone ? <Check className="w-5 h-5" /> : <Headphones className="w-5 h-5" />}
             </div>
@@ -293,7 +293,7 @@ export function StageControlBar({
                 icon={Play}
                 onClick={() => handleTriggerAction('listening_active', 'Start Listening Section', 'Synchronously starts the Listening section and audio tracks for all connected candidates.')}
                 disabled={students.length === 0}
-                className="w-full sm:w-auto shadow-glow font-bold bg-brand-500 hover:bg-brand-600 text-white"
+                className="w-full sm:w-auto shadow-2xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300"
               >
                 Start Listening ({students.length})
               </Button>
@@ -341,8 +341,8 @@ export function StageControlBar({
                 : isReadingDone
                 ? 'bg-emerald-600 text-white'
                 : isReadingActive
-                ? 'bg-brand-500 text-white shadow-glow shadow-brand-500/30 animate-pulse'
-                : 'bg-orange-100 text-brand-800'
+                ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-2xs animate-pulse'
+                : 'bg-slate-100 text-slate-800 border border-slate-200'
             }`}>
               {!isListeningDone ? <Lock className="w-5 h-5" /> : isReadingDone ? <Check className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
             </div>

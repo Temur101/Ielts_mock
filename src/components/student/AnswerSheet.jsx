@@ -4,7 +4,11 @@ import {
   ListChecks,
   Check,
   Layers,
+  Highlighter,
+  Trash2,
 } from 'lucide-react';
+import { SelectionHighlightPopover } from './SelectionHighlightPopover';
+import { applyHighlightToSelection, clearAllHighlights } from '../../lib/highlighterService';
 import { IeltsBookletRenderer, FlowChartGapItem, MarkdownTable, MatchingHeadingsSelect } from './IeltsBookletRenderer';
 import { 
   normalizeTemplateGaps,
@@ -2681,6 +2685,42 @@ export function AnswerSheet({
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {/* Highlighter Color Buttons */}
+          <div className="flex items-center gap-1 bg-slate-50 p-0.5 rounded-lg border border-slate-200">
+            <button
+              type="button"
+              onClick={() => applyHighlightToSelection('yellow', questionsContainerRef.current)}
+              className="w-5 h-5 rounded bg-yellow-200 hover:bg-yellow-300 border border-yellow-400/50 flex items-center justify-center transition cursor-pointer"
+              title="Highlight Yellow"
+            >
+              <Highlighter className="w-3 h-3 text-yellow-800" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyHighlightToSelection('green', questionsContainerRef.current)}
+              className="w-5 h-5 rounded bg-green-200 hover:bg-green-300 border border-green-400/50 flex items-center justify-center transition cursor-pointer"
+              title="Highlight Mint Green"
+            >
+              <Highlighter className="w-3 h-3 text-green-800" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyHighlightToSelection('pink', questionsContainerRef.current)}
+              className="w-5 h-5 rounded bg-pink-200 hover:bg-pink-300 border border-pink-400/50 flex items-center justify-center transition cursor-pointer"
+              title="Highlight Pink"
+            >
+              <Highlighter className="w-3 h-3 text-pink-800" />
+            </button>
+            <button
+              type="button"
+              onClick={() => clearAllHighlights(questionsContainerRef.current)}
+              className="p-0.5 text-slate-400 hover:text-rose-500 rounded transition cursor-pointer"
+              title="Clear Highlights"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
+
           {bookletHtml && (
             <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-bold">
               <button
@@ -2714,7 +2754,7 @@ export function AnswerSheet({
       </div>
 
       {/* Continuous Examination Paper Sheet */}
-      <div ref={questionsContainerRef} className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6">
+      <div ref={questionsContainerRef} className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 select-text [&_*]:select-text">
         {bookletHtml && viewMode === 'booklet' ? (
           <div className="bg-white border border-slate-200 shadow-sm rounded p-4">
             <div className="border-b pb-2 mb-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex justify-between">
@@ -2775,6 +2815,9 @@ export function AnswerSheet({
           })}
         </div>
       </div>
+
+      {/* Floating Selection Highlighter Popover for Questions */}
+      <SelectionHighlightPopover containerRef={questionsContainerRef} />
     </div>
   );
 }

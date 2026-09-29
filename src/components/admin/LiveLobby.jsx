@@ -14,7 +14,8 @@ import {
   FileText,
   PenTool,
   Headphones,
-  Award
+  Award,
+  Phone
 } from 'lucide-react';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
@@ -57,10 +58,7 @@ export function LiveLobby({
   }).length;
 
   const handleStartListeningClick = () => {
-    if (!isLobbyOpen && onOpenLobby) {
-      onOpenLobby();
-      return;
-    }
+    if (onOpenLobby) onOpenLobby();
     if (onSetStage) {
       onSetStage('listening_active');
     } else if (onStartExam) {
@@ -74,10 +72,10 @@ export function LiveLobby({
   return (
     <div className="space-y-6">
 
-      {/* Hero Master Control Card - Only visible when Lobby is NOT opened yet */}
-      {!isLobbyOpen && !isExamConcluded && (
-        <div className="relative overflow-hidden bg-white rounded-3xl p-8 text-slate-900 shadow-sm border-2 border-brand-300 animate-fadeIn">
-          <div className="absolute top-0 right-0 -mr-16 -mt-16 w-72 h-72 bg-orange-100/50 rounded-full blur-3xl pointer-events-none" />
+      {/* Hero Master Control Card - Visible during Listening Lobby */}
+      {(currentStage === 'listening_lobby' || exam.status === 'lobby') && !isExamConcluded && (
+        <div className="relative overflow-hidden bg-white rounded-3xl p-8 text-slate-900 shadow-sm border border-slate-200 animate-fadeIn">
+          <div className="absolute top-0 right-0 -mr-16 -mt-16 w-72 h-72 bg-slate-100/50 rounded-full blur-3xl pointer-events-none" />
           
           <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
             <div className="space-y-2 max-w-xl">
@@ -103,15 +101,15 @@ export function LiveLobby({
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
               <div 
                 onClick={handleCopyPin}
-                className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-orange-50 border-2 border-brand-300 hover:border-brand-500 cursor-pointer transition shadow-xs"
+                className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-slate-50 border border-slate-300 hover:border-slate-800 cursor-pointer transition shadow-xs"
               >
                 <div>
                   <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Candidate PIN</div>
-                  <div className="text-xl font-mono font-extrabold text-brand-600 tracking-wider">
+                  <div className="text-xl font-mono font-extrabold text-slate-900 tracking-wider">
                     {exam.pin_code}
                   </div>
                 </div>
-                <div className="p-2 rounded-xl bg-white text-brand-600 border border-brand-200">
+                <div className="p-2 rounded-xl bg-white text-slate-800 border border-slate-200">
                   {copiedPin ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
                 </div>
               </div>
@@ -121,7 +119,7 @@ export function LiveLobby({
                 size="lg"
                 icon={Play}
                 onClick={handleStartListeningClick}
-                className="py-4 text-base font-extrabold shadow-glow-lg whitespace-nowrap bg-brand-500 hover:bg-brand-600 text-white"
+                className="py-4 text-base font-extrabold shadow-xs whitespace-nowrap bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300"
               >
                 START LISTENING FOR ALL ({examStudents.length})
               </Button>
@@ -133,7 +131,7 @@ export function LiveLobby({
       {/* Waiting Room Roster Bar */}
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-card">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center font-bold">
+          <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-800 flex items-center justify-center font-bold">
             <Users className="w-5 h-5" />
           </div>
           <div>
@@ -192,6 +190,12 @@ export function LiveLobby({
                     <p className="text-xs font-mono text-slate-400 mt-0.5">
                       {student.candidate_no || 'ID-0000'}
                     </p>
+                    {(student.phone || student.phone_number || student.answers?.candidate_phone) && (
+                      <p className="text-[11px] font-mono text-slate-600 mt-1 flex items-center gap-1.5 font-semibold bg-slate-50 px-2 py-0.5 rounded-md border border-slate-100 truncate">
+                        <Phone className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span>{student.phone || student.phone_number || student.answers?.candidate_phone}</span>
+                      </p>
+                    )}
                   </div>
                 </div>
 

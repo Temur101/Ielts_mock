@@ -17,8 +17,12 @@ import {
   Users,
   Eye,
   Sliders,
-  Filter
+  Filter,
+  Loader2,
+  Phone
 } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
 import { Modal } from '../common/Modal';
@@ -30,6 +34,7 @@ import {
   calculateOverallIeltsBand,
   isAnswerCorrect
 } from '../../lib/ieltsGrading';
+import { apiGradeWritingSubmission } from '../../lib/ai/gemini-client';
 
 export function MasterResultsTable({
   exam,
@@ -40,6 +45,9 @@ export function MasterResultsTable({
   const [selectedStudentForGrading, setSelectedStudentForGrading] = useState(null);
   const [viewDiffStudent, setViewDiffStudent] = useState(null); // { student, section: 'reading' | 'listening' }
   const [isPrintMode, setIsPrintMode] = useState(false);
+  const [evaluatingMap, setEvaluatingMap] = useState({}); // { [studentId]: boolean }
+  const [isBatchEvaluating, setIsBatchEvaluating] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
 
   const readingTotalQs = exam?.reading?.questions?.length || exam?.questions?.length || 40;
   const listeningTotalQs = exam?.listening?.questions?.length || 40;
@@ -103,8 +111,195 @@ export function MasterResultsTable({
   const avgWritingBand = writingBands.length ? (writingBands.reduce((a, b) => a + b, 0) / writingBands.length).toFixed(1) : '—';
   const avgOverallBand = overallBands.length ? (overallBands.reduce((a, b) => a + b, 0) / overallBands.length).toFixed(1) : '—';
 
-  const handlePrintPDF = () => {
-    window.print();
+  const handleDownloadPDF = () => {
+    try {
+      const doc = new jsPDF({
+        orientation: 'landscape',
+        unit: 'pt',
+        format: 'a4',
+      });
+
+      const pin = exam?.pin_code || 'SESSION';
+      const examTitle = exam?.title || 'IELTS Academic Master Mock Assessment';
+      const examDate = new Date().toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      });
+
+      // 1. Header Banner
+      doc.setFillColor(15, 23, 42); // slate-900
+      doc.rect(0, 0, doc.internal.pageSize.width, 60, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.setTextColor(255, 255, 255);
+      doc.text('IELTS MOCK EXAMINATION — OFFICIAL ROSTER & RESULTS', 36, 32);
+
+      doc.setFontSize(9.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(203, 213, 225); // slate-300
+      doc.text(
+        `EXAM: ${examTitle.slice(0, 45)}  |  SESSION PIN: ${pin}  |  DATE: ${examDate}  |  CANDIDATES: ${students.length}  |  AVERAGE BAND: ${avgOverallBand}`,
+        36,
+        48
+      );
+
+      // 2. Prepare Data Rows
+      const tableData = gradedStudents.map((s, idx) => {
+        const phone = s.phone || s.phone_number || s.answers?.candidate_phone || '—';
+        const lScore = `${s.computed_listening_score ?? '—'}/${listeningTotalQs} (Band ${s.computed_listening_band ?? '—'})`;
+        const rScore = `${s.computed_reading_score ?? '—'}/${readingTotalQs} (Band ${s.computed_reading_band ?? '—'})`;
+        const t1 = s.writing_task1_band !== null && s.writing_task1_band !== undefined ? s.writing_task1_band : '—';
+        const t2 = s.writing_task2_band !== null && s.writing_task2_band !== undefined ? s.writing_task2_band : '—';
+        const wScore = s.computed_writing_band !== null && s.computed_writing_band !== undefined 
+          ? `Band ${s.computed_writing_band} (T1: ${t1} | T2: ${t2})` 
+          : 'Pending';
+        const overall = s.computed_overall_band !== null && s.computed_overall_band !== undefined ? `Band ${s.computed_overall_band}` : 'Pending';
+        const status = (s.status || 'waiting').toUpperCase();
+
+        return [
+          idx + 1,
+          s.name || 'Candidate',
+          s.candidate_no || '—',
+          phone,
+          lScore,
+          rScore,
+          wScore,
+          overall,
+          status,
+        ];
+      });
+
+      // 3. AutoTable
+      autoTable(doc, {
+        startY: 75,
+        head: [['#', 'Candidate Name', 'Candidate ID', 'Phone Number', 'Listening', 'Reading', 'Writing (T1 & T2)', 'Overall Band', 'Status']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: {
+          fillColor: [30, 41, 59], // slate-800
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          fontSize: 9,
+          halign: 'center',
+          cellPadding: 7,
+        },
+        columnStyles: {
+          0: { halign: 'center', cellWidth: 26 },
+          1: { fontStyle: 'bold', halign: 'left', cellWidth: 120 },
+          2: { halign: 'center', cellWidth: 70 },
+          3: { halign: 'center', cellWidth: 95 },
+          4: { halign: 'center', cellWidth: 105 },
+          5: { halign: 'center', cellWidth: 105 },
+          6: { halign: 'center', cellWidth: 125 },
+          7: { halign: 'center', fontStyle: 'bold', fontSize: 10.5, cellWidth: 70 },
+          8: { halign: 'center', cellWidth: 60 },
+        },
+        alternateRowStyles: {
+          fillColor: [248, 250, 252], // slate-50
+        },
+        styles: {
+          fontSize: 8.5,
+          cellPadding: 5.5,
+          overflow: 'linebreak',
+          valign: 'middle',
+        },
+        didDrawPage: (data) => {
+          doc.setFontSize(8);
+          doc.setTextColor(148, 163, 184); // slate-400
+          doc.text(
+            `Generated by IELTS Sync Assessment Platform  •  Official Confidential Record  •  Page ${data.pageNumber}`,
+            36,
+            doc.internal.pageSize.height - 18
+          );
+        },
+      });
+
+      doc.save(`IELTS_Mock_Results_${pin}.pdf`);
+    } catch (err) {
+      console.error('Failed to generate results PDF:', err);
+      window.print();
+    }
+  };
+
+  const handleEvaluateStudent = async (student) => {
+    if (!student) return;
+    const studentId = student.id;
+    setEvaluatingMap(prev => ({ ...prev, [studentId]: true }));
+    try {
+      const task1Text = student.writing_task1_essay || student.answers?.writing?.task1 || "";
+      const task2Text = student.writing_task2_essay || student.answers?.writing?.task2 || "";
+      const task1PromptText = exam?.task_1_prompt || exam?.writing_tasks?.task1?.prompt || exam?.writing?.task1?.prompt || exam?.writing_task1 || "";
+      const task2PromptText = exam?.task_2_prompt || exam?.writing_tasks?.task2?.prompt || exam?.writing?.task2?.prompt || exam?.writing_task2 || "";
+
+      const result = await apiGradeWritingSubmission({
+        task1Prompt: task1PromptText,
+        task1Text: task1Text,
+        task2Prompt: task2PromptText,
+        task2Text: task2Text,
+        studentId: student.id,
+      });
+
+      const t1Band = result?.task_1?.band ?? result?.task1_evaluation?.band;
+      const t2Band = result?.task_2?.band ?? result?.task2_evaluation?.band;
+      const finalT1 = t1Band !== undefined && t1Band !== null ? Number(t1Band) : null;
+      const finalT2 = t2Band !== undefined && t2Band !== null ? Number(t2Band) : null;
+
+      const rAns = student.answers?.reading || student.answers || {};
+      const lAns = student.answers?.listening || {};
+      const rQuestions = exam?.reading?.questions || exam?.questions || [];
+      const lQuestions = exam?.listening?.questions || [];
+      const rScore = student.reading_score ?? rQuestions.filter(q => isAnswerCorrect(rAns[q.questionNumber], q.acceptedAnswers)).length;
+      const rBand = student.reading_band ?? calculateIeltsReadingBand(rScore, rQuestions.length || 40);
+      const lScore = student.listening_score ?? lQuestions.filter(q => isAnswerCorrect(lAns[q.questionNumber], q.acceptedAnswers)).length;
+      const lBand = student.listening_band ?? calculateIeltsListeningBand(lScore, lQuestions.length || 40);
+
+      const writingBand = calculateWritingBand(finalT1, finalT2);
+      const overallBand = calculateOverallIeltsBand(rBand, lBand, writingBand);
+
+      if (onSaveGrades) {
+        await onSaveGrades(student.id, {
+          writing_task1_band: finalT1,
+          writing_task2_band: finalT2,
+          writing_band: writingBand,
+          overall_band: overallBand,
+          writing_ai_evaluation: result,
+        });
+      }
+    } catch (err) {
+      console.error("Single student AI grading failed:", err);
+      alert(`Ошибка оценки ИИ для ${student.name || 'кандидата'}: ${err.message || 'Проверьте Gemini API'}`);
+    } finally {
+      setEvaluatingMap(prev => {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      });
+    }
+  };
+
+  const pendingAiCandidates = students.filter(s => {
+    const hasEssays = Boolean((s.writing_task1_essay || s.answers?.writing?.task1 || '').trim()) || 
+                      Boolean((s.writing_task2_essay || s.answers?.writing?.task2 || '').trim());
+    const isPending = s.writing_band === null || s.writing_band === undefined;
+    return hasEssays && isPending;
+  });
+
+  const handleBatchEvaluateAll = async () => {
+    if (pendingAiCandidates.length === 0 || isBatchEvaluating) return;
+
+    setIsBatchEvaluating(true);
+    setBatchProgress({ current: 0, total: pendingAiCandidates.length });
+
+    for (let i = 0; i < pendingAiCandidates.length; i++) {
+      const student = pendingAiCandidates[i];
+      setBatchProgress({ current: i + 1, total: pendingAiCandidates.length });
+      await handleEvaluateStudent(student);
+    }
+
+    setIsBatchEvaluating(false);
+    setBatchProgress({ current: 0, total: 0 });
   };
 
   return (
@@ -113,7 +308,7 @@ export function MasterResultsTable({
       {/* Top Banner & PDF Export Button */}
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm print:hidden">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center font-bold">
+          <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-800 flex items-center justify-center font-bold">
             <Award className="w-5 h-5" />
           </div>
           <div>
@@ -127,15 +322,30 @@ export function MasterResultsTable({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {pendingAiCandidates.length > 0 && (
+            <Button
+              variant="outline"
+              size="md"
+              icon={isBatchEvaluating ? Loader2 : Sparkles}
+              onClick={handleBatchEvaluateAll}
+              disabled={isBatchEvaluating}
+              className="bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-extrabold shadow-2xs"
+            >
+              {isBatchEvaluating 
+                ? `Оценка ИИ (${batchProgress.current}/${batchProgress.total})...`
+                : `⚡ Оценить всех через ИИ (${pendingAiCandidates.length})`}
+            </Button>
+          )}
+
           <Button
             variant="primary"
             size="md"
-            icon={Printer}
-            onClick={handlePrintPDF}
-            className="shadow-glow font-extrabold"
+            icon={Download}
+            onClick={handleDownloadPDF}
+            className="font-extrabold shadow-2xs bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300"
           >
-            Download Complete Results (PDF)
+            Download Results Table (PDF)
           </Button>
         </div>
       </div>
@@ -154,25 +364,25 @@ export function MasterResultsTable({
         </div>
 
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm text-center">
-          <div className="text-[10px] uppercase font-bold text-brand-600">Reading Avg</div>
-          <div className="text-xl font-mono font-extrabold text-brand-600 mt-1">Band {avgReadingBand}</div>
+          <div className="text-[10px] uppercase font-bold text-slate-700">Reading Avg</div>
+          <div className="text-xl font-mono font-extrabold text-slate-900 mt-1">Band {avgReadingBand}</div>
           <div className="text-[10px] font-mono text-slate-400">{avgReadingScore} / {readingTotalQs}</div>
         </div>
 
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm text-center">
-          <div className="text-[10px] uppercase font-bold text-amber-600">Writing Avg</div>
-          <div className="text-xl font-mono font-extrabold text-amber-600 mt-1">
+          <div className="text-[10px] uppercase font-bold text-slate-700">Writing Avg</div>
+          <div className="text-xl font-mono font-extrabold text-slate-900 mt-1">
             {avgWritingBand === '—' ? 'Pending' : `Band ${avgWritingBand}`}
           </div>
           <div className="text-[10px] font-mono text-slate-400">T1 & T2 Evaluation</div>
         </div>
 
-        <div className="bg-gradient-to-br from-brand-500 to-brand-600 text-white p-4 rounded-2xl shadow-sm text-center col-span-2 sm:col-span-2">
-          <div className="text-[10px] uppercase font-bold text-brand-100">Overall Class Average</div>
-          <div className="text-2xl font-mono font-extrabold mt-1">
+        <div className="bg-white p-4 rounded-2xl border-2 border-slate-300 shadow-sm text-center col-span-2 sm:col-span-2">
+          <div className="text-[10px] uppercase font-bold text-slate-500">Overall Class Average</div>
+          <div className="text-2xl font-mono font-extrabold text-slate-900 mt-1">
             {avgOverallBand === '—' ? 'Pending' : `IELTS Band ${avgOverallBand}`}
           </div>
-          <div className="text-[10px] text-brand-100 font-mono">Official IELTS 0.5 Rounding</div>
+          <div className="text-[10px] text-slate-500 font-mono">Official IELTS 0.5 Rounding</div>
         </div>
       </div>
 
@@ -181,7 +391,7 @@ export function MasterResultsTable({
         <div className="flex justify-between items-start">
           <div>
             <h1 className="text-2xl font-black tracking-tight">OFFICIAL IELTS ACADEMIC MOCK EXAMINATION</h1>
-            <p className="text-sm font-semibold text-brand-400">Master Roster & Institutional Results Report</p>
+            <p className="text-sm font-semibold text-slate-300">Master Roster & Institutional Results Report</p>
             <p className="text-xs text-slate-400 mt-1">Exam: {exam.title} • PIN: {exam.pin_code} • Date: {new Date().toLocaleDateString()}</p>
           </div>
           <div className="text-right text-xs text-slate-400">
@@ -200,7 +410,7 @@ export function MasterResultsTable({
             placeholder="Search candidate by name or ID..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold focus:outline-none focus:border-brand-500"
+            className="w-full pl-9 pr-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold focus:outline-none focus:border-slate-800"
           />
         </div>
 
@@ -238,11 +448,11 @@ export function MasterResultsTable({
                 const lScore = student.listening_score ?? lQuestions.filter(q => isAnswerCorrect(lAns[q.questionNumber], q.acceptedAnswers)).length;
                 const lBand = student.listening_band ?? calculateIeltsListeningBand(lScore, lQuestions.length || 40);
 
-                const t1Band = student.writing_task1_band ?? 6.5;
-                const t2Band = student.writing_task2_band ?? 7.0;
-                const wBand = student.writing_band ?? calculateWritingBand(t1Band, t2Band);
+                const t1Band = student.writing_task1_band ?? null;
+                const t2Band = student.writing_task2_band ?? null;
+                const wBand = student.writing_band ?? (t1Band !== null && t2Band !== null ? calculateWritingBand(t1Band, t2Band) : null);
 
-                const overallBand = student.overall_band ?? calculateOverallIeltsBand(rBand, lBand, wBand);
+                const overallBand = student.overall_band ?? (wBand !== null ? calculateOverallIeltsBand(rBand, lBand, wBand) : null);
 
                 const t1Words = (student.writing_task1_essay || student.answers?.writing?.task1 || '').trim().split(/\s+/).filter(Boolean).length;
                 const t2Words = (student.writing_task2_essay || student.answers?.writing?.task2 || '').trim().split(/\s+/).filter(Boolean).length;
@@ -261,6 +471,12 @@ export function MasterResultsTable({
                           <div className="font-mono text-[10px] text-slate-400">
                             {student.candidate_no || 'ID-0000'}
                           </div>
+                          {(student.phone || student.phone_number || student.answers?.candidate_phone) && (
+                            <div className="text-[10px] font-mono text-slate-500 mt-0.5 flex items-center gap-1 font-medium">
+                              <Phone className="w-3 h-3 text-slate-400" />
+                              <span>{student.phone || student.phone_number || student.answers?.candidate_phone}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -290,12 +506,12 @@ export function MasterResultsTable({
 
                     {/* Reading Score */}
                     <td className="py-4 px-3 text-center">
-                      <div className="font-mono font-extrabold text-sm text-brand-600">
+                      <div className="font-mono font-extrabold text-sm text-slate-900">
                         Band {rBand}
                       </div>
                       <button
                         onClick={() => setViewDiffStudent({ student, section: 'reading' })}
-                        className="text-[10px] font-mono text-slate-500 hover:text-brand-600 underline cursor-pointer print:no-underline"
+                        className="text-[10px] font-mono text-slate-500 hover:text-slate-900 underline cursor-pointer print:no-underline"
                       >
                         {rScore} / {rQuestions.length || readingTotalQs} correct
                       </button>
@@ -303,29 +519,55 @@ export function MasterResultsTable({
 
                     {/* Writing Score & Word Counts */}
                     <td className="py-4 px-3 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <span className="font-mono font-extrabold text-sm text-amber-600">
-                          {wBand !== null && wBand !== undefined ? `Band ${wBand}` : 'Pending'}
-                        </span>
+                      <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                        {wBand !== null && wBand !== undefined ? (
+                          <span className="font-mono font-extrabold text-sm text-slate-900">
+                            Band {wBand}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-semibold text-slate-400">
+                            Pending
+                          </span>
+                        )}
                         {student.writing_ai_evaluation && (
                           <span 
                             onClick={() => setSelectedStudentForGrading(student)}
-                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-orange-100 text-brand-700 text-[9px] font-mono font-bold cursor-pointer hover:bg-orange-200 transition"
+                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-800 text-[9px] font-mono font-bold cursor-pointer hover:bg-slate-200 transition border border-slate-200"
                             title="Graded by Google Gemini AI (Click to view breakdown)"
                           >
-                            <Sparkles className="w-2.5 h-2.5 text-brand-500" />
+                            <Sparkles className="w-2.5 h-2.5 text-slate-600" />
                             AI
                           </span>
                         )}
+                        {(wBand === null || wBand === undefined) && (
+                          <button
+                            onClick={() => handleEvaluateStudent(student)}
+                            disabled={Boolean(evaluatingMap[student.id]) || isBatchEvaluating}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-[10px] font-bold cursor-pointer shadow-2xs transition disabled:opacity-50 disabled:cursor-not-allowed print:hidden"
+                            title="Оценить эссе Task 1 + Task 2 с помощью Gemini AI"
+                          >
+                            {evaluatingMap[student.id] ? (
+                              <>
+                                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                <span>Проверка...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-2.5 h-2.5 text-slate-700" />
+                                <span>⚡ Оценить ИИ</span>
+                              </>
+                            )}
+                          </button>
+                        )}
                       </div>
-                      <div className="text-[10px] font-mono text-slate-400">
+                      <div className="text-[10px] font-mono text-slate-400 mt-0.5">
                         T1: {t1Words}w ({t1Band !== null && t1Band !== undefined ? t1Band : '—'}) • T2: {t2Words}w ({t2Band !== null && t2Band !== undefined ? t2Band : '—'})
                       </div>
                     </td>
 
                     {/* Overall IELTS Band */}
                     <td className="py-4 px-4 text-center">
-                      <span className="inline-block px-3 py-1 rounded-xl bg-gradient-to-r from-brand-500 to-brand-600 text-white font-mono font-extrabold text-sm shadow-sm">
+                      <span className="inline-block px-3 py-1 rounded-xl bg-slate-100 text-slate-900 font-mono font-extrabold text-sm border border-slate-300 shadow-2xs">
                         {overallBand !== null && overallBand !== undefined ? `Band ${overallBand}` : 'Pending'}
                       </span>
                     </td>

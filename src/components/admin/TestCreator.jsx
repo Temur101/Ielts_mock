@@ -170,12 +170,17 @@ export function TestCreator({ exam, onUpdateExam }) {
       : []
   );
 
+  const [listeningAudioMode, setListeningAudioMode] = useState(
+    exam.listening_audio_mode || (exam.listening?.audio_mode === 'single' ? 'single' : 'split')
+  );
+
   const listeningAudioFileRefs = {
     part1: useRef(null),
     part2: useRef(null),
     part3: useRef(null),
     part4: useRef(null),
   };
+  const singleAudioFileRef = useRef(null);
   const listeningPdfRef = useRef(null);
 
   const [listeningMapImage, setListeningMapImage] = useState({
@@ -377,6 +382,35 @@ export function TestCreator({ exam, onUpdateExam }) {
     } catch (err) {
       console.warn("Failed to update persistent storage on audio remove:", err);
     }
+  };
+
+  const handleSingleAudioUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const durationStr = await getAudioDurationString(file);
+      const url = await uploadAssetToStorage(file);
+      setListeningAudios({
+        part1: { partId: 1, title: 'Part 1: Social Dialogue', name: file.name, url, duration: durationStr },
+        part2: { partId: 2, title: 'Part 2: Community Recreation Guide', name: file.name, url, duration: durationStr },
+        part3: { partId: 3, title: 'Part 3: Academic Tutorial', name: file.name, url, duration: durationStr },
+        part4: { partId: 4, title: 'Part 4: University Lecture', name: file.name, url, duration: durationStr },
+      });
+    } catch (err) {
+      console.error('Single full audio upload failed:', err);
+      alert('Failed to upload Audio: ' + err.message);
+    }
+  };
+
+  const handleRemoveSingleAudio = async () => {
+    setListeningAudios({
+      part1: { partId: 1, title: 'Part 1: Social Dialogue', name: '', url: '', duration: '07:00' },
+      part2: { partId: 2, title: 'Part 2: Community Recreation Guide', name: '', url: '', duration: '07:00' },
+      part3: { partId: 3, title: 'Part 3: Academic Tutorial', name: '', url: '', duration: '07:00' },
+      part4: { partId: 4, title: 'Part 4: University Lecture', name: '', url: '', duration: '07:00' },
+    });
+    if (singleAudioFileRef.current) singleAudioFileRef.current.value = '';
   };
 
   // Listening PDF Booklet Upload (Multi or Single File)
@@ -1045,6 +1079,7 @@ export function TestCreator({ exam, onUpdateExam }) {
         writing_pdf_url: writingPdf.url,
         writing_pdf_name: writingPdf.name,
         // Listening
+        listening_audio_mode: listeningAudioMode,
         listening_audio_parts: listeningAudioParts,
         listening_audio_names: listeningAudioNames,
         listening_audio_durations: listeningAudioDurations,
@@ -1056,6 +1091,7 @@ export function TestCreator({ exam, onUpdateExam }) {
         listening_questions: listeningQuestions,
         listening: {
           ...exam.listening,
+          audio_mode: listeningAudioMode,
           parts: listeningPartsPayload,
           sections: listeningParsed?.sections || exam.listening?.sections || [],
           questions: listeningQuestions,
@@ -1090,6 +1126,7 @@ export function TestCreator({ exam, onUpdateExam }) {
             answerKeys: readingParsed?.answerKeys || {},
           },
           listening: {
+            audio_mode: listeningAudioMode,
             parts: listeningPartsPayload,
             sections: listeningParsed?.sections || [],
             questions: listeningQuestions,
@@ -1113,8 +1150,12 @@ export function TestCreator({ exam, onUpdateExam }) {
         await updateExamAssets(targetExamId, {
           title,
           pin_code: pinCode,
+          status: 'lobby',
+          is_lobby_open: true,
+          current_stage: 'listening_lobby',
           duration_mins: Number(duration),
           anti_cheat_strictness: strictness,
+          listening_audio_mode: listeningAudioMode,
           task_1_prompt: extractedTask1Prompt,
           task_2_prompt: extractedTask2Prompt,
           reading_parts: readingParts,
@@ -1232,11 +1273,11 @@ export function TestCreator({ exam, onUpdateExam }) {
               icon={savedSuccess ? CheckCircle2 : Save}
               onClick={handleSaveExam}
               disabled={isSaving}
-              className="flex-1 sm:flex-initial py-3 px-6 font-extrabold text-sm shadow-md bg-brand-500 hover:bg-brand-600 text-white transition-all transform active:scale-95 flex items-center gap-2"
+              className="flex-1 sm:flex-initial py-3 px-6 font-extrabold text-sm shadow-xs bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 transition-all transform active:scale-95 flex items-center gap-2"
             >
               {isSaving ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-700" />
                   Processing Materials...
                 </>
               ) : savedSuccess ? (
@@ -1349,106 +1390,214 @@ export function TestCreator({ exam, onUpdateExam }) {
           </div>
         </div>
 
-        {/* Top Area: 4 distinct Audio Upload slots */}
+        {/* Top Area: Audio Configuration & Tracks */}
         <div>
-          <div className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3 flex items-center justify-between">
-            <span className="flex items-center gap-1.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <div className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
               <Music className="w-3.5 h-3.5 text-brand-500" />
-              Audio Tracks (Parts 1 to 4)
-            </span>
-            <span className="text-[10px] font-mono font-semibold text-slate-500 flex items-center gap-1">
-              <ShieldAlert className="w-3 h-3 text-brand-500" /> Single-Play Lockdown Active
-            </span>
+              <span>Audio Configuration & Tracks</span>
+            </div>
+
+            {/* Segmented Audio Mode Switcher */}
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
+              <button
+                type="button"
+                onClick={() => setListeningAudioMode('split')}
+                className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  listeningAudioMode === 'split'
+                    ? 'bg-white text-slate-900 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                4 Separate Tracks (Parts 1–4)
+              </button>
+              <button
+                type="button"
+                onClick={() => setListeningAudioMode('single')}
+                className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  listeningAudioMode === 'single'
+                    ? 'bg-white text-slate-900 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                1 Single Track (All 4 Parts)
+              </button>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {['part1', 'part2', 'part3', 'part4'].map((partKey, idx) => {
-              const audio = listeningAudios[partKey];
-              const hasAudio = Boolean(audio.url);
-
-              return (
-                <div 
-                  key={partKey}
-                  className={`p-4 rounded-2xl border-2 transition-all flex flex-col justify-between ${
-                    hasAudio 
-                      ? 'border-brand-500/80 bg-orange-50/20 shadow-sm' 
-                      : 'border-dashed border-slate-200 hover:border-brand-400 bg-slate-50/50'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="w-6 h-6 rounded-md bg-brand-500 text-white font-mono font-bold text-xs flex items-center justify-center">
-                        P{idx + 1}
-                      </span>
-                      <span className="text-[10px] font-mono font-bold text-slate-600 bg-white px-2 py-0.5 rounded border border-slate-200">
-                        {audio.duration}
-                      </span>
-                    </div>
-
-                    <div className="text-xs font-bold text-slate-900 truncate mb-1">
-                      {audio.title}
-                    </div>
-
-                    <div className="text-[9px] font-mono text-brand-700 font-semibold flex items-center gap-1 mb-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse"></span>
-                      Single-Play Audio Track
-                    </div>
-
-                    {hasAudio ? (
-                      <div className="my-2 space-y-2">
-                        <div className="text-[11px] font-mono text-slate-600 truncate bg-white p-2 rounded-lg border border-brand-200">
-                          {audio.name}
-                        </div>
-                        <audio src={audio.url} controls className="w-full h-8" />
-                      </div>
-                    ) : (
-                      <div 
-                        onClick={() => listeningAudioFileRefs[partKey].current?.click()}
-                        className="py-6 text-center cursor-pointer rounded-xl border border-dashed border-slate-200 hover:border-brand-400 bg-white/70 hover:bg-orange-50/30 transition my-2"
-                      >
-                        <Music className="w-5 h-5 text-brand-500 mx-auto mb-1" />
-                        <div className="text-[11px] font-bold text-slate-700">Upload Part {idx + 1} Audio</div>
-                        <div className="text-[9px] text-slate-400 mt-0.5">MP3, WAV, M4A</div>
-                      </div>
-                    )}
+          {listeningAudioMode === 'single' ? (
+            /* Single Consolidated Audio Upload Card */
+            <div className={`p-6 rounded-2xl border-2 transition-all ${
+              listeningAudios.part1.url
+                ? 'border-brand-500/80 bg-orange-50/20 shadow-sm'
+                : 'border-dashed border-slate-200 hover:border-brand-400 bg-slate-50/50'
+            }`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-brand-500 text-white flex items-center justify-center shrink-0 shadow-sm">
+                    <Music className="w-6 h-6" />
                   </div>
-
-                  <div className="pt-2 border-t border-slate-100 flex items-center gap-1.5 mt-2">
-                    <input
-                      ref={listeningAudioFileRefs[partKey]}
-                      type="file"
-                      accept="audio/*,.mp3,.wav,.m4a,.aac"
-                      onChange={(e) => handleListeningAudioUpload(partKey, e)}
-                      className="hidden"
-                    />
-                    <Button
-                      variant={hasAudio ? "outline" : "primary"}
-                      size="sm"
-                      onClick={() => listeningAudioFileRefs[partKey].current?.click()}
-                      className={`flex-1 text-[11px] font-bold py-1.5 ${
-                        hasAudio 
-                          ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
-                          : 'bg-brand-500 hover:bg-brand-600 text-white'
-                      }`}
-                    >
-                      <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
-                      {hasAudio ? 'Replace Audio' : 'Upload Audio'}
-                    </Button>
-                    {hasAudio && (
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveListeningAudio(partKey)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 border border-slate-200 transition"
-                        title="Remove Audio"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-bold text-slate-900">
+                        Unified IELTS Listening Audio (Continuous 30-min Recording)
+                      </h4>
+                      <span className="text-[10px] font-mono font-bold text-brand-700 bg-orange-100 border border-brand-200 px-2 py-0.5 rounded-full">
+                        Plays Across Parts 1–4
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Upload 1 single audio file for the whole test. Audio plays continuously without interruption while students navigate Parts 1 to 4.
+                    </p>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={singleAudioFileRef}
+                    type="file"
+                    accept="audio/*,.mp3,.wav,.m4a,.aac"
+                    onChange={handleSingleAudioUpload}
+                    className="hidden"
+                  />
+                  {listeningAudios.part1.url ? (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => singleAudioFileRef.current?.click()}
+                        className="text-xs font-bold border-brand-200 text-brand-700 hover:bg-orange-50"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5 mr-1" />
+                        Replace Audio
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleRemoveSingleAudio}
+                        className="text-xs font-bold text-rose-600 hover:bg-rose-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 mr-1" />
+                        Remove
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => singleAudioFileRef.current?.click()}
+                      className="text-xs font-bold shadow-xs"
+                    >
+                      <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
+                      Upload Full Audio (MP3)
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {listeningAudios.part1.url && (
+                <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs font-mono text-slate-700 bg-white px-3 py-2 rounded-xl border border-slate-200">
+                    <span className="font-bold text-brand-600">Track:</span>
+                    <span className="truncate max-w-xs">{listeningAudios.part1.name || 'Full Listening Audio'}</span>
+                    <span className="text-slate-400">•</span>
+                    <span className="font-bold">{listeningAudios.part1.duration}</span>
+                  </div>
+                  <audio src={listeningAudios.part1.url} controls className="w-full sm:w-72 h-8" />
+                </div>
+              )}
+            </div>
+          ) : (
+            /* 4 Separate Audio Cards */
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {['part1', 'part2', 'part3', 'part4'].map((partKey, idx) => {
+                const audio = listeningAudios[partKey];
+                const hasAudio = Boolean(audio.url);
+
+                return (
+                  <div 
+                    key={partKey}
+                    className={`p-4 rounded-2xl border-2 transition-all flex flex-col justify-between ${
+                      hasAudio 
+                        ? 'border-brand-500/80 bg-orange-50/20 shadow-sm' 
+                        : 'border-dashed border-slate-200 hover:border-brand-400 bg-slate-50/50'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="w-6 h-6 rounded-md bg-brand-500 text-white font-mono font-bold text-xs flex items-center justify-center">
+                          P{idx + 1}
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-slate-600 bg-white px-2 py-0.5 rounded border border-slate-200">
+                          {audio.duration}
+                        </span>
+                      </div>
+
+                      <div className="text-xs font-bold text-slate-900 truncate mb-1">
+                        {audio.title}
+                      </div>
+
+                      <div className="text-[9px] font-mono text-brand-700 font-semibold flex items-center gap-1 mb-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse"></span>
+                        Single-Play Audio Track
+                      </div>
+
+                      {hasAudio ? (
+                        <div className="my-2 space-y-2">
+                          <div className="text-[11px] font-mono text-slate-600 truncate bg-white p-2 rounded-lg border border-brand-200">
+                            {audio.name}
+                          </div>
+                          <audio src={audio.url} controls className="w-full h-8" />
+                        </div>
+                      ) : (
+                        <div 
+                          onClick={() => listeningAudioFileRefs[partKey].current?.click()}
+                          className="py-6 text-center cursor-pointer rounded-xl border border-dashed border-slate-200 hover:border-brand-400 bg-white/70 hover:bg-orange-50/30 transition my-2"
+                        >
+                          <Music className="w-5 h-5 text-brand-500 mx-auto mb-1" />
+                          <div className="text-[11px] font-bold text-slate-700">Upload Part {idx + 1} Audio</div>
+                          <div className="text-[9px] text-slate-400 mt-0.5">MP3, WAV, M4A</div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-100 flex items-center gap-1.5 mt-2">
+                      <input
+                        ref={listeningAudioFileRefs[partKey]}
+                        type="file"
+                        accept="audio/*,.mp3,.wav,.m4a,.aac"
+                        onChange={(e) => handleListeningAudioUpload(partKey, e)}
+                        className="hidden"
+                      />
+                      <Button
+                        variant={hasAudio ? "outline" : "primary"}
+                        size="sm"
+                        onClick={() => listeningAudioFileRefs[partKey].current?.click()}
+                        className={`flex-1 text-[11px] font-bold py-1.5 ${
+                          hasAudio 
+                            ? 'border-slate-300 text-slate-700 hover:bg-slate-100 bg-white' 
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 shadow-2xs'
+                        }`}
+                      >
+                        <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
+                        {hasAudio ? 'Replace Audio' : 'Upload Audio'}
+                      </Button>
+                      {hasAudio && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveListeningAudio(partKey)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 border border-slate-200 transition"
+                          title="Remove Audio"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Bottom Area: 1 Question Booklet PDF upload slot directly underneath */}
@@ -1499,8 +1648,8 @@ export function TestCreator({ exam, onUpdateExam }) {
                   onClick={() => listeningPdfRef.current?.click()}
                   className={`flex-1 sm:flex-initial text-xs font-bold px-4 py-2 ${
                     listeningPdfs.length > 0 
-                      ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
-                      : 'bg-brand-500 hover:bg-brand-600 text-white'
+                      ? 'border-slate-300 text-slate-700 hover:bg-slate-100 bg-white' 
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 shadow-2xs'
                   }`}
                 >
                   <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
@@ -1635,8 +1784,8 @@ export function TestCreator({ exam, onUpdateExam }) {
                   onClick={() => listeningMapImageRef.current?.click()}
                   className={`flex-1 sm:flex-initial text-xs font-bold px-4 py-2 ${
                     listeningMapImage.url 
-                      ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
-                      : 'bg-brand-500 hover:bg-brand-600 text-white'
+                      ? 'border-slate-300 text-slate-700 hover:bg-slate-100 bg-white' 
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 shadow-2xs'
                   }`}
                 >
                   <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
@@ -1775,8 +1924,8 @@ export function TestCreator({ exam, onUpdateExam }) {
                 onClick={() => readingPdfRef.current?.click()}
                 className={`text-xs font-bold px-4 py-2.5 ${
                   readingPdfs.length > 0 
-                    ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
-                    : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm'
+                    ? 'border-slate-300 text-slate-700 hover:bg-slate-100 bg-white' 
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 shadow-2xs'
                 }`}
               >
                 <UploadCloud className="w-4 h-4 mr-1.5" />
@@ -1946,8 +2095,8 @@ export function TestCreator({ exam, onUpdateExam }) {
                 onClick={() => writingPdfRef.current?.click()}
                 className={`text-xs font-bold px-4 py-2.5 ${
                   writingPdf.url 
-                    ? 'border-brand-200 text-brand-700 hover:bg-orange-50' 
-                    : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm'
+                    ? 'border-slate-300 text-slate-700 hover:bg-slate-100 bg-white' 
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 shadow-2xs'
                 }`}
               >
                 <UploadCloud className="w-4 h-4 mr-1.5" />

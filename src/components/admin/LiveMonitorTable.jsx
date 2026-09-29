@@ -21,7 +21,8 @@ import {
   CheckCheck,
   Coffee,
   Lock,
-  Sparkles
+  Sparkles,
+  Phone
 } from 'lucide-react';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
@@ -227,9 +228,15 @@ export function LiveMonitorTable({
                     {/* Candidate Profile */}
                     <td className="p-4">
                       <div className="font-bold text-slate-900 text-sm">{student.name}</div>
-                      <div className="text-[11px] font-mono text-brand-600 mt-0.5">
+                      <div className="text-[11px] font-mono text-slate-500 mt-0.5">
                         {student.candidate_no || 'ID-0000'}
                       </div>
+                      {(student.phone || student.phone_number || student.answers?.candidate_phone) && (
+                        <div className="text-[11px] font-mono text-slate-600 mt-1 flex items-center gap-1 font-semibold">
+                          <Phone className="w-3 h-3 text-slate-400" />
+                          <span>{student.phone || student.phone_number || student.answers?.candidate_phone}</span>
+                        </div>
+                      )}
                     </td>
 
                     {/* Status & Alerts */}
@@ -247,8 +254,8 @@ export function LiveMonitorTable({
                     {/* Listening Score / Progress */}
                     <td className="p-4 text-center font-mono">
                       {isExamConcluded && listeningBand !== null && listeningBand !== undefined ? (
-                        <div className="inline-block px-2.5 py-1 rounded-xl bg-sky-50 border border-sky-200">
-                          <span className="text-xs font-bold text-sky-700">Band {listeningBand}</span>
+                        <div className="inline-block px-2.5 py-1 rounded-xl bg-slate-100 border border-slate-200">
+                          <span className="text-xs font-bold text-slate-900">Band {listeningBand}</span>
                           <span className="text-[10px] text-slate-400 block font-sans">({listeningScore}/{listeningTotalQs})</span>
                         </div>
                       ) : (
@@ -262,8 +269,8 @@ export function LiveMonitorTable({
                     {/* Reading Score / Progress */}
                     <td className="p-4 text-center font-mono">
                       {isExamConcluded && readingBand !== null && readingBand !== undefined ? (
-                        <div className="inline-block px-2.5 py-1 rounded-xl bg-orange-50 border border-brand-200">
-                          <span className="text-xs font-bold text-brand-700">Band {readingBand}</span>
+                        <div className="inline-block px-2.5 py-1 rounded-xl bg-slate-100 border border-slate-200">
+                          <span className="text-xs font-bold text-slate-900">Band {readingBand}</span>
                           <span className="text-[10px] text-slate-400 block font-sans">({readingScore}/{readingTotalQs})</span>
                         </div>
                       ) : (
@@ -277,8 +284,8 @@ export function LiveMonitorTable({
                     {/* Writing Score / Progress */}
                     <td className="p-4 text-center font-mono">
                       {isExamConcluded && writingBand !== null && writingBand !== undefined ? (
-                        <div className="inline-block px-2.5 py-1 rounded-xl bg-amber-50 border border-amber-200">
-                          <span className="text-xs font-bold text-amber-700">Band {writingBand}</span>
+                        <div className="inline-block px-2.5 py-1 rounded-xl bg-slate-100 border border-slate-200">
+                          <span className="text-xs font-bold text-slate-900">Band {writingBand}</span>
                           <span className="text-[10px] text-slate-400 block font-sans">Evaluated</span>
                         </div>
                       ) : (
@@ -292,7 +299,7 @@ export function LiveMonitorTable({
                     {/* Overall Band Score */}
                     <td className="p-4 text-center font-mono">
                       {isExamConcluded && overallBand !== null && overallBand !== undefined ? (
-                        <div className="inline-block px-3 py-1 rounded-xl bg-gradient-to-r from-orange-500 to-brand-600 text-white shadow-sm font-extrabold text-xs">
+                        <div className="inline-block px-3 py-1 rounded-xl bg-slate-100 text-slate-900 border border-slate-300 shadow-2xs font-extrabold text-xs">
                           Band {overallBand}
                         </div>
                       ) : (

@@ -611,13 +611,17 @@ export async function upsertStudent(student) {
       exam_id: student.exam_id,
       name: student.name || student.student_name,
       student_name: student.student_name || student.name,
+      phone: student.phone || student.phone_number || "",
       candidate_no: student.candidate_no,
       status: student.status || "waiting",
       current_stage: student.current_stage || "exam_completed",
       reading_status: student.reading_status || "completed",
       listening_status: student.listening_status || "completed",
       writing_status: student.writing_status || "completed",
-      answers: student.answers || {},
+      answers: {
+        ...(student.answers || {}),
+        ...((student.phone || student.phone_number) ? { candidate_phone: student.phone || student.phone_number } : {})
+      },
       answered_count: student.answered_count || 0,
       warning_count: student.warning_count || 0,
       reading_score: student.reading_score ?? null,

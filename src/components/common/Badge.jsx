@@ -14,7 +14,7 @@ export function Badge({
   };
 
   const variants = {
-    brand: 'bg-brand-50 text-brand-700 border border-brand-200/80',
+    brand: 'bg-slate-100 text-slate-900 border border-slate-300 font-bold',
     success: 'bg-emerald-50 text-emerald-700 border border-emerald-200/80',
     warning: 'bg-amber-50 text-amber-700 border border-amber-200/80',
     danger: 'bg-rose-50 text-rose-700 border border-rose-200/80',
@@ -23,7 +23,7 @@ export function Badge({
   };
 
   const dotColors = {
-    brand: 'bg-brand-500',
+    brand: 'bg-slate-900',
     success: 'bg-emerald-500',
     warning: 'bg-amber-500',
     danger: 'bg-rose-500',

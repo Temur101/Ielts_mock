@@ -105,7 +105,7 @@ export function AdminPasswordModal({
           )}
 
           {/* Icon Header */}
-          <div className="w-14 h-14 rounded-2xl bg-orange-100 text-brand-600 flex items-center justify-center mb-5 shadow-inner">
+          <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-900 flex items-center justify-center mb-5 shadow-xs border border-slate-200">
             <ShieldCheck className="w-8 h-8" />
           </div>
 
@@ -136,7 +136,7 @@ export function AdminPasswordModal({
                   }}
                   placeholder="Enter password..."
                   className={`w-full px-4 py-3 rounded-xl border ${
-                    error ? 'border-rose-300 focus:ring-rose-500' : 'border-slate-300 focus:ring-brand-500'
+                    error ? 'border-rose-300 focus:ring-rose-500' : 'border-slate-300 focus:ring-slate-900'
                   } bg-slate-50 focus:bg-white text-slate-900 font-mono text-sm tracking-widest focus:outline-none focus:ring-2 transition pr-11`}
                 />
                 <button
@@ -173,7 +173,7 @@ export function AdminPasswordModal({
                 type="submit"
                 variant="primary"
                 size="md"
-                className="flex-1 font-bold shadow-glow bg-brand-500 hover:bg-brand-600 text-white"
+                className="flex-1 font-bold shadow-xs bg-slate-800 hover:bg-slate-900 text-white"
               >
                 Verify & Enter
               </Button>

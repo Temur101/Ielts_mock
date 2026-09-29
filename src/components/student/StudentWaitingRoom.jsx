@@ -34,9 +34,9 @@ export function StudentWaitingRoom({ exam, student, onStartSolo, onLeave }) {
         
         {/* Animated Radar Pulse */}
         <div className="relative w-20 h-20 mx-auto flex items-center justify-center">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-400 opacity-30" />
-          <div className="relative w-16 h-16 rounded-full bg-gradient-to-tr from-brand-500 to-brand-600 text-white flex items-center justify-center shadow-glow shadow-brand-500/30">
-            <Radio className="w-8 h-8 animate-pulse" />
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-slate-300 opacity-30" />
+          <div className="relative w-16 h-16 rounded-full bg-slate-100 text-slate-800 border border-slate-200 flex items-center justify-center shadow-xs">
+            <Radio className="w-8 h-8 animate-pulse text-slate-700" />
           </div>
         </div>
 
@@ -65,7 +65,7 @@ export function StudentWaitingRoom({ exam, student, onStartSolo, onLeave }) {
               size="md"
               icon={ArrowRight}
               onClick={onStartSolo}
-              className="w-full sm:w-auto font-extrabold shadow-glow"
+              className="w-full sm:w-auto font-extrabold bg-slate-800 hover:bg-slate-900 text-white shadow-xs"
             >
               Enter Exam Room Now
             </Button>
@@ -93,7 +93,7 @@ export function StudentWaitingRoom({ exam, student, onStartSolo, onLeave }) {
             </div>
             <div className="text-right">
               <div className="text-[10px] uppercase font-bold text-slate-400">Candidate Number</div>
-              <div className="text-xs font-mono font-bold text-brand-600">{student.candidate_no}</div>
+              <div className="text-xs font-mono font-bold text-slate-900">{student.candidate_no}</div>
             </div>
           </div>
 
@@ -117,12 +117,12 @@ export function StudentWaitingRoom({ exam, student, onStartSolo, onLeave }) {
         </div>
 
         {/* Anti-Cheat & Rules Reminder */}
-        <div className="text-left bg-brand-50/50 p-4 rounded-2xl border border-brand-200/60 space-y-2">
-          <div className="text-xs font-bold text-brand-900 flex items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-brand-600" />
+        <div className="text-left bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2">
+          <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+            <ShieldCheck className="w-4 h-4 text-slate-700" />
             Important Exam Instructions:
           </div>
-          <ul className="text-xs text-brand-900/80 space-y-1 list-disc list-inside">
+          <ul className="text-xs text-slate-600 space-y-1 list-disc list-inside">
             <li>Do not switch tabs, minimize the browser, or click outside the window.</li>
             <li>The test contains 3 Reading Passages with 40 questions in total.</li>
             <li>Answers are automatically saved in real-time as you type or select.</li>

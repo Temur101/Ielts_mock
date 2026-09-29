@@ -17,8 +17,12 @@ import {
   Type,
   ListChecks,
   Layers,
-  MapPin
+  MapPin,
+  Highlighter,
+  Trash2,
 } from 'lucide-react';
+import { SelectionHighlightPopover } from './SelectionHighlightPopover';
+import { applyHighlightToSelection, clearAllHighlights } from '../../lib/highlighterService';
 import { Badge } from '../common/Badge';
 import { IeltsBookletRenderer, FlowChartGapItem, MarkdownTable } from './IeltsBookletRenderer';
 import { 
@@ -429,6 +433,15 @@ export function ListeningSection({
     };
   });
 
+  const isSingleAudioMode = currentExam.listening_audio_mode === 'single' ||
+                            currentListening.audio_mode === 'single' ||
+                            Boolean(
+                              audioUrls.part1 &&
+                              audioUrls.part1 === audioUrls.part2 &&
+                              audioUrls.part1 === audioUrls.part3 &&
+                              audioUrls.part1 === audioUrls.part4
+                            );
+
   const questions = (currentListening.questions && currentListening.questions.length > 0)
     ? currentListening.questions
     : (currentExam.listening_questions && currentExam.listening_questions.length > 0)
@@ -449,6 +462,7 @@ export function ListeningSection({
 
   const audioRefs = useRef({});
   const questionRefs = useRef({});
+  const listeningContainerRef = useRef(null);
 
   // R4.6: Unmount cleanup for audio elements to release media pipeline and prevent ghost playback
   useEffect(() => {
@@ -516,26 +530,27 @@ export function ListeningSection({
   // Play handler with Single-Play Enforcement (CD-IELTS Rule: Once started, audio CANNOT be paused)
   const togglePlayAudio = (partId) => {
     if (isTimeUp) return;
-    const audio = audioRefs.current[partId];
+    const targetId = isSingleAudioMode ? 1 : partId;
+    const audio = audioRefs.current[targetId];
     if (!audio) return;
 
     // Strict Cambridge CD-IELTS Rule: Pausing audio is completely prohibited once started
-    if (playingPartId === partId) {
+    if (playingPartId === targetId || (isSingleAudioMode && playingPartId)) {
       return;
     }
 
-    if (audioSettings.single_play_enforcement && playedParts[partId]) {
+    if (audioSettings.single_play_enforcement && playedParts[targetId]) {
       alert("In accordance with IELTS Listening examination rules, audio tracks may only be played once.");
       return;
     }
 
     // Pause any other playing part if switching
-    if (playingPartId && audioRefs.current[playingPartId]) {
+    if (!isSingleAudioMode && playingPartId && audioRefs.current[playingPartId]) {
       audioRefs.current[playingPartId].pause();
     }
 
     audio.play().then(() => {
-      setPlayingPartId(partId);
+      setPlayingPartId(targetId);
     }).catch(err => {
       console.warn("Audio play blocked:", err);
     });
@@ -557,7 +572,11 @@ export function ListeningSection({
 
   const handleAudioEnded = (partId) => {
     setPlayingPartId(null);
-    setPlayedParts(prev => ({ ...prev, [partId]: true }));
+    if (isSingleAudioMode) {
+      setPlayedParts({ 1: true, 2: true, 3: true, 4: true });
+    } else {
+      setPlayedParts(prev => ({ ...prev, [partId]: true }));
+    }
   };
 
   const formatAudioTime = (seconds) => {
@@ -588,25 +607,39 @@ export function ListeningSection({
   return (
     <div className="h-full flex flex-col bg-white">
       
-      {/* Persistent Audio Elements for all 4 parts (never unmounted on tab switch) */}
+      {/* Persistent Audio Elements (never unmounted on tab switch) */}
       <div className="hidden">
-        {[1, 2, 3, 4].map(partNum => {
-          const p = parts.find(item => item.partId === partNum);
-          if (!p?.audio_url) return null;
-          return (
-            <audio
-              key={partNum}
-              ref={el => {
-                if (el) audioRefs.current[partNum] = el;
-              }}
-              src={p.audio_url}
-              onLoadedMetadata={(e) => handleLoadedMetadata(partNum, e.target.duration)}
-              onTimeUpdate={() => handleTimeUpdate(partNum)}
-              onEnded={() => handleAudioEnded(partNum)}
-              preload="auto"
-            />
-          );
-        })}
+        {isSingleAudioMode ? (
+          <audio
+            key="single_master"
+            ref={el => {
+              if (el) audioRefs.current[1] = el;
+            }}
+            src={audioUrls.part1 || parts[0]?.audio_url}
+            onLoadedMetadata={(e) => handleLoadedMetadata(1, e.target.duration)}
+            onTimeUpdate={() => handleTimeUpdate(1)}
+            onEnded={() => handleAudioEnded(1)}
+            preload="auto"
+          />
+        ) : (
+          [1, 2, 3, 4].map(partNum => {
+            const p = parts.find(item => item.partId === partNum);
+            if (!p?.audio_url) return null;
+            return (
+              <audio
+                key={partNum}
+                ref={el => {
+                  if (el) audioRefs.current[partNum] = el;
+                }}
+                src={p.audio_url}
+                onLoadedMetadata={(e) => handleLoadedMetadata(partNum, e.target.duration)}
+                onTimeUpdate={() => handleTimeUpdate(partNum)}
+                onEnded={() => handleAudioEnded(partNum)}
+                preload="auto"
+              />
+            );
+          })
+        )}
       </div>
 
       {/* Top Single Sleek Audio Controller Bar (Height: 48px max) */}
@@ -616,8 +649,8 @@ export function ListeningSection({
         <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
           {[1, 2, 3, 4].map(partNum => {
             const isSelected = partNum === activePartId;
-            const isDone = playedParts[partNum];
-            const isPlaying = playingPartId === partNum;
+            const isDone = isSingleAudioMode ? playedParts[1] : playedParts[partNum];
+            const isPlaying = isSingleAudioMode ? Boolean(playingPartId) : playingPartId === partNum;
             const partQs = questions.filter(q => resolveListeningPart(q) === partNum);
             const partQNums = partQs.map(q => Number(q.questionNumber || q.q_num)).filter(n => !isNaN(n) && n > 0);
             const qRange = partQNums.length > 0 ? `${Math.min(...partQNums)}–${Math.max(...partQNums)}` : '';
@@ -629,10 +662,10 @@ export function ListeningSection({
                 onClick={() => setActivePartId(partNum)}
                 className={`px-2.5 py-1 rounded-md text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
                   isSelected
-                    ? 'bg-brand-500 text-white shadow-xs'
+                    ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-2xs'
                     : isPlaying
                     ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
                 <span>Part {partNum}</span>
@@ -648,59 +681,107 @@ export function ListeningSection({
 
         {/* Center/Right: Audio Play Action & Duration Tracker */}
         <div className="flex items-center gap-2 sm:gap-3">
-          <button
-            type="button"
-            onClick={() => togglePlayAudio(activePartId)}
-            disabled={Boolean(playingPartId) || Boolean(playedParts[activePartId] && audioSettings.single_play_enforcement)}
-            className={`h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
-              playingPartId
-                ? 'bg-emerald-600 text-white shadow-xs cursor-default'
-                : playedParts[activePartId] && audioSettings.single_play_enforcement
-                  ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
-                  : 'bg-brand-500 hover:bg-brand-600 text-white shadow-xs cursor-pointer'
-            }`}
-            title={
-              playingPartId
-                ? `Playing Part ${playingPartId} - audio cannot be paused during exam`
-                : playedParts[activePartId] && audioSettings.single_play_enforcement
-                  ? `Part ${activePartId} audio has already been played`
-                  : `Play Part ${activePartId} audio`
-            }
-          >
-            {playingPartId ? (
-              <>
-                <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                <Volume2 className="w-3.5 h-3.5 animate-bounce" />
-                <span>Playing Part {playingPartId}...</span>
-              </>
-            ) : playedParts[activePartId] && audioSettings.single_play_enforcement ? (
-              <>
-                <Lock className="w-3.5 h-3.5" />
-                <span>Part {activePartId} Played</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5" />
-                <span>Play Part {activePartId}</span>
-              </>
-            )}
-          </button>
+          {(() => {
+            const isPlayingThis = isSingleAudioMode ? Boolean(playingPartId) : playingPartId === activePartId;
+            const isPlayedThis = isSingleAudioMode ? Boolean(playedParts[1]) : Boolean(playedParts[activePartId]);
+            const isAudioDisabled = Boolean(playingPartId) || (isPlayedThis && audioSettings.single_play_enforcement);
+
+            return (
+              <button
+                type="button"
+                onClick={() => togglePlayAudio(activePartId)}
+                disabled={isAudioDisabled}
+                className={`h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
+                  isPlayingThis
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-300 shadow-2xs cursor-default'
+                    : isPlayedThis && audioSettings.single_play_enforcement
+                      ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 shadow-2xs cursor-pointer'
+                }`}
+                title={
+                  isPlayingThis
+                    ? isSingleAudioMode ? 'Playing Full Listening Recording - audio cannot be paused' : `Playing Part ${playingPartId} - audio cannot be paused during exam`
+                    : isPlayedThis && audioSettings.single_play_enforcement
+                      ? isSingleAudioMode ? 'Full listening audio has ended' : `Part ${activePartId} audio has already been played`
+                      : isSingleAudioMode ? 'Play Full Listening Audio (All Parts)' : `Play Part ${activePartId} audio`
+                }
+              >
+                {isPlayingThis ? (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                    <Volume2 className="w-3.5 h-3.5 animate-bounce" />
+                    <span>{isSingleAudioMode ? 'Playing Full Audio...' : `Playing Part ${playingPartId}...`}</span>
+                  </>
+                ) : isPlayedThis && audioSettings.single_play_enforcement ? (
+                  <>
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>{isSingleAudioMode ? 'Full Audio Played' : `Part ${activePartId} Played`}</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5" />
+                    <span>{isSingleAudioMode ? 'Play Full Audio' : `Play Part ${activePartId}`}</span>
+                  </>
+                )}
+              </button>
+            );
+          })()}
+
+          {/* Highlighter Toolbar */}
+          <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200">
+            <button
+              type="button"
+              onClick={() => applyHighlightToSelection('yellow', listeningContainerRef.current)}
+              className="w-5 h-5 rounded bg-yellow-200 hover:bg-yellow-300 border border-yellow-400/50 flex items-center justify-center transition cursor-pointer"
+              title="Highlight Yellow"
+            >
+              <Highlighter className="w-3 h-3 text-yellow-800" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyHighlightToSelection('green', listeningContainerRef.current)}
+              className="w-5 h-5 rounded bg-green-200 hover:bg-green-300 border border-green-400/50 flex items-center justify-center transition cursor-pointer"
+              title="Highlight Mint Green"
+            >
+              <Highlighter className="w-3 h-3 text-green-800" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyHighlightToSelection('pink', listeningContainerRef.current)}
+              className="w-5 h-5 rounded bg-pink-200 hover:bg-pink-300 border border-pink-400/50 flex items-center justify-center transition cursor-pointer"
+              title="Highlight Pink"
+            >
+              <Highlighter className="w-3 h-3 text-pink-800" />
+            </button>
+            <button
+              type="button"
+              onClick={() => clearAllHighlights(listeningContainerRef.current)}
+              className="p-0.5 text-slate-400 hover:text-rose-500 rounded transition cursor-pointer"
+              title="Clear Highlights"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
 
           {/* Time tracker */}
           <div className="text-[11px] font-mono font-bold text-slate-600 min-w-[75px] text-right">
-            {formatAudioTime(audioProgress[targetAudioPartId]?.current || 0)} / {audioProgress[targetAudioPartId]?.duration ? formatAudioTime(audioProgress[targetAudioPartId]?.duration) : (targetPart.duration || "07:00")}
+            {isSingleAudioMode ? (
+              `${formatAudioTime(audioProgress[1]?.current || 0)} / ${audioProgress[1]?.duration ? formatAudioTime(audioProgress[1]?.duration) : (parts[0]?.duration || "30:00")}`
+            ) : (
+              `${formatAudioTime(audioProgress[targetAudioPartId]?.current || 0)} / ${audioProgress[targetAudioPartId]?.duration ? formatAudioTime(audioProgress[targetAudioPartId]?.duration) : (targetPart.duration || "07:00")}`
+            )}
           </div>
 
-          {/* Answered badge */}
-          <div className="text-[11px] font-mono font-bold text-brand-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-md hidden sm:block">
+          {/* Answered badge - Monochrome */}
+          <div className="text-[11px] font-mono font-bold text-slate-800 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md hidden sm:block">
             {answeredInPart}/{partQuestions.length}
           </div>
         </div>
 
       </div>
 
-      {/* Main Single Centered Exam Sheet (Independent Vertical Scroll) */}
-      <div className="flex-1 overflow-y-auto bg-slate-100/70 p-4 sm:p-6">
+      {/* Main Single Centered Exam Sheet (Independent Vertical Scroll & Selectable Text) */}
+      <div ref={listeningContainerRef} className="flex-1 overflow-y-auto bg-slate-100/70 p-4 sm:p-6 select-text [&_*]:select-text">
         <div className="max-w-4xl mx-auto bg-white p-8 sm:p-10 border border-slate-300 shadow-sm min-h-screen text-slate-900 my-4 space-y-8">
           
           {(() => {
@@ -762,7 +843,7 @@ export function ListeningSection({
                             type="button"
                             onClick={() => setViewMode('cards')}
                             className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                              viewMode === 'cards' ? 'bg-brand-500 text-white shadow-xs' : 'text-slate-600 hover:text-brand-600'
+                              viewMode === 'cards' ? 'bg-white text-slate-900 border border-slate-300 shadow-2xs font-bold' : 'text-slate-600 hover:text-slate-900'
                             }`}
                           >
                             Standard Sheet
@@ -771,7 +852,7 @@ export function ListeningSection({
                             type="button"
                             onClick={() => setViewMode('booklet')}
                             className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                              viewMode === 'booklet' ? 'bg-brand-500 text-white shadow-xs' : 'text-slate-600 hover:text-brand-600'
+                              viewMode === 'booklet' ? 'bg-white text-slate-900 border border-slate-300 shadow-2xs font-bold' : 'text-slate-600 hover:text-slate-900'
                             }`}
                           >
                             Exact Booklet
@@ -2103,7 +2184,7 @@ export function ListeningSection({
                   isFlg 
                     ? 'bg-amber-400 text-slate-900 ring-1 ring-amber-300 font-bold' 
                     : isAns 
-                      ? 'bg-brand-500 text-white shadow-xs font-bold' 
+                      ? 'bg-slate-300 text-slate-900 border border-slate-400 font-bold shadow-2xs' 
                       : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
                 }`}
                 title={`Question ${qNum}`}
@@ -2114,6 +2195,9 @@ export function ListeningSection({
           })}
         </div>
       </div>
+
+      {/* Floating Selection Highlighter Popover for Listening Content */}
+      <SelectionHighlightPopover containerRef={listeningContainerRef} />
 
     </div>
   );

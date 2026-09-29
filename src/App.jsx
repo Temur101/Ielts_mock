@@ -358,8 +358,10 @@ export default function App() {
             if (stage === 'writing_finished' || stage === 'exam_completed') {
               const rRes = gradeSectionExam(exam.reading?.questions || exam.questions || [], s.answers?.reading || s.answers || {}, 'reading');
               const lRes = gradeSectionExam(exam.listening?.questions || [], s.answers?.listening || {}, 'listening');
-              const wBand = calculateWritingBand(s.writing_task1_band ?? 6.5, s.writing_task2_band ?? 7.0);
-              const oBand = calculateOverallIeltsBand(rRes.bandScore, lRes.bandScore, wBand);
+              const wBand = (s.writing_task1_band !== null && s.writing_task1_band !== undefined && s.writing_task2_band !== null && s.writing_task2_band !== undefined)
+                ? calculateWritingBand(s.writing_task1_band, s.writing_task2_band)
+                : (s.writing_band ?? null);
+              const oBand = wBand !== null ? calculateOverallIeltsBand(rRes.bandScore, lRes.bandScore, wBand) : null;
 
               return {
                 ...s,
@@ -407,8 +409,10 @@ export default function App() {
             if (stage === 'writing_finished' || stage === 'exam_completed') {
               const rRes = gradeSectionExam(exam.reading?.questions || exam.questions || [], prev.answers?.reading || prev.answers || {}, 'reading');
               const lRes = gradeSectionExam(exam.listening?.questions || [], prev.answers?.listening || {}, 'listening');
-              const wBand = calculateWritingBand(prev.writing_task1_band ?? 6.5, prev.writing_task2_band ?? 7.0);
-              const oBand = calculateOverallIeltsBand(rRes.bandScore, lRes.bandScore, wBand);
+              const wBand = (prev.writing_task1_band !== null && prev.writing_task1_band !== undefined && prev.writing_task2_band !== null && prev.writing_task2_band !== undefined)
+                ? calculateWritingBand(prev.writing_task1_band, prev.writing_task2_band)
+                : (prev.writing_band ?? null);
+              const oBand = wBand !== null ? calculateOverallIeltsBand(rRes.bandScore, lRes.bandScore, wBand) : null;
 
               return {
                 ...prev,
@@ -882,7 +886,7 @@ export default function App() {
       id: newExamId,
       pin_code: randomPin,
       status: 'lobby',
-      is_lobby_open: false,
+      is_lobby_open: true,
       current_stage: 'listening_lobby',
       started_at: null,
       stage_started_at: null,
@@ -910,7 +914,7 @@ export default function App() {
           title: resetExam.title || 'IELTS Academic Master Assessment 2026',
           pin_code: randomPin,
           status: 'lobby',
-          is_lobby_open: false,
+          is_lobby_open: true,
           current_stage: 'listening_lobby',
           duration_mins: resetExam.duration_mins || 180,
           anti_cheat_strictness: resetExam.anti_cheat_strictness || 'standard',
@@ -1023,6 +1027,9 @@ export default function App() {
       id: candidateInfo.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : generateUUID()),
       exam_id: candidateInfo.dbExam?.id || exam.id,
       name: candidateInfo.name,
+      student_name: candidateInfo.name,
+      phone: candidateInfo.phone || candidateInfo.phone_number || '',
+      phone_number: candidateInfo.phone || candidateInfo.phone_number || '',
       candidate_no: candidateInfo.candidate_no,
       status: isStageActive ? 'in_progress' : 'waiting',
       current_stage: activeStage,
@@ -1120,11 +1127,14 @@ export default function App() {
     if (soundEnabled) playExamTone('finish');
 
     // 2. CRITICAL PERSISTENCE (Step 1): Commit student submission to Supabase IMMEDIATELY before AI call!
+    const candidatePhone = currentStudent?.phone || currentStudent?.phone_number || '';
     try {
       const studentPayload = {
         id: studentId,
         exam_id: currentStudent?.exam_id || exam?.id,
         name: currentStudent?.name,
+        phone: candidatePhone,
+        phone_number: candidatePhone,
         candidate_no: currentStudent?.candidate_no,
         ...initialUpdates,
       };
@@ -1176,6 +1186,8 @@ export default function App() {
             id: studentId,
             exam_id: currentStudent?.exam_id || exam?.id,
             name: currentStudent?.name,
+            phone: candidatePhone,
+            phone_number: candidatePhone,
             candidate_no: currentStudent?.candidate_no,
             ...initialUpdates,
             ...aiUpdates,
@@ -1194,6 +1206,8 @@ export default function App() {
             id: studentId,
             exam_id: currentStudent?.exam_id || exam?.id,
             name: currentStudent?.name,
+            phone: candidatePhone,
+            phone_number: candidatePhone,
             candidate_no: currentStudent?.candidate_no,
             ...initialUpdates,
             ...fallbackUpdates,
@@ -1210,6 +1224,8 @@ export default function App() {
           id: studentId,
           exam_id: currentStudent?.exam_id || exam?.id,
           name: currentStudent?.name,
+          phone: candidatePhone,
+          phone_number: candidatePhone,
           candidate_no: currentStudent?.candidate_no,
           ...initialUpdates,
           ...fallbackUpdates,
@@ -1367,7 +1383,7 @@ export default function App() {
     (exam.status === 'active' || exam.status === 'in_progress' || Boolean(exam.current_stage?.endsWith('_active')));
 
   return (
-    <div className={`${isStudentInExam ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-[#fafbfc] flex flex-col font-sans selection:bg-brand-500 selection:text-white`}>
+    <div className={`${isStudentInExam ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-[#f8fafc] flex flex-col font-sans selection:bg-slate-200 selection:text-slate-900`}>
       
       {/* Top Navigation */}
       <Navbar

@@ -8,6 +8,7 @@ import {
   Check, 
   Sparkles 
 } from 'lucide-react';
+import { SelectionHighlightPopover } from './SelectionHighlightPopover';
 
 /**
  * Universal IELTS Passage Paragraph Parser:
@@ -363,6 +364,12 @@ export function PassageViewer({
           </div>
         )}
       </div>
+
+      {/* Floating Selection Highlighter Popover for 1-click text marking */}
+      <SelectionHighlightPopover 
+        containerRef={passageContainerRef} 
+        onHighlightChanged={() => setHighlightCount(prev => prev + 1)} 
+      />
 
     </div>
   );

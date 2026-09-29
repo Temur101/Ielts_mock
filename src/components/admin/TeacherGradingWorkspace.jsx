@@ -213,7 +213,7 @@ export function TeacherGradingWorkspace({
       isOpen={isOpen}
       onClose={onClose}
       title={`Teacher Grading & Verification Sheet: ${student.name}`}
-      subtitle={`Candidate ID: ${student.candidate_no} • Status: ${student.status.toUpperCase()} • Overall IELTS Band: ${overallBand !== null ? `Band ${overallBand}` : 'In Progress'}`}
+      subtitle={`Candidate ID: ${student.candidate_no}${student.phone || student.phone_number || student.answers?.candidate_phone ? ` • Phone: ${student.phone || student.phone_number || student.answers?.candidate_phone}` : ''} • Status: ${student.status.toUpperCase()} • Overall IELTS Band: ${overallBand !== null ? `Band ${overallBand}` : 'In Progress'}`}
       maxWidth="max-w-6xl"
     >
       <div className="space-y-6">
@@ -255,12 +255,12 @@ export function TeacherGradingWorkspace({
           </div>
 
           {/* Overall Band Card */}
-          <div className="p-3 bg-gradient-to-br from-brand-500 to-brand-600 rounded-xl border border-orange-400 shadow-glow flex flex-col justify-center">
-            <div className="text-[10px] uppercase font-bold text-orange-100">Overall IELTS Band</div>
-            <div className="text-2xl font-mono font-black text-white mt-0.5">
+          <div className="p-3 bg-white rounded-xl border-2 border-slate-300 shadow-sm flex flex-col justify-center text-slate-900">
+            <div className="text-[10px] uppercase font-bold text-slate-500">Overall IELTS Band</div>
+            <div className="text-2xl font-mono font-black text-slate-900 mt-0.5">
               {overallBand !== null && overallBand !== undefined ? `Band ${overallBand}` : 'Pending'}
             </div>
-            <div className="text-[10px] text-orange-100 font-medium">
+            <div className="text-[10px] text-slate-500 font-medium">
               Official IELTS average
             </div>
           </div>
@@ -274,7 +274,7 @@ export function TeacherGradingWorkspace({
               onClick={() => setActiveTab('listening')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
                 activeTab === 'listening'
-                  ? 'bg-brand-500 text-white shadow-sm'
+                  ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
               }`}
             >
@@ -286,7 +286,7 @@ export function TeacherGradingWorkspace({
               onClick={() => setActiveTab('reading')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
                 activeTab === 'reading'
-                  ? 'bg-brand-500 text-white shadow-sm'
+                  ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
               }`}
             >
@@ -298,7 +298,7 @@ export function TeacherGradingWorkspace({
               onClick={() => setActiveTab('writing')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
                 activeTab === 'writing'
-                  ? 'bg-brand-500 text-white shadow-sm'
+                  ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
               }`}
             >
@@ -312,7 +312,7 @@ export function TeacherGradingWorkspace({
             size="sm"
             icon={saveToast ? Check : Save}
             onClick={handleSaveAllGrades}
-            className="font-bold shadow-glow"
+            className="font-bold shadow-2xs bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300"
           >
             {saveToast ? 'Grades Saved!' : 'Save & Lock Grades'}
           </Button>
@@ -532,11 +532,11 @@ export function TeacherGradingWorkspace({
                 {/* Save Button in Writing Tab */}
                 <Button
                   onClick={handleSaveAllGrades}
-                  className="bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-sm shadow-brand-500/20"
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-2xs"
                 >
                   {saveToast ? (
                     <>
-                      <Check className="w-3.5 h-3.5 text-emerald-200" />
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
                       Saved!
                     </>
                   ) : (
@@ -574,16 +574,16 @@ export function TeacherGradingWorkspace({
                   <Button
                     onClick={handleRunGeminiEvaluation}
                     disabled={isEvaluatingAi || (!task1Text && !task2Text)}
-                    className="bg-brand-500 hover:bg-brand-600 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-2 shadow-md shadow-brand-500/20 disabled:opacity-50"
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-2 shadow-2xs disabled:opacity-50"
                   >
                     {isEvaluatingAi ? (
                       <>
-                        <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                        <RefreshCw className="w-4 h-4 animate-spin text-slate-700" />
                         Analyzing with AI...
                       </>
                     ) : (
                       <>
-                        <Sparkles className="w-4 h-4 text-amber-200" />
+                        <Sparkles className="w-4 h-4 text-amber-500" />
                         {aiEvaluation ? "Re-evaluate with AI" : "Evaluate with Gemini AI"}
                       </>
                     )}
@@ -685,9 +685,9 @@ export function TeacherGradingWorkspace({
                         )}
                         <Button
                           onClick={handleAcceptAiGrade}
-                          className="bg-brand-500 hover:bg-brand-600 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-md shadow-brand-500/30"
+                          className="bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-2xs"
                         >
-                          <Check className="w-4 h-4" />
+                          <Check className="w-4 h-4 text-emerald-600" />
                           Accept AI Grade
                         </Button>
                       </div>

@@ -70,14 +70,14 @@ export function AdminDashboard({
             onClick={() => setTab('lobby')}
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all ${
               activeTab === 'lobby'
-                ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/20'
+                ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}
           >
             <Users className="w-4 h-4" />
             Classroom Lobby
             <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-              activeTab === 'lobby' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+              activeTab === 'lobby' ? 'bg-slate-300 text-slate-800' : 'bg-slate-100 text-slate-600'
             }`}>
               {students.length}
             </span>
@@ -88,7 +88,7 @@ export function AdminDashboard({
             onClick={() => setTab('monitor')}
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all ${
               activeTab === 'monitor'
-                ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/20'
+                ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}
           >
@@ -104,7 +104,7 @@ export function AdminDashboard({
             onClick={() => setTab('master')}
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all ${
               activeTab === 'master'
-                ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/20'
+                ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}
           >
@@ -117,7 +117,7 @@ export function AdminDashboard({
             onClick={() => setTab('creator')}
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all ${
               activeTab === 'creator'
-                ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/20'
+                ? 'bg-slate-200 text-slate-900 border border-slate-300 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}
           >
@@ -133,7 +133,7 @@ export function AdminDashboard({
             size="sm"
             icon={FolderArchive}
             onClick={() => setIsHistoryOpen(true)}
-            className="text-xs font-bold border-brand-300 text-brand-700 hover:bg-brand-50 shadow-sm"
+            className="text-xs font-bold border-slate-300 text-slate-800 hover:bg-slate-50 shadow-xs"
           >
             Exam History
           </Button>

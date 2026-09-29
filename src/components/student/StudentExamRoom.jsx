@@ -321,30 +321,32 @@ export function StudentExamRoom({
         
         {/* Left: Candidate Info & Stage Pill */}
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-brand-50 text-brand-700 font-extrabold flex items-center justify-center text-xs border border-brand-200 shrink-0">
+          <div className="w-7 h-7 rounded-lg bg-slate-100 text-slate-800 font-extrabold flex items-center justify-center text-xs border border-slate-200 shrink-0">
             {student.name.charAt(0)}
           </div>
           <div>
             <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
               <span className="truncate max-w-[120px] sm:max-w-none">{student.name}</span>
-              <span className="px-1.5 py-0.2 rounded-full text-[9px] font-extrabold uppercase bg-brand-100 text-brand-700 border border-brand-200">
+              <span className="px-1.5 py-0.2 rounded-full text-[9px] font-extrabold uppercase bg-slate-100 text-slate-800 border border-slate-200">
                 {activeSection.toUpperCase()}
               </span>
             </div>
             <div className="text-[10px] font-mono text-slate-400">
-              {student.candidate_no} • PIN: <strong className="text-brand-600 font-bold">{exam.pin_code}</strong>
+              {student.candidate_no} • PIN: <strong className="text-slate-900 font-bold">{exam.pin_code}</strong>
             </div>
           </div>
         </div>
 
         {/* Center: Stage Progress Tracker (1. Listening -> 2. Reading -> 3. Writing) */}
-        <div className="hidden md:flex items-center gap-1.5 p-0.5 bg-slate-100 rounded-xl border border-slate-200 text-xs font-bold">
+        <div className="hidden md:flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200 text-xs font-bold">
           <div className={`flex items-center gap-1 px-2.5 py-1 rounded-lg transition-all ${
             activeSection === 'listening' 
-              ? 'bg-brand-500 text-white shadow-xs' 
-              : 'text-brand-700 bg-white border border-brand-200 shadow-xs'
+              ? 'bg-white text-slate-900 border border-slate-300 shadow-xs font-extrabold' 
+              : activeSection === 'reading' || activeSection === 'writing'
+              ? 'text-slate-800 bg-slate-50/80 border border-slate-200'
+              : 'text-slate-400'
           }`}>
-            <Headphones className="w-3 h-3" />
+            <Headphones className="w-3 h-3 text-slate-600" />
             <span>1. Listening ({listeningAnsweredCount}/{listeningTotalCount})</span>
           </div>
 
@@ -352,12 +354,12 @@ export function StudentExamRoom({
 
           <div className={`flex items-center gap-1 px-2.5 py-1 rounded-lg transition-all ${
             activeSection === 'reading' 
-              ? 'bg-brand-500 text-white shadow-xs' 
+              ? 'bg-white text-slate-900 border border-slate-300 shadow-xs font-extrabold' 
               : activeSection === 'writing'
-              ? 'text-brand-700 bg-white border border-brand-200 shadow-xs'
+              ? 'text-slate-800 bg-slate-50/80 border border-slate-200'
               : 'text-slate-400'
           }`}>
-            <FileText className="w-3 h-3" />
+            <FileText className="w-3 h-3 text-slate-600" />
             <span>2. Reading ({readingAnsweredCount}/{readingTotalCount})</span>
           </div>
 
@@ -365,10 +367,10 @@ export function StudentExamRoom({
 
           <div className={`flex items-center gap-1 px-2.5 py-1 rounded-lg transition-all ${
             activeSection === 'writing' 
-              ? 'bg-brand-500 text-white shadow-xs' 
+              ? 'bg-white text-slate-900 border border-slate-300 shadow-xs font-extrabold' 
               : 'text-slate-400'
           }`}>
-            <PenTool className="w-3 h-3" />
+            <PenTool className="w-3 h-3 text-slate-600" />
             <span>3. Writing</span>
           </div>
         </div>
@@ -382,7 +384,7 @@ export function StudentExamRoom({
                 : 'bg-slate-50 border-slate-200 text-slate-800'
             }`}
           >
-            <Clock className={`w-3.5 h-3.5 ${isTimeCritical ? 'text-rose-500' : 'text-brand-500'}`} />
+            <Clock className={`w-3.5 h-3.5 ${isTimeCritical ? 'text-rose-500' : 'text-slate-700'}`} />
             <span>{formatTimer(timeRemaining)}</span>
           </div>
 
@@ -391,7 +393,7 @@ export function StudentExamRoom({
               variant="outline"
               size="sm"
               onClick={() => handleSectionTimeUp('writing')}
-              className="text-xs font-bold border-brand-200 text-brand-700 hover:bg-brand-50 h-8 px-2.5 cursor-pointer"
+              className="text-xs font-bold border-slate-300 text-slate-800 hover:bg-slate-100 h-8 px-2.5 cursor-pointer"
             >
               Submit Exam
             </Button>
@@ -538,12 +540,12 @@ export function StudentExamRoom({
         <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-lg rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-2xl text-center space-y-6">
             
-            <div className="w-16 h-16 rounded-3xl bg-brand-500 text-white flex items-center justify-center mx-auto shadow-lg shadow-brand-500/30">
+            <div className="w-16 h-16 rounded-3xl bg-slate-100 text-slate-800 border border-slate-200 flex items-center justify-center mx-auto shadow-xs">
               <Lock className="w-8 h-8" />
             </div>
 
             <div className="space-y-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-brand-50 text-brand-700 border border-brand-200">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-800 border border-slate-200">
                 <Clock className="w-3.5 h-3.5" /> SECTION COMPLETED & LOCKED
               </span>
               
@@ -565,7 +567,7 @@ export function StudentExamRoom({
               </div>
               <div className="flex justify-between text-slate-600">
                 <span>Completed Module:</span>
-                <span className="font-bold text-brand-600 uppercase">{lockedSectionType}</span>
+                <span className="font-bold text-slate-900 uppercase">{lockedSectionType}</span>
               </div>
               <div className="flex justify-between text-slate-600">
                 <span>Status:</span>
@@ -578,7 +580,7 @@ export function StudentExamRoom({
               size="lg"
               icon={ArrowRight}
               onClick={handleProceedToNextSection}
-              className="w-full py-4 text-base font-extrabold shadow-glow-lg"
+              className="w-full py-4 text-base font-extrabold bg-slate-800 hover:bg-slate-900 text-white shadow-xs"
             >
               {lockedSectionType === 'listening' && 'PROCEED TO READING'}
               {lockedSectionType === 'reading' && 'PROCEED TO WRITING'}

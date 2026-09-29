@@ -21,11 +21,11 @@ export function Button({
   };
 
   const variants = {
-    primary: 'bg-brand-500 hover:bg-brand-600 active:bg-brand-700 text-white shadow-sm hover:shadow-glow focus:ring-brand-500',
-    secondary: 'bg-slate-900 hover:bg-slate-800 text-white shadow-sm focus:ring-slate-900',
-    outline: 'border border-slate-200 hover:border-brand-500 hover:bg-brand-50/50 text-slate-700 hover:text-brand-600 focus:ring-brand-500 bg-white',
-    danger: 'bg-red-500 hover:bg-red-600 text-white shadow-sm focus:ring-red-500',
-    success: 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm focus:ring-emerald-500',
+    primary: 'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 border border-slate-300 shadow-2xs focus:ring-slate-400 font-bold',
+    secondary: 'bg-slate-50 hover:bg-slate-100 active:bg-slate-200 text-slate-700 border border-slate-200 shadow-2xs focus:ring-slate-400',
+    outline: 'border border-slate-300 hover:border-slate-400 hover:bg-slate-50 text-slate-800 focus:ring-slate-400 bg-white shadow-2xs',
+    danger: 'bg-rose-600 hover:bg-rose-700 text-white shadow-xs focus:ring-rose-500',
+    success: 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs focus:ring-emerald-500',
     ghost: 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 focus:ring-slate-400',
   };
 

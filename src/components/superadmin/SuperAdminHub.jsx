@@ -38,7 +38,8 @@ export function SuperAdminHub({
   user, 
   onLogout, 
   onLaunchTeacherConsole, 
-  onNavigateStudentView 
+  onNavigateStudentView,
+  onReturnToTeacher
 }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -147,6 +148,15 @@ export function SuperAdminHub({
 
             {/* Quick Actions & Logout */}
             <div className="flex items-center gap-2.5">
+              <button
+                onClick={onReturnToTeacher || onNavigateStudentView}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs flex items-center gap-1.5 transition shadow-xs"
+                title="Вернуться в кабинет преподавателя"
+              >
+                <ShieldCheck className="w-4 h-4 text-orange-400" />
+                <span className="hidden sm:inline">Кабинет учителя</span>
+              </button>
+
               <button
                 onClick={() => loadSessions(true)}
                 disabled={loading}

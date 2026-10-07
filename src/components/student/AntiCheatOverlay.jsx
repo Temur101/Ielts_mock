@@ -8,6 +8,7 @@ import {
   Radio 
 } from 'lucide-react';
 import { Button } from '../common/Button';
+import { isAdminAuthenticated } from '../admin/AdminPasswordModal';
 
 export function AntiCheatOverlay({
   exam,
@@ -20,7 +21,7 @@ export function AntiCheatOverlay({
   const [warningTimer, setWarningTimer] = useState(10);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  const isAdminAuthed = typeof window !== 'undefined' && sessionStorage.getItem('ielts_admin_authenticated') === 'true';
+  const isAdminAuthed = isAdminAuthenticated();
 
   // Fullscreen state listener
   useEffect(() => {

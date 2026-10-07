@@ -110,8 +110,7 @@ export default function App() {
     const initialRoute = parseCurrentRoute();
     if (initialRoute.path === '/join') return 'student';
     const isAuthed = isAdminAuthenticated();
-    const saved = localStorage.getItem('ielts_active_role');
-    if (saved === 'admin' && isAuthed) return 'admin';
+    if (isAuthed) return 'admin';
     return 'student';
   });
   const [superAdminUser, setSuperAdminUser] = useState(null);
@@ -1351,14 +1350,23 @@ export default function App() {
         <AdminPasswordModal
           isOpen={true}
           onSuccess={() => {
+            setAdminAuthenticated(true);
             setCurrentRole('admin');
             localStorage.setItem('ielts_active_role', 'admin');
+            navigateTo('/');
           }}
           onCancel={() => navigateTo('/')}
           title="Teacher Proctor Access"
           description="Please enter the proctor password to open the Teacher Console."
         />
       );
+    } else {
+      if (currentRole !== 'admin') {
+        setCurrentRole('admin');
+        localStorage.setItem('ielts_active_role', 'admin');
+      }
+      navigateTo('/');
+      return null;
     }
   }
 
@@ -1369,6 +1377,7 @@ export default function App() {
         <AdminPasswordModal
           isOpen={true}
           onSuccess={() => {
+            setAdminAuthenticated(true);
             setRoute(parseCurrentRoute());
           }}
           onCancel={() => navigateTo('/')}
@@ -1389,9 +1398,15 @@ export default function App() {
       <SuperAdminHub
         user={effectiveAdminUser}
         onLogout={async () => {
-          setAdminAuthenticated(false);
           await signOutSuperAdmin();
           setSuperAdminUser(null);
+          setCurrentRole('admin');
+          localStorage.setItem('ielts_active_role', 'admin');
+          navigateTo('/');
+        }}
+        onReturnToTeacher={() => {
+          setCurrentRole('admin');
+          localStorage.setItem('ielts_active_role', 'admin');
           navigateTo('/');
         }}
         onLaunchTeacherConsole={(session) => {

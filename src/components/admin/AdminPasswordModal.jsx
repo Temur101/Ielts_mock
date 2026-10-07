@@ -7,25 +7,35 @@ export const ADMIN_AUTH_SESSION_KEY = 'ielts_admin_authenticated';
 
 /**
  * Checks whether the current browser session has validated the admin password.
+ * Uses localStorage to persist authorization on teacher devices across restarts.
  */
 export function isAdminAuthenticated() {
   if (typeof window === 'undefined') return false;
   try {
-    return sessionStorage.getItem(ADMIN_AUTH_SESSION_KEY) === 'true';
+    const isAuthed = localStorage.getItem(ADMIN_AUTH_SESSION_KEY) === 'true' || 
+                     sessionStorage.getItem(ADMIN_AUTH_SESSION_KEY) === 'true';
+    if (isAuthed && sessionStorage.getItem(ADMIN_AUTH_SESSION_KEY) !== 'true') {
+      try {
+        sessionStorage.setItem(ADMIN_AUTH_SESSION_KEY, 'true');
+      } catch {}
+    }
+    return isAuthed;
   } catch {
     return false;
   }
 }
 
 /**
- * Sets the admin authenticated status in sessionStorage.
+ * Sets the admin authenticated status in both localStorage and sessionStorage.
  */
 export function setAdminAuthenticated(status = true) {
   if (typeof window === 'undefined') return;
   try {
     if (status) {
+      localStorage.setItem(ADMIN_AUTH_SESSION_KEY, 'true');
       sessionStorage.setItem(ADMIN_AUTH_SESSION_KEY, 'true');
     } else {
+      localStorage.removeItem(ADMIN_AUTH_SESSION_KEY);
       sessionStorage.removeItem(ADMIN_AUTH_SESSION_KEY);
     }
   } catch {}

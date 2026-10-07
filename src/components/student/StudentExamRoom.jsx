@@ -28,6 +28,7 @@ import { gradeSectionExam } from '../../lib/ieltsGrading';
 import { getSealedAnswerKeys, hydrateQuestionsWithAnswers } from '../../lib/answerVault';
 import { fetchExamAnswerKeys } from '../../lib/supabase';
 import { getRemainingSeconds, formatExamTimer } from '../../lib/examTimerUtils';
+import { isAdminAuthenticated } from '../admin/AdminPasswordModal';
 
 export function StudentExamRoom({
   exam,
@@ -39,7 +40,7 @@ export function StudentExamRoom({
   onWarnStudent,
   onExit,
 }) {
-  const isAdminAuthed = typeof window !== 'undefined' && sessionStorage.getItem('ielts_admin_authenticated') === 'true';
+  const isAdminAuthed = isAdminAuthenticated();
   const currentStage = exam.current_stage || ((exam.status === 'active' || exam.status === 'in_progress') ? 'listening_active' : 'listening_lobby');
 
   // Local Storage Cache Key

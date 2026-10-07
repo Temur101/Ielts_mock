@@ -16,6 +16,7 @@ import {
 import { Badge } from './common/Badge';
 import { generateCryptoPin } from '../lib/supabase';
 import { getRemainingSeconds, formatExamTimer } from '../lib/examTimerUtils';
+import { isAdminAuthenticated } from './admin/AdminPasswordModal';
 
 export function Navbar({
   currentRole, // 'admin' | 'student'
@@ -29,7 +30,7 @@ export function Navbar({
   onOpenSuperAdmin,
   isAdminAuthed: propIsAdminAuthed,
 }) {
-  const isAdminAuthed = propIsAdminAuthed ?? (typeof window !== 'undefined' && sessionStorage.getItem('ielts_admin_authenticated') === 'true');
+  const isAdminAuthed = propIsAdminAuthed ?? isAdminAuthenticated();
   const [copiedPin, setCopiedPin] = useState(false);
   const [isEditingPin, setIsEditingPin] = useState(false);
   const [pinInput, setPinInput] = useState(exam?.pin_code || '');

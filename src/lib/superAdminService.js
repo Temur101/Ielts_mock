@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabase';
-import { getSessionHistory } from './sessionHistory';
+import { getSessionHistory, fetchSessionHistoryAsync } from './sessionHistory';
 import { TEACHER_ACCESS_PASSWORD } from '../components/admin/AdminPasswordModal';
 
 const SUPER_ADMIN_STORAGE_KEY = 'ielts_super_admin_session';
@@ -135,7 +135,15 @@ export async function fetchAllExamSessions() {
     }
   }
 
-  const localHistory = getSessionHistory();
+  let localHistory = [];
+  try {
+    localHistory = await fetchSessionHistoryAsync();
+  } catch (e) {
+    localHistory = getSessionHistory();
+  }
+  if (!Array.isArray(localHistory) || localHistory.length === 0) {
+    localHistory = getSessionHistory();
+  }
   const map = new Map();
 
   dbExams.forEach((exam) => {

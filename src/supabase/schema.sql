@@ -411,3 +411,58 @@ CREATE POLICY "Public Access to exam-assets" ON storage.objects
     FOR ALL USING (bucket_id = 'exam-assets')
     WITH CHECK (bucket_id = 'exam-assets');
 
+-- =========================================================================
+-- 11. EXAM SESSIONS ARCHIVE (PERSISTENT FINISHED RUNS ACROSS ALL DEVICES)
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS public.exam_sessions_archive (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    exam_id             UUID NOT NULL UNIQUE,
+    title               VARCHAR(255) NOT NULL DEFAULT 'IELTS Academic Master Assessment',
+    pin_code            VARCHAR(16)  NULL,
+    started_at          TIMESTAMPTZ  NULL,
+    ended_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    duration_mins       INTEGER      NULL,
+    total_candidates    INTEGER      NOT NULL DEFAULT 0,
+    submitted_count     INTEGER      NOT NULL DEFAULT 0,
+    avg_reading_band    NUMERIC(3,1) NULL,
+    avg_listening_band  NUMERIC(3,1) NULL,
+    avg_writing_band    NUMERIC(3,1) NULL,
+    avg_overall_band    NUMERIC(3,1) NULL,
+    highest_band        NUMERIC(3,1) NULL,
+    exam_snapshot       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    students            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_archive_ended_at ON public.exam_sessions_archive (ended_at DESC);
+CREATE INDEX IF NOT EXISTS idx_archive_pin      ON public.exam_sessions_archive (pin_code);
+
+CREATE OR REPLACE FUNCTION public.trg_archive_set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_archive_updated_at ON public.exam_sessions_archive;
+CREATE TRIGGER trg_archive_updated_at
+BEFORE UPDATE ON public.exam_sessions_archive
+FOR EACH ROW EXECUTE FUNCTION public.trg_archive_set_updated_at();
+
+ALTER TABLE public.exam_sessions_archive ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Archive"   ON public.exam_sessions_archive;
+CREATE POLICY "Public Read Archive"   ON public.exam_sessions_archive FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Public Insert Archive" ON public.exam_sessions_archive;
+CREATE POLICY "Public Insert Archive" ON public.exam_sessions_archive FOR INSERT WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Update Archive" ON public.exam_sessions_archive;
+CREATE POLICY "Public Update Archive" ON public.exam_sessions_archive FOR UPDATE USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Delete Archive" ON public.exam_sessions_archive;
+CREATE POLICY "Public Delete Archive" ON public.exam_sessions_archive FOR DELETE USING (true);
+
+

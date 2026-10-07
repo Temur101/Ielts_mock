@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { StudentJoin } from './components/student/StudentJoin';
@@ -6,10 +6,11 @@ import { StudentWaitingRoom } from './components/student/StudentWaitingRoom';
 import { StudentExamRoom } from './components/student/StudentExamRoom';
 import { DEFAULT_IELTS_EXAM, INITIAL_MOCK_STUDENTS } from './lib/mockData';
 import { realtimeBus } from './lib/realtimeBus';
+import { mergeStudentsById } from './lib/studentMerge';
 import { 
   updateExamStage, 
   updateStudentStage, 
-  subscribeToExamRealtime,
+  subscribeToExamRealtime, 
   removeExamRealtimeChannel,
   updateExamPinCode,
   updateExamStatus,
@@ -17,7 +18,9 @@ import {
   upsertStudent,
   generateCryptoPin,
   generateUUID,
-  getSupabaseClient
+  getSupabaseClient,
+  fetchStudentsForExam,
+  resolveExamIdByPin
 } from './lib/supabase';
 import { 
   gradeSectionExam, 
@@ -188,6 +191,11 @@ export default function App() {
     const saved = localStorage.getItem('ielts_students_list');
     return saved ? JSON.parse(saved) : INITIAL_MOCK_STUDENTS;
   });
+
+  const studentsRef = useRef(students);
+  useEffect(() => {
+    studentsRef.current = students;
+  }, [students]);
 
   const [currentStudent, setCurrentStudent] = useState(() => {
     const saved = localStorage.getItem('ielts_current_student');
@@ -504,11 +512,9 @@ export default function App() {
         }
 
         case 'STUDENT_JOIN':
-          setStudents(prev => {
-            const exists = prev.some(s => s.id === payload.student.id);
-            if (exists) return prev;
-            return [...prev, payload.student];
-          });
+          if (payload.student) {
+            setStudents(prev => mergeStudentsById(prev, [payload.student]));
+          }
           break;
 
         case 'STUDENT_ANSWER_UPDATE':
@@ -613,10 +619,21 @@ export default function App() {
   useEffect(() => {
     // Initial fetch of existing registered candidates for current exam session
     const supabase = getSupabaseClient();
-    if (supabase && exam?.id) {
-      supabase.from('students').select('*').eq('exam_id', exam.id).then(({ data, error }) => {
-        if (!error && Array.isArray(data)) {
-          setStudents(data);
+    if (supabase && (exam?.id || exam?.pin_code)) {
+      if (exam?.pin_code) {
+        resolveExamIdByPin(exam.pin_code).then((resolvedId) => {
+          if (resolvedId && resolvedId !== exam.id) {
+            setExam(prev => ({ ...prev, id: resolvedId }));
+          }
+        });
+      }
+
+      fetchStudentsForExam({ examId: exam.id, pinCode: exam.pin_code }).then(({ data, examId: targetId }) => {
+        if (targetId && targetId !== exam.id) {
+          setExam(prev => ({ ...prev, id: targetId }));
+        }
+        if (Array.isArray(data) && data.length > 0) {
+          setStudents(prev => mergeStudentsById(prev, data));
         }
       });
 
@@ -712,15 +729,19 @@ export default function App() {
       onStudentChange: (payload) => {
         if (payload.new && (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT')) {
           const updatedStudent = payload.new;
-          if (updatedStudent.exam_id && exam?.id && updatedStudent.exam_id !== exam.id) return;
-
-          setStudents(prev => {
-            const exists = prev.some(s => s.id === updatedStudent.id);
-            if (exists) {
-              return prev.map(s => s.id === updatedStudent.id ? { ...s, ...updatedStudent } : s);
+          if (updatedStudent.exam_id && exam?.id && updatedStudent.exam_id !== exam.id) {
+            if (exam?.pin_code) {
+              resolveExamIdByPin(exam.pin_code).then((realPinId) => {
+                if (realPinId === updatedStudent.exam_id) {
+                  setExam(prev => ({ ...prev, id: realPinId }));
+                  setStudents(prev => mergeStudentsById(prev, [updatedStudent]));
+                }
+              });
             }
-            return [...prev, updatedStudent];
-          });
+            return;
+          }
+
+          setStudents(prev => mergeStudentsById(prev, [updatedStudent]));
           if (currentStudent?.id === updatedStudent.id) {
             setCurrentStudent(prev => prev ? { ...prev, ...updatedStudent } : null);
           }
@@ -786,6 +807,23 @@ export default function App() {
       setActiveAdminTab('monitor');
     } else if (isFinished) {
       setActiveAdminTab('master');
+      // Live server sync: fetch all registered candidates from Supabase before final archiving
+      fetchStudentsForExam({ examId: exam.id, pinCode: exam.pin_code }).then(({ data, examId: targetId }) => {
+        if (targetId && targetId !== exam.id) {
+          setExam(prev => ({ ...prev, id: targetId }));
+        }
+        const merged = mergeStudentsById(studentsRef.current, data);
+        setStudents(merged);
+        if (merged.length > 0) {
+          archiveCurrentSession({
+            ...exam,
+            id: targetId || exam.id,
+            current_stage: stage,
+            status: 'finished',
+            ended_at: stageStartedAt
+          }, merged);
+        }
+      });
     }
 
     setExam(prev => {
@@ -799,8 +837,8 @@ export default function App() {
         ended_at: isFinished ? stageStartedAt : prev.ended_at
       };
 
-      if (isFinished && students.length > 0) {
-        archiveCurrentSession(updated, students);
+      if (isFinished && studentsRef.current.length > 0) {
+        archiveCurrentSession(updated, studentsRef.current);
       }
 
       return updated;
@@ -817,7 +855,12 @@ export default function App() {
     updateExamStage(exam.id, stage, { 
       stage_started_at: stageStartedAt,
       stage_ends_at: stageEndsAt,
+      pin_code: exam.pin_code,
       status: isFinished ? 'finished' : (isActive ? 'in_progress' : 'lobby')
+    }).then(({ data: updatedExamRow }) => {
+      if (updatedExamRow?.id && updatedExamRow.id !== exam.id) {
+        setExam(prev => ({ ...prev, id: updatedExamRow.id }));
+      }
     });
 
     // Unified Server-Anchored Sync: Save deadline to Supabase
@@ -870,8 +913,16 @@ export default function App() {
       }
     }
 
-    if (students.length > 0) {
-      archiveCurrentSession(exam, students);
+    try {
+      const { data } = await fetchStudentsForExam({ examId: prevExamId, pinCode: exam?.pin_code });
+      const finalStudents = mergeStudentsById(studentsRef.current, data);
+      if (finalStudents.length > 0) {
+        await archiveCurrentSession(exam, finalStudents);
+      }
+    } catch (archErr) {
+      if (studentsRef.current.length > 0) {
+        archiveCurrentSession(exam, studentsRef.current);
+      }
     }
 
     // 2. Generate new RFC-4122 UUID v4 and new cryptographically secure PIN
@@ -1057,8 +1108,24 @@ export default function App() {
     };
 
     setCurrentStudent(newStudent);
+    setStudents(prev => mergeStudentsById(prev, [newStudent]));
     realtimeBus.broadcast('STUDENT_JOIN', { student: newStudent });
-    upsertStudent(newStudent);
+
+    // Robust persistence with retry
+    const persistWithRetry = async (studentData, maxAttempts = 3) => {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const res = await upsertStudent(studentData);
+          if (!res?.error) return true;
+          console.warn(`[handleStudentJoin] Upsert attempt ${attempt} warning:`, res.error);
+          await new Promise(r => setTimeout(r, 600 * attempt));
+        } catch (err) {
+          console.warn(`[handleStudentJoin] Upsert attempt ${attempt} exception:`, err);
+        }
+      }
+      return false;
+    };
+    persistWithRetry(newStudent);
   };
 
   const handleStudentTransitionStage = (studentId, nextStage, stageUpdates) => {
@@ -1404,7 +1471,7 @@ export default function App() {
         {activeRoleToRender === 'admin' ? (
           <AdminDashboard
             exam={exam}
-            students={students.filter(s => !s.exam_id || !exam?.id || s.exam_id === exam.id)}
+            students={students.filter(s => !s.exam_id || !exam?.id || s.exam_id === exam.id || s.exam_id === exam.pin_code)}
             activeTab={activeAdminTab}
             onTabChange={setActiveAdminTab}
             onUpdateExam={handleUpdateExam}

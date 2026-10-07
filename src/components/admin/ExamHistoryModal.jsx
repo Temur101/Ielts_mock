@@ -19,24 +19,66 @@ import {
   PenTool,
   ArrowRight,
   Sparkles,
-  BookOpen
+  BookOpen,
+  RefreshCw,
+  Cloud
 } from 'lucide-react';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
-import { getSessionHistory, deleteSessionFromHistory, clearAllSessionHistory } from '../../lib/sessionHistory';
+import { 
+  getSessionHistory, 
+  fetchSessionHistoryAsync, 
+  deleteSessionFromHistory, 
+  clearAllSessionHistory,
+  migrateLocalHistoryToCloud 
+} from '../../lib/sessionHistory';
+import { exportSessionPdf } from '../../lib/sessionPdfReport';
 
 export function ExamHistoryModal({ isOpen, onClose }) {
   const [sessions, setSessions] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedSessionId, setExpandedSessionId] = useState(null);
   const [inspectStudent, setInspectStudent] = useState(null); // student to inspect answers
+  const [isLoading, setIsLoading] = useState(false);
+
+  const loadHistory = async () => {
+    setIsLoading(true);
+    try {
+      await migrateLocalHistoryToCloud();
+    } catch (e) {}
+
+    try {
+      const data = await fetchSessionHistoryAsync();
+      setSessions(data || []);
+    } catch (err) {
+      setSessions(getSessionHistory());
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
       setSessions(getSessionHistory());
+      loadHistory();
     }
   }, [isOpen]);
+
+  const handleDownloadPdf = (session, e) => {
+    if (e) e.stopPropagation();
+    exportSessionPdf({
+      exam: session.exam_snapshot || session.exam_meta || {
+        title: session.title,
+        pin_code: session.pin_code,
+        started_at: session.started_at,
+        ended_at: session.ended_at,
+        duration_mins: session.duration_mins,
+      },
+      students: session.students || [],
+      examDate: session.ended_at || session.started_at || session.date
+    });
+  };
 
   const handleDelete = (id, e) => {
     e.stopPropagation();
@@ -137,6 +179,17 @@ export function ExamHistoryModal({ isOpen, onClose }) {
             <Button
               variant="outline"
               size="sm"
+              icon={RefreshCw}
+              onClick={loadHistory}
+              disabled={isLoading}
+              className={`text-xs font-bold ${isLoading ? 'animate-spin' : ''}`}
+              title="Sync & refresh session archive from Supabase"
+            >
+              {isLoading ? 'Syncing...' : 'Sync Cloud'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               icon={Download}
               onClick={handleExportJSON}
               disabled={sessions.length === 0}
@@ -201,6 +254,15 @@ export function ExamHistoryModal({ isOpen, onClose }) {
                           <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-bold text-[10px] border border-emerald-200 flex items-center gap-1">
                             <CheckCircle2 className="w-3 h-3" /> Completed
                           </span>
+                          {session.source === 'cloud' ? (
+                            <span className="px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 font-semibold text-[10px] border border-sky-200 flex items-center gap-1" title="Stored in Supabase Cloud Archive">
+                              <Cloud className="w-3 h-3" /> Cloud
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-semibold text-[10px] border border-slate-200" title="Cached locally on this device">
+                              Local
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-500 flex-wrap">
@@ -256,7 +318,17 @@ export function ExamHistoryModal({ isOpen, onClose }) {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          icon={FileText}
+                          onClick={(e) => handleDownloadPdf(session, e)}
+                          className="text-[11px] font-bold text-slate-700 hover:text-brand-600 hover:border-brand-300"
+                          title="Export PDF Report for this session"
+                        >
+                          PDF Report
+                        </Button>
                         <button
                           onClick={(e) => handleDelete(session.id, e)}
                           className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
@@ -281,9 +353,17 @@ export function ExamHistoryModal({ isOpen, onClose }) {
                           <Award className="w-4 h-4 text-brand-600" />
                           <span>Candidate Results Roster ({session.students?.length || 0})</span>
                         </div>
-                        <span className="text-[11px] text-slate-500">
-                          Click on any candidate to inspect their submitted answers & essays
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            icon={Download}
+                            onClick={(e) => handleDownloadPdf(session, e)}
+                            className="text-[11px] font-bold text-brand-700 bg-brand-50 border-brand-200 hover:bg-brand-100"
+                          >
+                            Export Official PDF
+                          </Button>
+                        </div>
                       </div>
 
                       <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">

@@ -1,8 +1,19 @@
 // IELTS Academic Mock Exam Shell — NO hardcoded questions
 // All questions are dynamically extracted from uploaded PDFs via pdfParser.js
 
+const createDefaultExamId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
+
 export const DEFAULT_IELTS_EXAM = {
-  id: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+  id: createDefaultExamId(),
   pin_code: "",
   title: "IELTS Academic Master Assessment 2026",
   duration_mins: 60,

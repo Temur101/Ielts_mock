@@ -205,7 +205,7 @@ export async function resilientSupabaseOperation(tableName, initialPayload, opFn
       // Fast abort on UUID type mismatch (e.g. non-UUID client ID sent to UUID column)
       if (err.message && (err.message.includes('invalid input syntax for type uuid') || err.code === '22P02')) {
         console.warn(`[Supabase] Invalid UUID format encountered for table '${tableName}'. Bypassing write.`);
-        return { data: null, error: null, skipped: true };
+        return { data: null, error: err, skipped: true };
       }
 
       // 1. Table missing error check (e.g. exam_sections 404 / PGRST205)
@@ -289,6 +289,66 @@ export async function fetchExamAnswerKeys(pinCode) {
   } catch (err) {
     console.warn("fetchExamAnswerKeys error:", err);
     return { data: null, error: err };
+  }
+}
+
+/**
+ * Resolves the primary key UUID for an exam by its PIN code
+ */
+export async function resolveExamIdByPin(pinCode) {
+  if (!pinCode) return null;
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  try {
+    const { data } = await supabase
+      .from('exams')
+      .select('id')
+      .eq('pin_code', pinCode.trim().toUpperCase())
+      .maybeSingle();
+    return data?.id || null;
+  } catch (err) {
+    console.warn('resolveExamIdByPin error:', err);
+    return null;
+  }
+}
+
+/**
+ * Robustly queries all registered students for an exam, checking both direct examId
+ * and resolving through the session PIN code.
+ */
+export async function fetchStudentsForExam({ examId, pinCode } = {}) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { data: [], error: null, examId: null };
+
+  try {
+    let targetExamId = isValidUUID(examId) ? examId : null;
+    if (pinCode) {
+      const resolved = await resolveExamIdByPin(pinCode);
+      if (resolved) targetExamId = resolved;
+    }
+
+    if (!targetExamId) {
+      return { data: [], error: null, examId: null };
+    }
+
+    const { data, error } = await supabase
+      .from('students')
+      .select('*')
+      .eq('exam_id', targetExamId);
+
+    if (error) {
+      console.warn('[fetchStudentsForExam] Error loading students from Supabase:', error);
+      return { data: [], error, examId: targetExamId };
+    }
+
+    return { 
+      data: Array.isArray(data) ? data : [], 
+      error: null, 
+      examId: targetExamId 
+    };
+  } catch (err) {
+    console.warn('[fetchStudentsForExam] Exception querying students:', err);
+    return { data: [], error: err, examId: null };
   }
 }
 
@@ -929,5 +989,122 @@ export async function persistExamAndSections(examId, parsedPayload = {}) {
 
   return { data: results, error: null };
 }
+
+/**
+ * Persists a finished exam session record with complete student snapshot to Supabase archive
+ */
+export async function archiveExamSessionToSupabase(sessionRecord) {
+  const supabase = getSupabaseClient();
+  if (!supabase || !sessionRecord) return { data: null, error: new Error("No client or session record") };
+
+  try {
+    const examId = isValidUUID(sessionRecord.exam_id) 
+      ? sessionRecord.exam_id 
+      : (isValidUUID(sessionRecord.id) ? sessionRecord.id : generateUUID());
+
+    const payload = {
+      exam_id: examId,
+      title: sessionRecord.title || 'IELTS Academic Master Assessment',
+      pin_code: sessionRecord.pin_code || '',
+      started_at: sessionRecord.started_at || null,
+      ended_at: sessionRecord.ended_at || new Date().toISOString(),
+      duration_mins: sessionRecord.duration_mins || null,
+      total_candidates: sessionRecord.total_candidates || (Array.isArray(sessionRecord.students) ? sessionRecord.students.length : 0),
+      submitted_count: sessionRecord.submitted_count || 0,
+      avg_reading_band: sessionRecord.avg_reading_band ?? null,
+      avg_listening_band: sessionRecord.avg_listening_band ?? null,
+      avg_writing_band: sessionRecord.avg_writing_band ?? null,
+      avg_overall_band: sessionRecord.avg_overall_band ?? null,
+      highest_band: sessionRecord.highest_band ?? null,
+      exam_snapshot: sessionRecord.exam_meta || sessionRecord.exam_snapshot || {},
+      students: sessionRecord.students || [],
+      updated_at: new Date().toISOString()
+    };
+
+    const res = await resilientSupabaseOperation('exam_sessions_archive', payload, async (cleanPayload) => {
+      return await supabase
+        .from('exam_sessions_archive')
+        .upsert(cleanPayload, { onConflict: 'exam_id' })
+        .select()
+        .maybeSingle();
+    });
+
+    return { data: res?.data, error: res?.error || null };
+  } catch (err) {
+    console.warn("[archiveExamSessionToSupabase] Error:", err);
+    return { data: null, error: err };
+  }
+}
+
+/**
+ * Fetches all past archived exam sessions from Supabase across all devices
+ */
+export async function fetchArchivedSessionsFromSupabase() {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { data: [], error: new Error("No client") };
+
+  try {
+    const { data, error } = await supabase
+      .from('exam_sessions_archive')
+      .select('*')
+      .order('ended_at', { ascending: false });
+
+    if (error) {
+      if (isTableMissingError(error)) {
+        console.info("[fetchArchivedSessionsFromSupabase] exam_sessions_archive table not yet created.");
+        return { data: [], error: null, skipped: true };
+      }
+      return { data: [], error };
+    }
+
+    return { data: Array.isArray(data) ? data : [], error: null };
+  } catch (err) {
+    return { data: [], error: err };
+  }
+}
+
+/**
+ * Fetches single archived session with candidate roster by ID or exam_id
+ */
+export async function fetchArchivedSessionByIdFromSupabase(sessionId) {
+  const supabase = getSupabaseClient();
+  if (!supabase || !sessionId) return { data: null, error: new Error("No client or sessionId") };
+
+  try {
+    let query = supabase.from('exam_sessions_archive').select('*');
+    if (isValidUUID(sessionId)) {
+      query = query.or(`id.eq.${sessionId},exam_id.eq.${sessionId}`);
+    } else {
+      query = query.eq('id', sessionId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+    return { data, error };
+  } catch (err) {
+    return { data: null, error: err };
+  }
+}
+
+/**
+ * Deletes archived session record from Supabase
+ */
+export async function deleteArchivedSessionFromSupabase(sessionId) {
+  const supabase = getSupabaseClient();
+  if (!supabase || !sessionId) return { error: new Error("No client or sessionId") };
+
+  try {
+    let query = supabase.from('exam_sessions_archive').delete();
+    if (isValidUUID(sessionId)) {
+      query = query.or(`id.eq.${sessionId},exam_id.eq.${sessionId}`);
+    } else {
+      query = query.eq('id', sessionId);
+    }
+    const { error } = await query;
+    return { error };
+  } catch (err) {
+    return { error: err };
+  }
+}
+
 
 

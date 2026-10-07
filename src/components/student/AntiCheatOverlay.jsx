@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { 
   ShieldAlert, 
   AlertTriangle, 
@@ -20,8 +20,20 @@ export function AntiCheatOverlay({
   const [warningModalOpen, setWarningModalOpen] = useState(false);
   const [warningTimer, setWarningTimer] = useState(10);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const prevWarnCountRef = useRef(student?.warning_count || 0);
 
   const isAdminAuthed = isAdminAuthenticated();
+
+  // Watch for instructor-initiated focus warnings
+  useEffect(() => {
+    if (isAdminAuthed) return;
+    const currentCount = student?.warning_count || 0;
+    if (currentCount > prevWarnCountRef.current) {
+      setWarningModalOpen(true);
+      setWarningTimer(10);
+    }
+    prevWarnCountRef.current = currentCount;
+  }, [student?.warning_count, isAdminAuthed]);
 
   // Fullscreen state listener
   useEffect(() => {

@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   GraduationCap, 
   ArrowRight, 
-  ArrowLeft,
+  ArrowLeft, 
   AlertTriangle,
   User,
   Phone,
@@ -27,6 +27,7 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
   const [pinCode, setPinCode] = useState(initialPin);
   const [error, setError] = useState('');
   const [isValidating, setIsValidating] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   React.useEffect(() => {
     const active = (shortCircuitPin || urlParams?.get('pin') || defaultPin || '').trim().toUpperCase();
@@ -36,6 +37,8 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
   }, [defaultPin, shortCircuitPin]);
 
   const handleSubmit = async () => {
+    if (isSubmittingRef.current || isValidating) return;
+
     if (!name.trim()) {
       setError('Please enter your full name as shown on official ID');
       setStep(1);
@@ -52,6 +55,7 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
       return;
     }
 
+    isSubmittingRef.current = true;
     setIsValidating(true);
     setError('');
 
@@ -78,8 +82,27 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
         // SEC-06: Strip answers from exam before storing in localStorage or state
         const safeExam = sanitizeExamForCandidate(dbExam);
 
-        const studentUUID = generateUUID();
-        const finalCandidateNo = `CAND-${generateCryptoPin().slice(0, 4)}`;
+        // Check if student identity already exists in localStorage to prevent creating a duplicate UUID
+        let studentUUID = null;
+        let finalCandidateNo = null;
+        try {
+          const savedRaw = localStorage.getItem('ielts_current_student') || localStorage.getItem('ielts_student');
+          if (savedRaw) {
+            const savedParsed = JSON.parse(savedRaw);
+            const normSavedPhone = (savedParsed.phone || savedParsed.phone_number || '').replace(/\D/g, '');
+            const normCurrentPhone = phone.trim().replace(/\D/g, '');
+            if (normSavedPhone && normSavedPhone === normCurrentPhone) {
+              studentUUID = savedParsed.id;
+              finalCandidateNo = savedParsed.candidate_no || savedParsed.candidate_number;
+            }
+          }
+        } catch {}
+
+        if (!studentUUID) {
+          studentUUID = generateUUID();
+          finalCandidateNo = `CAND-${generateCryptoPin().slice(0, 4)}`;
+        }
+
         const studentData = {
           id: studentUUID,
           name: name.trim(),
@@ -112,6 +135,7 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
       setError('Connection error. Please verify your connection and PIN code.');
     } finally {
       setIsValidating(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -259,18 +283,19 @@ export function StudentJoin({ onJoin, defaultPin = '', isLobbyOpen = false, exam
               <input
                 type="tel"
                 autoFocus
+                disabled={isValidating}
                 value={phone}
                 onChange={(e) => {
                   setPhone(e.target.value);
                   if (error) setError('');
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && phone.trim()) {
+                  if (e.key === 'Enter' && phone.trim() && !isValidating) {
                     handleSubmit();
                   }
                 }}
                 placeholder="+998 90 123 45 67"
-                className="w-full text-xl sm:text-2xl font-mono font-bold text-center px-6 py-4 sm:py-5 bg-white border-2 border-slate-300 focus:border-slate-700 rounded-2xl shadow-sm focus:outline-none focus:ring-4 focus:ring-slate-100 transition-all text-slate-700 placeholder:text-slate-300"
+                className="w-full text-xl sm:text-2xl font-mono font-bold text-center px-6 py-4 sm:py-5 bg-white border-2 border-slate-300 focus:border-slate-700 rounded-2xl shadow-sm focus:outline-none focus:ring-4 focus:ring-slate-100 transition-all text-slate-700 placeholder:text-slate-300 disabled:opacity-50"
               />
             </div>
 

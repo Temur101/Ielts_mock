@@ -720,7 +720,7 @@ export async function upsertStudent(student) {
  */
 export async function updateStudentStatus(studentId, status, extra = {}) {
   const supabase = getSupabaseClient();
-  if (!supabase) return { error: null };
+  if (!supabase || !studentId) return { error: null };
 
   try {
     const payload = {
@@ -733,7 +733,9 @@ export async function updateStudentStatus(studentId, status, extra = {}) {
       return await supabase
         .from("students")
         .update(cleanPayload)
-        .eq("id", studentId);
+        .eq("id", studentId)
+        .select()
+        .maybeSingle();
     });
   } catch (err) {
     return { error: err };
@@ -798,6 +800,26 @@ export function subscribeToExamRealtime(pinCode, callbacks = {}) {
     });
 
   return channel;
+}
+
+/**
+ * Broadcasts an administrative command (KICK, WARN, UNBAN, etc.)
+ * over the exam room Supabase Realtime channel across all candidate devices.
+ */
+export async function broadcastAdminAction(pinCode, action, payload = {}) {
+  const supabase = getSupabaseClient();
+  if (!supabase || !pinCode) return;
+  try {
+    const cleanPin = pinCode.trim().toUpperCase();
+    const channel = supabase.channel(`exam_room_${cleanPin}`);
+    await channel.send({
+      type: 'broadcast',
+      event: 'admin_action',
+      payload: { action, ...payload, timestamp: Date.now() },
+    });
+  } catch (err) {
+    console.warn('[broadcastAdminAction] error:', err);
+  }
 }
 
 /**

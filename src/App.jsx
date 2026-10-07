@@ -10,6 +10,8 @@ import { mergeStudentsById } from './lib/studentMerge';
 import { 
   updateExamStage, 
   updateStudentStage, 
+  updateStudentStatus,
+  broadcastAdminAction,
   subscribeToExamRealtime, 
   removeExamRealtimeChannel,
   updateExamPinCode,
@@ -745,6 +747,58 @@ export default function App() {
             setCurrentStudent(prev => prev ? { ...prev, ...updatedStudent } : null);
           }
         }
+      },
+      onAdminAction: ({ payload }) => {
+        if (!payload) return;
+        const { action, studentId, warning_count } = payload;
+        if (action === 'KICK') {
+          setStudents(prev => prev.map(s => {
+            if (s.id === studentId) {
+              return { ...s, status: 'kicked', is_disqualified: true, disqualification_reason: 'Kicked by instructor' };
+            }
+            return s;
+          }));
+          if (currentStudent?.id === studentId) {
+            setCurrentStudent(prev => prev ? { 
+              ...prev, 
+              status: 'kicked', 
+              is_disqualified: true, 
+              disqualification_reason: 'Kicked by instructor' 
+            } : null);
+          }
+        } else if (action === 'WARN') {
+          const warnVal = warning_count || 1;
+          setStudents(prev => prev.map(s => {
+            if (s.id === studentId) {
+              return { ...s, warning_count: Math.max(s.warning_count || 0, warnVal) };
+            }
+            return s;
+          }));
+          if (currentStudent?.id === studentId) {
+            setCurrentStudent(prev => prev ? { 
+              ...prev, 
+              warning_count: Math.max(prev.warning_count || 0, warnVal) 
+            } : null);
+            if (soundEnabled) playExamTone('warning');
+          }
+        } else if (action === 'UNBAN') {
+          const unbanStatus = exam.status === 'active' || exam.status === 'in_progress' ? 'in_progress' : 'waiting';
+          setStudents(prev => prev.map(s => {
+            if (s.id === studentId) {
+              return { ...s, status: unbanStatus, is_disqualified: false, disqualification_reason: null, warning_count: 0 };
+            }
+            return s;
+          }));
+          if (currentStudent?.id === studentId) {
+            setCurrentStudent(prev => prev ? { 
+              ...prev, 
+              status: unbanStatus, 
+              is_disqualified: false, 
+              disqualification_reason: null, 
+              warning_count: 0 
+            } : null);
+          }
+        }
       }
     });
 
@@ -1031,15 +1085,110 @@ export default function App() {
 
 
   const handleKickStudent = (studentId) => {
+    // 1. Immediately update local state in teacher console
+    setStudents(prev => prev.map(s => {
+      if (s.id === studentId) {
+        return { 
+          ...s, 
+          status: 'kicked', 
+          is_disqualified: true, 
+          disqualification_reason: 'Kicked by instructor' 
+        };
+      }
+      return s;
+    }));
+    if (currentStudent?.id === studentId) {
+      setCurrentStudent(prev => prev ? { 
+        ...prev, 
+        status: 'kicked', 
+        is_disqualified: true, 
+        disqualification_reason: 'Kicked by instructor' 
+      } : null);
+    }
+
+    // 2. Persist to Supabase database so status is preserved across stage transitions & refreshes
+    updateStudentStatus(studentId, 'kicked', { 
+      is_disqualified: true, 
+      disqualification_reason: 'Kicked by instructor' 
+    });
+
+    // 3. Network Broadcast to candidate device across the internet
+    if (exam?.pin_code) {
+      broadcastAdminAction(exam.pin_code, 'KICK', { studentId });
+    }
+
+    // 4. Same-machine cross-tab broadcast
     realtimeBus.broadcast('ADMIN_KICK_STUDENT', { studentId });
   };
 
   const handleUnbanStudent = (studentId) => {
+    const unbanStatus = exam.status === 'active' || exam.status === 'in_progress' ? 'in_progress' : 'waiting';
+    // 1. Immediately update local state
+    setStudents(prev => prev.map(s => {
+      if (s.id === studentId) {
+        return { 
+          ...s, 
+          status: unbanStatus, 
+          is_disqualified: false, 
+          disqualification_reason: null, 
+          warning_count: 0 
+        };
+      }
+      return s;
+    }));
+    if (currentStudent?.id === studentId) {
+      setCurrentStudent(prev => prev ? { 
+        ...prev, 
+        status: unbanStatus, 
+        is_disqualified: false, 
+        disqualification_reason: null, 
+        warning_count: 0 
+      } : null);
+    }
+
+    // 2. Persist to Supabase database
+    updateStudentStatus(studentId, unbanStatus, { 
+      is_disqualified: false, 
+      disqualification_reason: null, 
+      warning_count: 0 
+    });
+
+    // 3. Network Broadcast
+    if (exam?.pin_code) {
+      broadcastAdminAction(exam.pin_code, 'UNBAN', { studentId });
+    }
+
+    // 4. Local cross-tab broadcast
     realtimeBus.broadcast('ADMIN_UNBAN_STUDENT', { studentId });
   };
 
   const handleWarnStudent = (studentId) => {
-    realtimeBus.broadcast('ADMIN_WARN_STUDENT', { studentId });
+    const target = studentsRef.current.find(s => s.id === studentId);
+    const newWarnCount = ((target?.warning_count || 0) + 1);
+
+    // 1. Immediately update local state
+    setStudents(prev => prev.map(s => {
+      if (s.id === studentId) {
+        return { ...s, warning_count: newWarnCount };
+      }
+      return s;
+    }));
+    if (currentStudent?.id === studentId) {
+      setCurrentStudent(prev => prev ? { ...prev, warning_count: newWarnCount } : null);
+    }
+
+    // 2. Persist to Supabase database
+    updateStudentStatus(studentId, target?.status || 'in_progress', { 
+      warning_count: newWarnCount 
+    });
+
+    // 3. Network Broadcast to candidate device across the internet
+    if (exam?.pin_code) {
+      broadcastAdminAction(exam.pin_code, 'WARN', { studentId, warning_count: newWarnCount });
+    }
+
+    // 4. Local cross-tab broadcast
+    realtimeBus.broadcast('ADMIN_WARN_STUDENT', { studentId, warning_count: newWarnCount });
   };
 
   // Student Actions

@@ -35,6 +35,7 @@ import {
   purgeAllExamData 
 } from '../../lib/persistentStorage';
 import { apiParseExamPdf, apiParseExamSection } from '../../lib/ai/gemini-client';
+import { parseDurationToSeconds } from '../../lib/examTimerUtils';
 
 export const createEmptyExam = (examId, pinCode = '') => ({
   id: examId,
@@ -173,6 +174,9 @@ export function TestCreator({ exam, onUpdateExam }) {
   const [listeningAudioMode, setListeningAudioMode] = useState(
     exam.listening_audio_mode || (exam.listening?.audio_mode === 'single' ? 'single' : 'split')
   );
+  const [listeningSingleAudioDurationSeconds, setListeningSingleAudioDurationSeconds] = useState(
+    exam.listening_audio_duration_seconds || exam.listening?.audio_duration_seconds || null
+  );
 
   const listeningAudioFileRefs = {
     part1: useRef(null),
@@ -249,25 +253,34 @@ export function TestCreator({ exam, onUpdateExam }) {
     });
   };
 
-  const getAudioDurationString = (fileOrUrl) => {
+  const getAudioDurationInfo = (fileOrUrl) => {
     return new Promise((resolve) => {
       const tempAudio = new Audio();
       tempAudio.onloadedmetadata = () => {
+        const totalSecs = Math.round(tempAudio.duration) || 0;
         const mins = Math.floor(tempAudio.duration / 60);
         const secs = Math.floor(tempAudio.duration % 60);
-        resolve(`${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`);
+        resolve({
+          durationStr: `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`,
+          durationSeconds: totalSecs
+        });
       };
-      tempAudio.onerror = () => resolve('07:00');
+      tempAudio.onerror = () => resolve({ durationStr: '07:00', durationSeconds: 420 });
       if (typeof fileOrUrl === 'string') {
         tempAudio.src = fileOrUrl;
       } else {
         try {
           tempAudio.src = URL.createObjectURL(fileOrUrl);
         } catch {
-          resolve('07:00');
+          resolve({ durationStr: '07:00', durationSeconds: 420 });
         }
       }
     });
+  };
+
+  const getAudioDurationString = async (fileOrUrl) => {
+    const info = await getAudioDurationInfo(fileOrUrl);
+    return info.durationStr;
   };
 
   const uploadAssetToStorage = async (file, bucketName = 'exam-assets') => {
@@ -389,13 +402,14 @@ export function TestCreator({ exam, onUpdateExam }) {
     if (!file) return;
 
     try {
-      const durationStr = await getAudioDurationString(file);
+      const info = await getAudioDurationInfo(file);
       const url = await uploadAssetToStorage(file);
+      setListeningSingleAudioDurationSeconds(info.durationSeconds);
       setListeningAudios({
-        part1: { partId: 1, title: 'Part 1: Social Dialogue', name: file.name, url, duration: durationStr },
-        part2: { partId: 2, title: 'Part 2: Community Recreation Guide', name: file.name, url, duration: durationStr },
-        part3: { partId: 3, title: 'Part 3: Academic Tutorial', name: file.name, url, duration: durationStr },
-        part4: { partId: 4, title: 'Part 4: University Lecture', name: file.name, url, duration: durationStr },
+        part1: { partId: 1, title: 'Part 1: Social Dialogue', name: file.name, url, duration: info.durationStr },
+        part2: { partId: 2, title: 'Part 2: Community Recreation Guide', name: file.name, url, duration: info.durationStr },
+        part3: { partId: 3, title: 'Part 3: Academic Tutorial', name: file.name, url, duration: info.durationStr },
+        part4: { partId: 4, title: 'Part 4: University Lecture', name: file.name, url, duration: info.durationStr },
       });
     } catch (err) {
       console.error('Single full audio upload failed:', err);
@@ -404,6 +418,7 @@ export function TestCreator({ exam, onUpdateExam }) {
   };
 
   const handleRemoveSingleAudio = async () => {
+    setListeningSingleAudioDurationSeconds(null);
     setListeningAudios({
       part1: { partId: 1, title: 'Part 1: Social Dialogue', name: '', url: '', duration: '07:00' },
       part2: { partId: 2, title: 'Part 2: Community Recreation Guide', name: '', url: '', duration: '07:00' },
@@ -1080,6 +1095,9 @@ export function TestCreator({ exam, onUpdateExam }) {
         writing_pdf_name: writingPdf.name,
         // Listening
         listening_audio_mode: listeningAudioMode,
+        listening_audio_duration_seconds: listeningAudioMode === 'single'
+          ? (listeningSingleAudioDurationSeconds || parseDurationToSeconds(listeningAudios.part1.duration) || null)
+          : null,
         listening_audio_parts: listeningAudioParts,
         listening_audio_names: listeningAudioNames,
         listening_audio_durations: listeningAudioDurations,
@@ -1092,9 +1110,15 @@ export function TestCreator({ exam, onUpdateExam }) {
         listening: {
           ...exam.listening,
           audio_mode: listeningAudioMode,
+          audio_duration_seconds: listeningAudioMode === 'single'
+            ? (listeningSingleAudioDurationSeconds || parseDurationToSeconds(listeningAudios.part1.duration) || null)
+            : null,
           parts: listeningPartsPayload,
           sections: listeningParsed?.sections || exam.listening?.sections || [],
           questions: listeningQuestions,
+          audio_parts: listeningAudioParts,
+          audio_names: listeningAudioNames,
+          audio_durations: listeningAudioDurations,
           pdf_url: listeningPdf.url,
           pdf_name: listeningPdf.name,
           map_image_url: listeningMapImage.url,
@@ -1127,10 +1151,15 @@ export function TestCreator({ exam, onUpdateExam }) {
           },
           listening: {
             audio_mode: listeningAudioMode,
+            audio_duration_seconds: listeningAudioMode === 'single'
+              ? (listeningSingleAudioDurationSeconds || parseDurationToSeconds(listeningAudios.part1.duration) || null)
+              : null,
             parts: listeningPartsPayload,
             sections: listeningParsed?.sections || [],
             questions: listeningQuestions,
             audio_parts: listeningAudioParts,
+            audio_names: listeningAudioNames,
+            audio_durations: listeningAudioDurations,
             pdf_url: listeningPdf.url,
             pdf_name: listeningPdf.name,
             map_image_url: listeningMapImage.url,

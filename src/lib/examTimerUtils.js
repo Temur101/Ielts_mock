@@ -50,12 +50,12 @@ export function calculateStageDurationSeconds(stage, exam = {}) {
   if (stage === 'listening_active') {
     // 1. Check direct audio duration fields if explicitly present
     let detectedAudioDuration = 0;
-    if (typeof exam.audioDuration === 'number' && exam.audioDuration > 0) {
+    if (typeof exam.listening_audio_duration_seconds === 'number' && exam.listening_audio_duration_seconds > 0) {
+      detectedAudioDuration = exam.listening_audio_duration_seconds;
+    } else if (typeof exam.audioDuration === 'number' && exam.audioDuration > 0) {
       detectedAudioDuration = exam.audioDuration;
     } else if (typeof exam.audio_duration === 'number' && exam.audio_duration > 0) {
       detectedAudioDuration = exam.audio_duration;
-    } else if (typeof exam.listening_audio_duration_seconds === 'number' && exam.listening_audio_duration_seconds > 0) {
-      detectedAudioDuration = exam.listening_audio_duration_seconds;
     }
 
     // 2. Check multi-part audio configurations
@@ -63,23 +63,94 @@ export function calculateStageDurationSeconds(stage, exam = {}) {
     const audioDurations = exam.listening_audio_durations || exam.listening?.audio_durations || {};
     const rawParts = exam.listening_parts || exam.listening?.parts || [];
 
+    // Collect all valid URLs from audioParts
+    const populatedPartUrls = Object.values(audioParts).filter(
+      (url) => typeof url === 'string' && url.trim().length > 0
+    );
+    const uniquePartUrls = new Set(populatedPartUrls);
+
+    // Single audio mode detection (synchronized with student ListeningSection)
+    const isSingleAudioMode =
+      exam.listening_audio_mode === 'single' ||
+      exam.listening?.audio_mode === 'single' ||
+      (populatedPartUrls.length > 0 && uniquePartUrls.size === 1) ||
+      Boolean(
+        audioParts.part1 &&
+        audioParts.part1 === audioParts.part2 &&
+        audioParts.part1 === audioParts.part3 &&
+        audioParts.part1 === audioParts.part4
+      );
+
     let hasLoadedAudio = Boolean(
       exam.audio_url || 
       exam.listening_audio_url || 
       exam.listening?.audio_url ||
+      populatedPartUrls.length > 0 ||
       (Array.isArray(exam.sections) && exam.sections.find(s => s.type === 'listening')?.audio_url)
     );
 
-    let partsTotalDuration = 0;
-    let loadedPartsCount = 0;
+    // Check rawParts for audio if audioParts was empty
+    if (!hasLoadedAudio && Array.isArray(rawParts) && rawParts.length > 0) {
+      hasLoadedAudio = rawParts.some(p => p?.audio_url && typeof p.audio_url === 'string' && p.audio_url.trim().length > 0);
+    }
 
-    Object.keys(audioParts).forEach(key => {
+    if (isSingleAudioMode) {
+      // In single audio mode: 1 audio track runs continuously across all parts.
+      // DURATION MUST NEVER BE MULTIPLIED OR SUMMED ACROSS PARTS!
+      let singleTrackDuration = detectedAudioDuration;
+
+      if (singleTrackDuration <= 0) {
+        // Extract the duration of the single track from the first available slot
+        const durCandidates = [
+          audioDurations.part1,
+          audioDurations.part2,
+          audioDurations.part3,
+          audioDurations.part4,
+          rawParts[0]?.duration,
+          rawParts[1]?.duration,
+          rawParts[2]?.duration,
+          rawParts[3]?.duration
+        ];
+        for (const dur of durCandidates) {
+          const sec = parseDurationToSeconds(dur);
+          if (sec > 0) {
+            singleTrackDuration = sec;
+            break;
+          }
+        }
+      }
+
+      const sectionListening = Array.isArray(exam.sections) ? exam.sections.find(s => s.type === 'listening') : null;
+      if (sectionListening?.audio_url) {
+        hasLoadedAudio = true;
+        const sec = parseDurationToSeconds(sectionListening.audioDuration || sectionListening.duration);
+        if (sec > 0 && singleTrackDuration <= 0) {
+          singleTrackDuration = sec;
+        }
+      }
+
+      if (hasLoadedAudio && singleTrackDuration > 0) {
+        // Strict Cambridge IELTS Adaptive Rule: audio duration + 120s (2 min review buffer)
+        return Math.ceil(singleTrackDuration) + 120;
+      }
+
+      // Default fallback if audio loaded but 0s or missing audio
+      return 35 * 60;
+    }
+
+    // Split audio mode: Separate audio files per part (sum individual distinct parts)
+    let partsTotalDuration = 0;
+    const seenUrls = new Set();
+
+    Object.keys(audioParts).forEach((key) => {
       const url = audioParts[key];
       if (url && typeof url === 'string' && url.trim().length > 0) {
         hasLoadedAudio = true;
-        loadedPartsCount++;
         const sec = parseDurationToSeconds(audioDurations[key]);
-        partsTotalDuration += sec;
+        if (!seenUrls.has(url)) {
+          seenUrls.add(url);
+          partsTotalDuration += sec;
+        }
       }
     });
 
@@ -88,8 +159,8 @@ export function calculateStageDurationSeconds(stage, exam = {}) {
         if (p?.audio_url && typeof p.audio_url === 'string' && p.audio_url.trim().length > 0) {
           hasLoadedAudio = true;
           const slotKey = `part${idx + 1}`;
-          if (!audioParts[slotKey]) {
-            loadedPartsCount++;
+          if (!audioParts[slotKey] && !seenUrls.has(p.audio_url)) {
+            seenUrls.add(p.audio_url);
             const sec = parseDurationToSeconds(p.duration || audioDurations[slotKey]);
             partsTotalDuration += sec;
           }
@@ -98,13 +169,13 @@ export function calculateStageDurationSeconds(stage, exam = {}) {
     }
 
     const sectionListening = Array.isArray(exam.sections) ? exam.sections.find(s => s.type === 'listening') : null;
-    if (sectionListening?.audio_url) {
+    if (sectionListening?.audio_url && !seenUrls.has(sectionListening.audio_url)) {
       hasLoadedAudio = true;
       const sec = parseDurationToSeconds(sectionListening.audioDuration || sectionListening.duration);
-      if (sec > 0) detectedAudioDuration = Math.max(detectedAudioDuration, sec);
+      if (sec > 0) partsTotalDuration += sec;
     }
 
-    const finalAudioSec = detectedAudioDuration > 0 ? detectedAudioDuration : partsTotalDuration;
+    const finalAudioSec = partsTotalDuration > 0 ? partsTotalDuration : detectedAudioDuration;
 
     if (hasLoadedAudio && finalAudioSec > 0) {
       return Math.ceil(finalAudioSec) + 120; // Audio duration + 2 minutes

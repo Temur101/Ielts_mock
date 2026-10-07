@@ -882,6 +882,14 @@ export async function persistExamAndSections(examId, parsedPayload = {}) {
     if (parsedPayload.listening.pdf_name) examPayload.listening_pdf_name = parsedPayload.listening.pdf_name;
   }
 
+  // Listening audio mode and single track duration
+  if (parsedPayload.listening_audio_mode || parsedPayload.listening?.audio_mode) {
+    examPayload.listening_audio_mode = parsedPayload.listening_audio_mode || parsedPayload.listening?.audio_mode;
+  }
+  if (parsedPayload.listening_audio_duration_seconds !== undefined) {
+    examPayload.listening_audio_duration_seconds = parsedPayload.listening_audio_duration_seconds;
+  }
+
   // Writing Section fields
   if (parsedPayload.writing) {
     examPayload.writing_tasks = parsedPayload.writing.tasks || parsedPayload.writing;
